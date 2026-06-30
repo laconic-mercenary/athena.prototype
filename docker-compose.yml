@@ -1,0 +1,25 @@
+services:
+  runner:
+    build: .
+    volumes:
+      - ./artifacts:/app/artifacts
+    env_file: .env
+    depends_on:
+      target:
+        condition: service_healthy
+    networks:
+      - athena-net
+
+  target:
+    build: ./target
+    networks:
+      - athena-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  athena-net:
+    driver: bridge
