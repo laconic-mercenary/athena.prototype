@@ -1,0 +1,24 @@
+artifacts_dir: ./artifacts
+max_agent_iterations: 20
+
+model:
+  default: claude-haiku-4-5
+  provider: anthropic
+  # ollama_base_url: http://localhost:11434
+
+orchestrator:
+  model: claude-sonnet-4-6
+  config: ./agents/orchestrator.yml
+
+committees:
+  recon:
+    model: claude-haiku-4-5
+    leader:
+      config: ./agents/recon/leader.yml
+      model: claude-sonnet-4-6
+    specialists:
+      - config: ./agents/recon/network_scout.yml
+      - config: ./agents/recon/ssh_expert.yml
+      - config: ./agents/recon/rest_expert.yml
+      - config: ./agents/recon/apache_expert.yml
+        model: claude-sonnet-4-6

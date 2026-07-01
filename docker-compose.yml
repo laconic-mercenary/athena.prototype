@@ -1,6 +1,15 @@
 services:
   runner:
     build: .
+    stdin_open: true
+    tty: true
+    command:
+      - athena
+      - --config
+      - /app/athena.yml
+      - --instructions
+      - /app/instructions.txt
+      - --verbose
     volumes:
       - ./artifacts:/app/artifacts
     env_file: .env

@@ -2,17 +2,65 @@
 
 ## Build Order
 
-1. Project scaffold
-2. Authorized target VM
-3. Shared schemas
+1. Project scaffold ✅
+2. Authorized target VM ✅
+3. Shared schemas ✅
 4. Tool layer
 5. Model backend
 6. Agent loop
 7. Recon committee
 8. Orchestrator
 9. Artifact and run logging
-10. Docker Compose wiring
+10. Docker Compose wiring ✅
 11. Tests and demo run
+
+## CLI Interface
+
+```
+./athena --instructions <path> --config <path>
+```
+
+Both flags are required — no defaults. Missing either is a hard error.
+
+- `--instructions` — free-form text prompt consumed by the Orchestrator agent. The target
+  is specified here, not in the config. The Orchestrator extracts it, validates scope, and
+  can reject or request clarification before the pipeline runs.
+- `--config` — YAML manifest (see below). Specifies artifacts directory, model choices,
+  orchestrator agent path, and committee/specialist configs.
+
+## Config YAML Structure
+
+```yaml
+artifacts_dir: ./artifacts
+max_agent_iterations: 8
+
+model:
+  default: claude-haiku-4-5
+
+orchestrator:
+  model: claude-sonnet-4-6
+  config: ./agents/orchestrator.yml
+
+committees:
+  recon:
+    model: claude-haiku-4-5         # committee-level default
+    leader:
+      config: ./agents/recon_leader.yml
+      model: claude-sonnet-4-6      # leader override
+    specialists:
+      - config: ./agents/network_scout.yml
+      - config: ./agents/ssh_expert.yml
+      - config: ./agents/rest_expert.yml
+      - config: ./agents/apache_expert.yml
+        model: claude-sonnet-4-6    # per-specialist override
+```
+
+Model resolution order (no silent defaults — hard error if unresolvable):
+1. Per-specialist `model` override
+2. Committee `model` default
+3. Global `model.default`
+
+Secrets (`ANTHROPIC_API_KEY` etc.) live in `.env` only — never in the YAML.
 
 ## 1. Project Scaffold
 
@@ -83,13 +131,36 @@ Core schemas:
 
 - `Classification` — enum
 - `Category` — enum
-- `Observation` — one finding from one expert role
-- `ReconArtifact` — full committee output
+- `Specialist` — expert identity (id + title)
+- `Comment` — authored observation note (author_id + text)
+- `RawFinding` — specialist output: command, output, and a brief technical note; no classification
+- `Observation` — Leader-authored: classified, categorised, commented finding derived from RawFindings
+- `ReconArtifact` — full Recon committee output, written by the Recon Leader
+- `OrchestratorApproval` — emitted when Orchestrator accepts the instructions and is ready to run
+- `OrchestratorRejection` — emitted when Orchestrator refuses the instructions
 - later: `PlanningArtifact`
 - later: `RetrievalArtifact`
 - later: `ReportArtifact`
 
-For Phase 1, only implement `Classification`, `Category`, `Observation`, and `ReconArtifact`.
+For Phase 1, implement all of the above except the later artifacts.
+
+`RawFinding` fields:
+
+- `id` — short hex, for cross-referencing in Leader comments
+- `specialist_id` — `Specialist.id` of the expert who produced it
+- `command` — tool invoked
+- `command_output` — raw result, unmodified
+- `notes` — specialist's brief technical note; no classification or interpretation
+
+`OrchestratorApproval` fields:
+
+- `run_id` — UUID, generated at approval time
+- `target` — extracted by the Orchestrator from the instructions
+- `notes` — Orchestrator's summary of its understanding of the engagement
+
+`OrchestratorRejection` fields:
+
+- `reason` — clear explanation of why the instructions were refused
 
 `Classification` values:
 
@@ -254,67 +325,97 @@ Likely module:
 
 - `src/athena/committees/recon.py`
 
-The Recon committee is composed of four expert roles. Each role is a separate agent loop
-with its own system prompt and scoped tool subset. Roles run sequentially; later roles
-depend on earlier ones. The committee aggregates all observations into one `ReconArtifact`.
+The Recon committee has a Leader and four specialist roles. The Leader is an LLM agent
+that coordinates specialists, receives their raw findings, classifies everything, and
+writes the final `ReconArtifact`. Specialists only probe and report.
 
-Roles and dependency order:
+**Recon Leader**
 
-1. **Network Scout** — runs `nmap_scan` and `check_port`; establishes which ports are open.
-   All other roles depend on its output.
+- Receives the `OrchestratorApproval`
+- Summons specialists reactively via `summon_specialist(name) -> list[RawFinding]`
+- After all relevant specialists have reported, classifies every finding and writes the
+  `ReconArtifact` (full `Observation` list + summary narrative)
+- Has its own agent loop, its own model (default: `claude-sonnet-4-6`), and its own
+  `Specialist` identity in the artifact
 
-2. **SSH Expert** — runs `ssh_banner` on port 22 if Scout found it open. Logs the banner,
-   version string, and any pre-auth information. Expected to produce mostly `noise` and
-   `signal_info` observations in this scenario.
+**Specialists** (each is a separate agent loop with scoped tools; returns `list[RawFinding]`)
 
-3. **REST Expert** — runs `http_get`, `http_head`, and `extract_links` on discovered HTTP
-   ports. Probes a hardcoded list of common paths: `/`, `/robots.txt`, `/server-status`,
-   `/.well-known/`, `/admin`, `/docs`, `/api`. Logs response codes, headers, body excerpts,
-   and extracted links. Expected to surface `signal_warn` observations (directory listing,
-   `robots.txt` disallow entries, `server-status` exposure).
+1. **Network Scout** — always summoned first. Runs `nmap_scan` and `check_port`; reports
+   which ports are open. No interpretation — just discovery.
 
-4. **Apache Expert** — runs only if REST Expert found `Apache` in a `Server:` response
-   header. Probes Apache-specific paths and interprets directory listing behavior, UserDir
-   exposure, and header configuration. Expected to produce the highest-value `signal_warn`
-   observations pointing toward the exposed credentials path.
+2. **SSH Expert** — summoned only if port 22 is open. Runs `ssh_banner`; reports the
+   banner and version string verbatim. Brief technical note only.
 
-Each role produces a `list[Observation]`. The committee merges the lists, orders by role,
-and emits a single `ReconArtifact` with a summary narrative.
+3. **REST Expert** — summoned only if port 80 or 443 is open. Runs `http_get`,
+   `http_head`, `extract_links`. Probes a fixed path list: `/`, `/robots.txt`,
+   `/server-status`, `/.well-known/`, `/admin`, `/docs`, `/api`. Reports response codes,
+   headers, and body excerpts.
 
-Goal: ~15–25 observations total across all roles. Most are `noise` or `signal_info`;
-a handful are `signal_warn` pointing Planning toward the misconfigured Apache path.
+4. **Apache Expert** — summoned only if REST Expert's findings include `Apache` in a
+   `Server:` header. Probes Apache-specific paths: directory listing behaviour, UserDir
+   exposure (`/~admin/`, `/files/`, `/home/`), `/server-info`. Reports what it finds,
+   no classification.
 
-In v1, all four roles are hardcoded in the committee. Dynamic role addition (e.g. spawning
-the Apache Expert only after discovering Apache) is the intended future behavior but is not
-built yet.
+**Artifact writing**
+
+After all summoned specialists have reported, the Leader:
+- Receives the full set of `RawFinding` lists
+- Assigns `Classification` and `Category` to each finding
+- Cross-references related findings in `Comment` text (citing `RawFinding.id`)
+- Writes a `list[Observation]` and a summary narrative
+- Emits the `ReconArtifact`
+
+Goal: ~15–25 raw findings across all specialists. Leader produces ~15–25 `Observation`
+objects. Most classified as `noise` or `signal_info`; a handful as `signal_warn` pointing
+toward the misconfigured Apache `/files/` path.
 
 Do not build Planning, Retrieval, or Reporting code yet.
 
 ## 8. Orchestrator
 
-Wire deterministic sequencing.
+The Orchestrator is an LLM-powered agent, not just deterministic sequencing code.
+It runs in two phases.
 
 Likely module:
 
 - `src/athena/orchestrator.py`
 
-Phase 1 behavior:
+**Phase 1 — Clarification loop (interactive)**
+
+The Orchestrator reads `instructions.txt` and enters an interactive loop with the user.
+It has two tools available in this phase:
+
+- `ask_user(question: str) -> str` — prints to stdout, reads a response from stdin
+- `reject_run(reason: str)` — prints the rejection reason and exits cleanly
+
+The loop continues until the Orchestrator either:
+- emits an `OrchestratorApproval` artifact (extracts target, summarises understanding)
+- calls `reject_run` (instructions are out of scope or cannot be safely accommodated)
+
+The Orchestrator may ask for clarification, request minor tweaks to the instructions, or
+confirm scope. It must not start the pipeline until it has a clear, approved engagement.
+
+**Phase 2 — Pipeline execution (deterministic)**
+
+Once an `OrchestratorApproval` is emitted, deterministic Python takes over:
 
 ```text
-start run
-  -> summon Recon committee
+approval received
+  -> write approval artifact
+  -> log lifecycle: run started
+  -> summon Recon committee (passes target from approval)
   -> wait for ReconArtifact
   -> validate artifact
   -> write artifact
-  -> log lifecycle
-  -> finish run
+  -> log lifecycle: recon complete
+  -> finish run (Phase 1 ends here)
 ```
 
 Later phases extend the sequence, but Phase 1 should not scaffold them yet.
 
 The orchestrator owns:
 
-- run id
+- run id (from OrchestratorApproval)
 - artifact directory
 - lifecycle logs
 - committee order

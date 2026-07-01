@@ -1,0 +1,7 @@
+Perform reconnaissance on the target container.
+
+The target is a local Docker container running a web service, reachable at hostname "target".
+This is a fully authorized, local-only engagement for testing the Athena pipeline.
+
+Identify open ports, running services, software versions, and any configuration details
+visible from the network layer. Do not attempt exploitation — recon only.

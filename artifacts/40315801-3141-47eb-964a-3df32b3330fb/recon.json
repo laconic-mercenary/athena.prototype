@@ -1,0 +1,340 @@
+{
+  "artifact_id": "35548164-348b-4c34-911f-00b6ae1b4de0",
+  "run_id": "40315801-3141-47eb-964a-3df32b3330fb",
+  "committee": "recon",
+  "created_at": "2026-07-01T04:23:46.150845Z",
+  "target": "target",
+  "specialists": [
+    {
+      "id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+      "title": "Recon Leader"
+    },
+    {
+      "id": "c573200e-1c0a-4865-99ca-05b18b97c730",
+      "title": "Network Scout"
+    },
+    {
+      "id": "9861ca4d-fa13-4dbe-9aad-16a1853db017",
+      "title": "SSH Expert"
+    },
+    {
+      "id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "title": "REST Expert"
+    },
+    {
+      "id": "2e5c0b23-7485-4196-8fe0-867154263d25",
+      "title": "Apache Expert"
+    }
+  ],
+  "observations": [
+    {
+      "id": "8316f3b9",
+      "specialist_id": "c573200e-1c0a-4865-99ca-05b18b97c730",
+      "command": "nmap_scan target",
+      "command_output": "Summary: Found 2 open port(s) on target: 22/tcp (ssh), 80/tcp (http)\n\nOpen ports:\n  22/tcp  ssh  OpenSSH 8.9p1 Ubuntu 3ubuntu0.15 (Ubuntu Linux; protocol 2.0)\n  80/tcp  http  Apache httpd 2.4.52 ((Ubuntu))\n\nRaw nmap output:\n# Nmap 7.95 scan initiated Wed Jul  1 04:21:36 2026 as: nmap -sT --open -sV --version-light -T3 -p 21,22,23,25,53,80,110,143,443,445,3306,3389,5432,5900,6379,8080,8443,9200,27017 -oG - target\nHost: 172.18.0.2 (athenaprototype-target-1.athenaprototype_athena-net)\tStatus: Up\nHost: 172.18.0.2 (athenaprototype-target-1.athenaprototype_athena-net)\tPorts: 22/open/tcp//ssh//OpenSSH 8.9p1 Ubuntu 3ubuntu0.15 (Ubuntu Linux; protocol 2.0)/, 80/open/tcp//http//Apache httpd 2.4.52 ((Ubuntu))/\tIgnored State: closed (17)\n# Nmap done at Wed Jul  1 04:21:42 2026 -- 1 IP address (1 host up) scanned in 6.31 seconds",
+      "classification": "signal_info",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Authoritative port enumeration. Two attack-surface entry points confirmed: SSH on 22 and HTTP on 80. Internal Docker network address 172.18.0.2 and full container hostname also disclosed, confirming containerized deployment."
+        }
+      ]
+    },
+    {
+      "id": "39821100",
+      "specialist_id": "c573200e-1c0a-4865-99ca-05b18b97c730",
+      "command": "check_port target:22",
+      "command_output": "Port target:22 is open (0.4ms)",
+      "classification": "signal_info",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Individual TCP probe corroborates nmap finding (finding 069d0ad8). Port 22 is definitively open and responding with sub-millisecond latency."
+        }
+      ]
+    },
+    {
+      "id": "ecacded4",
+      "specialist_id": "c573200e-1c0a-4865-99ca-05b18b97c730",
+      "command": "check_port target:80",
+      "command_output": "Port target:80 is open (0.4ms)",
+      "classification": "signal_info",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Individual TCP probe corroborates nmap finding (finding 069d0ad8). Port 80 is definitively open and responding with sub-millisecond latency."
+        }
+      ]
+    },
+    {
+      "id": "6bffbab8",
+      "specialist_id": "9861ca4d-fa13-4dbe-9aad-16a1853db017",
+      "command": "ssh_banner",
+      "command_output": "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.15",
+      "classification": "signal_info",
+      "category": "service",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "SSH banner retrieved unauthenticated, confirming exact version: OpenSSH 8.9p1 on Ubuntu 3ubuntu0.15. Version fingerprint is useful for CVE correlation. Protocol 2.0 enforced — protocol downgrade not a concern. No immediate exploit path from banner alone."
+        }
+      ]
+    },
+    {
+      "id": "ca50f725",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_head http://target/",
+      "command_output": "Status: 200, server: Apache/2.4.52 (Ubuntu), content-type: text/html, content-length: 196",
+      "classification": "signal_info",
+      "category": "service",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Server header discloses Apache version 2.4.52 on Ubuntu. Version disclosure enables precise CVE lookup. Root path returns 200 — web application is live. Aligns with nmap result in finding 069d0ad8."
+        }
+      ]
+    },
+    {
+      "id": "ceb9b57b",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_get http://target/",
+      "command_output": "Status: 200, HTML body: <!DOCTYPE html><html><head><title>Acme Corp - Internal Portal</title></head><body><h1>Acme Corp Internal Portal</h1><p>Welcome. Please log in via the employee portal.</p></body></html>",
+      "classification": "signal_info",
+      "category": "service",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Root page confirms this is 'Acme Corp Internal Portal' — an authenticated employee portal. Application context is established. The portal label combined with exposed credentials (finding 5850b34f) substantially elevates risk."
+        }
+      ]
+    },
+    {
+      "id": "a60eab02",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "extract_links http://target/",
+      "command_output": "Extracted 0 unique links",
+      "classification": "noise",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "No hyperlinks extracted from root HTML. Minimal page structure provides no additional link graph to follow. Not actionable on its own, but absence of links means the /files/ path (finding 16896065) was not referenced in-page — further obscuring it from casual browsing."
+        }
+      ]
+    },
+    {
+      "id": "57ee3abc",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_head http://target/robots.txt",
+      "command_output": "Status: 200, server: Apache/2.4.52 (Ubuntu), content-type: text/plain, content-length: 32",
+      "classification": "signal_warn",
+      "category": "exposure",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "robots.txt is publicly accessible and returns 200. The content (finding 16896065) actively advertises a sensitive path (/files/) that contains exposed credentials (finding 5850b34f). The Disallow directive ironically serves as a directory hint for attackers."
+        }
+      ]
+    },
+    {
+      "id": "68e33544",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_get http://target/robots.txt",
+      "command_output": "Status: 200, body: User-agent: *\nDisallow: /files/",
+      "classification": "signal_warn",
+      "category": "exposure",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "robots.txt explicitly disallows /files/ for all crawlers. This path resolves to a directory listing containing credentials.json (findings 9cb7ab55 and 5850b34f). The robots.txt effectively advertises the most sensitive path on the server. Directly related to findings 9cb7ab55 and 5850b34f."
+        }
+      ]
+    },
+    {
+      "id": "ee3fed1b",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_head http://target/server-status",
+      "command_output": "Status: 200, server: Apache/2.4.52 (Ubuntu), content-type: text/html; charset=ISO-8859-1, content-length: 5827",
+      "classification": "signal_warn",
+      "category": "exposure",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Apache /server-status endpoint is publicly accessible without authentication. This is a significant misconfiguration. Returns 5827 bytes of operational data. See finding baeb93af for full content. Related to finding baeb93af."
+        }
+      ]
+    },
+    {
+      "id": "950710f6",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_get http://target/server-status",
+      "command_output": "Status: 200, HTML body: Apache status page with server version Apache/2.4.52 (Ubuntu), uptime 35 seconds, 17 total accesses, 1 busy worker, 49 idle workers",
+      "classification": "signal_warn",
+      "category": "configuration",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Unauthenticated Apache mod_status page exposes server operational metrics: version, uptime, worker counts, and access statistics. In full detail mode, mod_status also reveals current and recent request URLs — which could expose internal paths or session tokens over time. Should be restricted to localhost. Related to finding cce243ab."
+        }
+      ]
+    },
+    {
+      "id": "8422cdf5",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "extract_links http://target/server-status",
+      "command_output": "Extracted 0 unique links",
+      "classification": "noise",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "No hyperlinks extracted from the server-status page. Not actionable independently; the content value of the page was captured in finding baeb93af."
+        }
+      ]
+    },
+    {
+      "id": "0568e048",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_head http://target/.well-known/",
+      "command_output": "Status: 404, server: Apache/2.4.52 (Ubuntu), content-type: text/html; charset=iso-8859-1",
+      "classification": "noise",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "/.well-known/ directory returns 404. No ACME challenge, security.txt, or similar artifacts present. Not a concern for this engagement."
+        }
+      ]
+    },
+    {
+      "id": "4fa8a10c",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_head http://target/admin",
+      "command_output": "Status: 404, server: Apache/2.4.52 (Ubuntu), content-type: text/html; charset=iso-8859-1",
+      "classification": "noise",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "/admin returns 404. No administrative interface exposed at this path. Not actionable."
+        }
+      ]
+    },
+    {
+      "id": "fa333b32",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_head http://target/docs",
+      "command_output": "Status: 404, server: Apache/2.4.52 (Ubuntu), content-type: text/html; charset=iso-8859-1",
+      "classification": "noise",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "/docs returns 404. No documentation directory exposed. Not actionable."
+        }
+      ]
+    },
+    {
+      "id": "22a78d85",
+      "specialist_id": "3e5b07bb-e79c-4477-99f2-b803a4a92e26",
+      "command": "http_head http://target/api",
+      "command_output": "Status: 404, server: Apache/2.4.52 (Ubuntu), content-type: text/html; charset=iso-8859-1",
+      "classification": "noise",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "/api returns 404. No REST API surface exposed at this path. Note however that credentials.json (finding 5850b34f) contains an internal API key (ik_prod_a1b2c3d4e5f6), so an API may exist at an undiscovered path or internally."
+        }
+      ]
+    },
+    {
+      "id": "aaa1acf1",
+      "specialist_id": "2e5c0b23-7485-4196-8fe0-867154263d25",
+      "command": "http_get http://target/~admin/",
+      "command_output": "Status: 404 | server: Apache/2.4.52 (Ubuntu) | Body: 404 Not Found — The requested URL was not found on this server.",
+      "classification": "noise",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Apache UserDir tilde path for ~admin returns 404. mod_userdir is not enabled or not configured for this user. Not actionable."
+        }
+      ]
+    },
+    {
+      "id": "ff00c1d4",
+      "specialist_id": "2e5c0b23-7485-4196-8fe0-867154263d25",
+      "command": "http_get http://target/files/",
+      "command_output": "Status: 200 | server: Apache/2.4.52 (Ubuntu) | content-type: text/html;charset=UTF-8 | Body: 'Index of /files' — directory listing enabled; contains one file: credentials.json (232 bytes, dated 2026-06-30 11:51)",
+      "classification": "signal_warn",
+      "category": "configuration",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Apache Autoindex (directory listing) is enabled on /files/ and unauthenticated. The directory is directly referenced by robots.txt (finding 16896065). The listing exposes credentials.json, which was confirmed fully readable in finding 5850b34f. This is the root misconfiguration enabling the credential exposure chain. Related to findings 16896065 and 5850b34f."
+        }
+      ]
+    },
+    {
+      "id": "e0a3d55a",
+      "specialist_id": "2e5c0b23-7485-4196-8fe0-867154263d25",
+      "command": "http_get http://target/home/",
+      "command_output": "Status: 404 | server: Apache/2.4.52 (Ubuntu) | Body: 404 Not Found — The requested URL was not found on this server.",
+      "classification": "noise",
+      "category": "network",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "/home/ returns 404. No home directory traversal path exposed. Not actionable."
+        }
+      ]
+    },
+    {
+      "id": "89dec9e7",
+      "specialist_id": "2e5c0b23-7485-4196-8fe0-867154263d25",
+      "command": "http_get http://target/server-info",
+      "command_output": "Status: 404 | server: Apache/2.4.52 (Ubuntu) | Body: 404 Not Found — The requested URL was not found on this server.",
+      "classification": "noise",
+      "category": "configuration",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "/server-info returns 404. mod_info is not loaded or not configured — this is actually a positive configuration note. The more dangerous /server-status (findings cce243ab/baeb93af) is exposed, but /server-info is not."
+        }
+      ]
+    },
+    {
+      "id": "7837cc23",
+      "specialist_id": "2e5c0b23-7485-4196-8fe0-867154263d25",
+      "command": "http_get http://target/",
+      "command_output": "Status: 200 | server: Apache/2.4.52 (Ubuntu) | content-type: text/html | last-modified: Tue, 30 Jun 2026 11:51:03 GMT | Body: 'Acme Corp Internal Portal — Welcome. Please log in via the employee portal.' No 'Index of' found.",
+      "classification": "signal_info",
+      "category": "service",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "Corroborates findings 1212060e and 52373258. Last-Modified timestamp (2026-06-30 11:51:03 GMT) establishes content creation/deployment date. No directory listing at root — Autoindex is path-specific to /files/, not global."
+        }
+      ]
+    },
+    {
+      "id": "f022619f",
+      "specialist_id": "2e5c0b23-7485-4196-8fe0-867154263d25",
+      "command": "http_get http://target/files/credentials.json",
+      "command_output": "Status: 200 | server: Apache/2.4.52 (Ubuntu) | content-type: application/json | content-length: 232 | Body: {\"environment\": \"production\", \"database\": {\"host\": \"db.internal.acme.corp\", \"port\": 5432, \"username\": \"db_admin\", \"password\": \"Sup3rS3cr3t!2024\"}, \"api\": {\"internal_key\": \"ik_prod_a1b2c3d4e5f6\"}}",
+      "classification": "signal_warn",
+      "category": "exposure",
+      "comments": [
+        {
+          "author_id": "cb392951-e177-4752-b72d-b62f89e3df6f",
+          "text": "CRITICAL EXPOSURE: credentials.json is fully readable unauthenticated and contains production database credentials (host: db.internal.acme.corp, port 5432, user: db_admin, password: Sup3rS3cr3t!2024) and an internal API key (ik_prod_a1b2c3d4e5f6). This is the highest-priority finding of the engagement. The full exposure chain is: robots.txt (finding 16896065) advertises /files/ → Apache Autoindex (finding 9cb7ab55) lists credentials.json → this finding delivers plaintext production secrets. Related to findings 16896065, 9cb7ab55, cce243ab, and baeb93af."
+        }
+      ]
+    }
+  ],
+  "summary": "The target (172.18.0.2) is an Ubuntu Docker container running OpenSSH 8.9p1 on port 22 and Apache 2.4.52 on port 80, hosting an 'Acme Corp Internal Portal'. The most critical finding is a full credential exposure chain: robots.txt advertises a /files/ directory, Apache Autoindex is enabled on that path, and credentials.json is served unauthenticated — containing production PostgreSQL credentials (db_admin / Sup3rS3cr3t!2024 against db.internal.acme.corp:5432) and an internal API key (ik_prod_a1b2c3d4e5f6). Compounding this, the Apache /server-status endpoint is publicly accessible without authentication, leaking server operational metrics and potentially historical request URLs. Immediate remediation priorities are: remove or restrict /files/credentials.json, disable Autoindex on /files/, restrict /server-status to localhost, and rotate all exposed credentials and API keys."
+}

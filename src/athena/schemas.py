@@ -35,6 +35,14 @@ class Comment(BaseModel):
     text: str
 
 
+class RawFinding(BaseModel):
+    id: str = Field(default_factory=new_short_id)
+    specialist_id: str
+    command: str
+    command_output: str
+    notes: str
+
+
 class Observation(BaseModel):
     id: str = Field(default_factory=new_short_id)
     specialist_id: str
@@ -54,3 +62,15 @@ class ReconArtifact(BaseModel):
     specialists: list[Specialist]
     observations: list[Observation]
     summary: str
+
+
+class OrchestratorApproval(BaseModel):
+    run_id: str = Field(default_factory=new_id)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    target: str
+    notes: str
+
+
+class OrchestratorRejection(BaseModel):
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    reason: str
