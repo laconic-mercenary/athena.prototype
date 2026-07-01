@@ -19,8 +19,11 @@ from pathlib import Path
 import yaml
 
 from athena.agent_loop import run_agent
-from athena.artifacts import RunLogger
+from athena.artifacts import RunLogger, render_plan_report, render_report, render_retrieval_report
+from athena.committees.planning import run_planning_committee
 from athena.committees.recon import run_recon_committee
+from athena.committees.reporting import run_reporting_committee
+from athena.committees.retrieval import run_retrieval_committee
 from athena.config import AthenaConfig
 from athena.model_backend import BackendFactory, ModelBackend, ToolDefinition, make_backend
 from athena.schemas import OrchestratorApproval
@@ -136,6 +139,51 @@ def run_orchestrator(
     logger.log("recon artifact emitted")
     logger.write_artifact("recon", recon_artifact.model_dump_json(indent=2))
     logger.log("recon committee spun down")
+
+    logger.log("planning committee summoned")
+    logger.log("planning committee working")
+
+    plan_artifact = run_planning_committee(
+        recon_artifact=recon_artifact,
+        config=config,
+        _backend_factory=_backend_factory,
+    )
+
+    logger.log("plan artifact emitted")
+    logger.write_artifact("plan", plan_artifact.model_dump_json(indent=2))
+    (logger.run_dir / "plan.md").write_text(render_plan_report(plan_artifact))
+    logger.log("planning committee spun down")
+
+    logger.log("retrieval committee summoned")
+    logger.log("retrieval committee working")
+
+    retrieval_artifact = run_retrieval_committee(
+        plan_artifact=plan_artifact,
+        recon_artifact=recon_artifact,
+        config=config,
+        _backend_factory=_backend_factory,
+    )
+
+    logger.log("retrieval artifact emitted")
+    logger.write_artifact("retrieval", retrieval_artifact.model_dump_json(indent=2))
+    (logger.run_dir / "retrieval.md").write_text(render_retrieval_report(retrieval_artifact))
+    logger.log("retrieval committee spun down")
+
+    logger.log("reporting committee summoned")
+    logger.log("reporting committee working")
+
+    report_artifact = run_reporting_committee(
+        recon_artifact=recon_artifact,
+        plan_artifact=plan_artifact,
+        retrieval_artifact=retrieval_artifact,
+        config=config,
+        _backend_factory=_backend_factory,
+    )
+
+    logger.log("report artifact emitted")
+    logger.write_artifact("report", report_artifact.model_dump_json(indent=2))
+    (logger.run_dir / "report.md").write_text(render_report(report_artifact))
+    logger.log("reporting committee spun down")
     logger.log("run completed")
 
     return approval

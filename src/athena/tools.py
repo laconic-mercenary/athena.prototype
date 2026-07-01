@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlparse
 
 
 ALLOWED_HOSTS: frozenset[str] = frozenset({"target"})
+ALLOWED_DB_HOSTS: frozenset[str] = frozenset({"pgdatabase"})
 
 _HTTP_TIMEOUT = 10
 _SOCKET_TIMEOUT = 5
@@ -322,6 +323,18 @@ class _LinkExtractor(HTMLParser):
             self.links.append(href)
 
 
+@dataclass
+class PostgresQueryResult:
+    host: str
+    database: str
+    query: str
+    columns: list[str]
+    rows: list[list]
+    row_count: int
+    error: str | None
+    summary: str
+
+
 def extract_links(html: str, base_url: str) -> ExtractLinksResult:
     """Parse HTML and return deduplicated absolute URLs resolved against base_url."""
     _validate_url(base_url)
@@ -336,3 +349,53 @@ def extract_links(html: str, base_url: str) -> ExtractLinksResult:
             unique.append(resolved)
     summary = f"Extracted {len(unique)} unique link(s) from {base_url}"
     return ExtractLinksResult(base_url=base_url, links=tuple(unique), summary=summary)
+
+
+def postgres_query(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    query: str,
+) -> PostgresQueryResult:
+    """Execute a read-only SQL query against an allowed PostgreSQL host."""
+    if host not in ALLOWED_DB_HOSTS:
+        raise ValueError(
+            f"Host '{host}' is not in the allowed DB target list: {ALLOWED_DB_HOSTS}"
+        )
+    try:
+        import psycopg2
+    except ImportError:
+        raise RuntimeError("psycopg2 is required for postgres_query — install psycopg2-binary")
+
+    try:
+        conn = psycopg2.connect(
+            host=host,
+            port=port,
+            dbname=database,
+            user=username,
+            password=password,
+            connect_timeout=10,
+            options="-c default_transaction_read_only=on",
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                columns = [desc[0] for desc in cur.description] if cur.description else []
+                rows = [list(row) for row in (cur.fetchall() if cur.description else [])]
+        finally:
+            conn.close()
+        summary = f"Query on {host}/{database}: {len(rows)} row(s) returned"
+        return PostgresQueryResult(
+            host=host, database=database, query=query,
+            columns=columns, rows=rows, row_count=len(rows),
+            error=None, summary=summary,
+        )
+    except Exception as exc:
+        return PostgresQueryResult(
+            host=host, database=database, query=query,
+            columns=[], rows=[], row_count=0,
+            error=str(exc),
+            summary=f"Query on {host}/{database} failed: {exc}",
+        )

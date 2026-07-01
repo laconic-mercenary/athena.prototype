@@ -16,6 +16,8 @@ services:
     depends_on:
       target:
         condition: service_healthy
+      db:
+        condition: service_healthy
     networks:
       - athena-net
 
@@ -25,6 +27,24 @@ services:
       - athena-net
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: db_admin
+      POSTGRES_PASSWORD: "Sup3rS3cr3t!2024"
+      POSTGRES_DB: sarif_prod
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      athena-net:
+        aliases:
+          - pgdatabase
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U db_admin -d sarif_prod"]
       interval: 5s
       timeout: 3s
       retries: 10

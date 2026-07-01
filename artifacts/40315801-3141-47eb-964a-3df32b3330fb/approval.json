@@ -1,6 +1,0 @@
-{
-  "run_id": "40315801-3141-47eb-964a-3df32b3330fb",
-  "created_at": "2026-07-01T04:21:32.797639Z",
-  "target": "target",
-  "notes": "Authorized local-only recon engagement against a Docker container reachable at hostname 'target'. Objectives: identify open ports, running services, software versions, and network-visible configuration details. No exploitation — passive and active reconnaissance only."
-}

@@ -13,6 +13,7 @@ from athena.tools import (
     http_get,
     http_head,
     nmap_scan,
+    postgres_query,
     ssh_banner,
     tcp_banner,
     tls_probe,
@@ -109,3 +110,48 @@ def test_extract_links_empty_html_returns_empty_tuple() -> None:
     result = extract_links("<p>No links here</p>", "http://target/")
     assert result.links == ()
     assert isinstance(result, ExtractLinksResult)
+
+
+# ---------------------------------------------------------------------------
+# postgres_query — host guard (no real DB required)
+# ---------------------------------------------------------------------------
+
+
+def test_postgres_query_blocks_disallowed_host() -> None:
+    with pytest.raises(ValueError, match="not in the allowed DB target list"):
+        postgres_query(
+            host="some-other-db.example.com",
+            port=5432,
+            database="prod",
+            username="admin",
+            password="secret",
+            query="SELECT 1",
+        )
+
+
+def test_postgres_query_blocks_target_host() -> None:
+    with pytest.raises(ValueError, match="not in the allowed DB target list"):
+        postgres_query(
+            host="target",
+            port=5432,
+            database="prod",
+            username="admin",
+            password="secret",
+            query="SELECT 1",
+        )
+
+
+def test_postgres_query_allowed_host_attempts_connection() -> None:
+    # The allowed host is not reachable in unit tests, so expect a connection
+    # error rather than a ValueError — confirming the guard passed.
+    result = postgres_query(
+        host="pgdatabase",
+        port=5432,
+        database="sarif_prod",
+        username="db_admin",
+        password="Sup3rS3cr3t!2024",
+        query="SELECT 1",
+    )
+    # Connection will fail (no DB in unit test env), error captured gracefully.
+    assert result.error is not None
+    assert result.host == "pgdatabase"

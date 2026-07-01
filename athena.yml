@@ -22,3 +22,30 @@ committees:
       - config: ./agents/recon/rest_expert.yml
       - config: ./agents/recon/apache_expert.yml
         model: claude-sonnet-4-6
+
+  planning:
+    model: claude-haiku-4-5
+    leader:
+      config: ./agents/planning/leader.yml
+      model: claude-sonnet-4-6
+    specialists:
+      - config: ./agents/planning/network_planner.yml
+      - config: ./agents/planning/web_planner.yml
+
+  retrieval:
+    model: claude-haiku-4-5
+    leader:
+      config: ./agents/retrieval/leader.yml
+      model: claude-sonnet-4-6
+    specialists:
+      - config: ./agents/retrieval/web_retriever.yml
+      - config: ./agents/retrieval/db_specialist.yml
+
+  reporting:
+    model: claude-haiku-4-5
+    leader:
+      config: ./agents/reporting/leader.yml
+      model: claude-sonnet-4-6
+    specialists:
+      - config: ./agents/reporting/findings_analyst.yml
+      - config: ./agents/reporting/risk_assessor.yml
