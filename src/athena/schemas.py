@@ -12,6 +12,7 @@ from athena.utils import new_id, new_short_id
 
 
 class Classification(str, Enum):
+    signal_critical = "signal_critical"
     signal_warn = "signal_warn"
     signal_info = "signal_info"
     noise = "noise"

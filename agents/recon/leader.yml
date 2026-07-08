@@ -42,8 +42,13 @@ system: |
   Create one Observation per RawFinding. Do not skip or merge findings.
 
   == Classification guide ==
-  signal_warn  — actionable finding (exposed endpoint, vulnerable version, credential path).
-                 comments MUST include CVE or rationale from the threat analyst report.
-  signal_info  — real but not immediately actionable (open port, service version)
-  noise        — accurate but irrelevant to this engagement
-  unknown      — cannot classify without more context
+  signal_critical — immediate, severe impact. Use for: plaintext credential exposure,
+                    confirmed superuser or arbitrary file-read access, direct lateral
+                    movement path. Comments MUST name the specific secret or capability
+                    confirmed. These warrant operator notification.
+  signal_warn     — actionable but not immediately catastrophic: exposed directory listing,
+                    unauthenticated admin endpoint, service version disclosure, weak config.
+                    Comments MUST include CVE or rationale from the threat analyst report.
+  signal_info     — real but not immediately actionable: open port, service banner, header.
+  noise           — accurate but irrelevant to this engagement.
+  unknown         — cannot classify without more context.
