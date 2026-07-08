@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from athena.config import load_config
 from athena.logging_setup import configure_logging
 from athena.model_backend import make_backend
@@ -13,6 +15,7 @@ from athena.orchestrator import run_orchestrator
 
 
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Athena agent committee pipeline")
     parser.add_argument("--instructions", required=True, type=Path, metavar="FILE")
     parser.add_argument("--config", required=True, type=Path, metavar="FILE")

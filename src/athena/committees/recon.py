@@ -1,11 +1,14 @@
-"""Recon committee: Leader + four specialists.
+"""Recon committee: Operators (Claude) + Threat Analyst (Foundation-Sec) + Leader (Claude).
 
-The Leader is an LLM agent with one tool — summon_specialist(name). It calls
-specialists reactively based on what each one finds, then classifies all
-findings and emits the ReconArtifact.
-
-Specialists are isolated agent loops with scoped tools. They output a JSON
-array of RawFindings and are never asked to classify.
+Flow:
+  Phase 1 — Python runs all three operators directly. Operators are Claude agents
+             with scoped tools; they return raw findings.
+  Phase 2 — Python passes all operator findings to the Foundation-Sec threat analyst.
+             The analyst reasons over findings and returns threat intelligence (no tools).
+  Phase 3 — Leader (Claude) receives findings + threat analysis. Can use
+             summon_operator(name, task) for targeted follow-up based on analyst
+             recommendations.
+  Phase 4 — Leader synthesises everything into the final ReconArtifact.
 """
 
 from __future__ import annotations
@@ -21,7 +24,6 @@ from athena.agent_loop import run_agent
 from athena.config import AthenaConfig
 from athena.model_backend import (
     BackendFactory,
-    ModelBackend,
     ToolDefinition,
     make_backend,
 )
@@ -31,6 +33,7 @@ from athena.schemas import (
     RawFinding,
     ReconArtifact,
     Specialist,
+    ThreatAnalysis,
 )
 from athena.tools import (
     check_port,
@@ -39,6 +42,8 @@ from athena.tools import (
     http_head,
     nmap_scan,
     ssh_banner,
+    tcp_banner,
+    tls_probe,
 )
 from athena.utils import extract_json
 
@@ -46,20 +51,15 @@ _log = logging.getLogger("athena.recon")
 
 
 # ---------------------------------------------------------------------------
-# Tool definitions (what the LLM sees)
+# Tool definitions
 # ---------------------------------------------------------------------------
 
 _NMAP_SCAN = ToolDefinition(
     name="nmap_scan",
-    description=(
-        "TCP connect scan against the target. Port scope is hardcoded — you cannot"
-        " specify which ports. Returns open ports with service and version info."
-    ),
+    description="TCP connect scan against the target. Returns open ports with service and version info.",
     parameters={
         "type": "object",
-        "properties": {
-            "host": {"type": "string", "description": "Target hostname"},
-        },
+        "properties": {"host": {"type": "string", "description": "Target hostname"}},
         "required": ["host"],
     },
 )
@@ -79,12 +79,10 @@ _CHECK_PORT = ToolDefinition(
 
 _HTTP_GET = ToolDefinition(
     name="http_get",
-    description="HTTP GET request. Returns status code, headers, and body (up to 64 KB).",
+    description="HTTP GET request. Returns status code, headers, and body.",
     parameters={
         "type": "object",
-        "properties": {
-            "url": {"type": "string", "description": "Full URL to fetch"},
-        },
+        "properties": {"url": {"type": "string", "description": "Full URL to fetch"}},
         "required": ["url"],
     },
 )
@@ -94,9 +92,7 @@ _HTTP_HEAD = ToolDefinition(
     description="HTTP HEAD request. Returns status code and headers, no body.",
     parameters={
         "type": "object",
-        "properties": {
-            "url": {"type": "string", "description": "Full URL"},
-        },
+        "properties": {"url": {"type": "string", "description": "Full URL"}},
         "required": ["url"],
     },
 )
@@ -114,11 +110,35 @@ _SSH_BANNER = ToolDefinition(
     },
 )
 
+_TCP_BANNER = ToolDefinition(
+    name="tcp_banner",
+    description="Connect to a TCP port and read any banner the service sends.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "host": {"type": "string", "description": "Target hostname"},
+            "port": {"type": "integer", "description": "TCP port number"},
+        },
+        "required": ["host", "port"],
+    },
+)
+
+_TLS_PROBE = ToolDefinition(
+    name="tls_probe",
+    description="Probe TLS/SSL on a port. Returns certificate info and cipher suites.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "host": {"type": "string", "description": "Target hostname"},
+            "port": {"type": "integer", "description": "Port number"},
+        },
+        "required": ["host", "port"],
+    },
+)
+
 _EXTRACT_LINKS = ToolDefinition(
     name="extract_links",
-    description=(
-        "Parse HTML and return all unique hyperlinks resolved against a base URL."
-    ),
+    description="Parse HTML and return all unique hyperlinks resolved against a base URL.",
     parameters={
         "type": "object",
         "properties": {
@@ -129,42 +149,47 @@ _EXTRACT_LINKS = ToolDefinition(
     },
 )
 
-_SUMMON_SPECIALIST = ToolDefinition(
-    name="summon_specialist",
-    description=(
-        "Summon a specialist agent. Returns their raw findings as a JSON array."
-    ),
+_SUMMON_OPERATOR = ToolDefinition(
+    name="summon_operator",
+    description="Summon an operator to gather intelligence on the target.",
     parameters={
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "enum": ["network_scout", "ssh_expert", "rest_expert", "apache_expert"],
-                "description": "Specialist to summon",
+                "enum": ["network_operator", "service_operator", "web_operator"],
+                "description": "Which operator to summon",
+            },
+            "task": {
+                "type": "string",
+                "description": "Specific instructions for the operator",
             },
         },
-        "required": ["name"],
+        "required": ["name", "task"],
     },
 )
 
-# Which tools each specialist can use
-_SPECIALIST_TOOLS: dict[str, list[ToolDefinition]] = {
-    "network_scout": [_NMAP_SCAN, _CHECK_PORT],
-    "ssh_expert":    [_SSH_BANNER],
-    "rest_expert":   [_HTTP_GET, _HTTP_HEAD, _EXTRACT_LINKS],
-    "apache_expert": [_HTTP_GET, _HTTP_HEAD],
+_OPERATOR_TOOLS: dict[str, list[ToolDefinition]] = {
+    "network_operator": [_NMAP_SCAN, _CHECK_PORT],
+    "service_operator": [_SSH_BANNER, _TCP_BANNER, _TLS_PROBE],
+    "web_operator":     [_HTTP_GET, _HTTP_HEAD, _EXTRACT_LINKS],
 }
 
-_SPECIALIST_TITLES: dict[str, str] = {
-    "network_scout": "Network Scout",
-    "ssh_expert":    "SSH Expert",
-    "rest_expert":   "REST Expert",
-    "apache_expert": "Apache Expert",
+_OPERATOR_TITLES: dict[str, str] = {
+    "network_operator": "Network Operator",
+    "service_operator": "Service Operator",
+    "web_operator":     "Web Operator",
+}
+
+_DEFAULT_TASKS: dict[str, str] = {
+    "network_operator": "Perform a full port scan and verify key service ports on the target.",
+    "service_operator": "Grab banners from all open service ports. Probe TLS where applicable.",
+    "web_operator":     "Crawl the target web application and enumerate all accessible endpoints.",
 }
 
 
 # ---------------------------------------------------------------------------
-# Tool result formatters — convert typed results to strings the LLM reads
+# Tool result formatters
 # ---------------------------------------------------------------------------
 
 def _fmt_nmap(result) -> str:
@@ -174,8 +199,8 @@ def _fmt_nmap(result) -> str:
         for p in result.open_ports:
             lines.append(f"  {p.port}/{p.protocol}  {p.service or '?'}  {p.version}")
     else:
-        lines.append("No open ports found in scanned range.")
-    lines += ["", "Raw nmap output:", result.raw_output]
+        lines.append("No open ports found.")
+    lines += ["", "Raw output:", result.raw_output]
     return "\n".join(lines)
 
 
@@ -204,6 +229,18 @@ def _fmt_ssh_banner(result) -> str:
     return f"Summary: {result.summary}\n\nBanner: {result.banner}"
 
 
+def _fmt_tcp_banner(result) -> str:
+    if result.error:
+        return f"TCP banner failed: {result.error}"
+    return f"Summary: {result.summary}\n\nBanner: {result.banner}"
+
+
+def _fmt_tls_probe(result) -> str:
+    if result.error:
+        return f"TLS probe failed: {result.error}"
+    return result.summary
+
+
 def _fmt_extract_links(result) -> str:
     lines = [f"Summary: {result.summary}", ""]
     lines += [f"  {link}" for link in result.links]
@@ -211,11 +248,10 @@ def _fmt_extract_links(result) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-specialist dispatch tables
+# Per-operator dispatch
 # ---------------------------------------------------------------------------
 
 def _make_dispatch(name: str) -> Callable[[str, dict], str]:
-    """Return a tool dispatch function for the named specialist."""
     def dispatch(tool: str, inp: dict) -> str:
         try:
             if tool == "nmap_scan":
@@ -228,6 +264,10 @@ def _make_dispatch(name: str) -> Callable[[str, dict], str]:
                 return _fmt_http_head(http_head(inp["url"]))
             if tool == "ssh_banner":
                 return _fmt_ssh_banner(ssh_banner(inp["host"], inp["port"]))
+            if tool == "tcp_banner":
+                return _fmt_tcp_banner(tcp_banner(inp["host"], inp["port"]))
+            if tool == "tls_probe":
+                return _fmt_tls_probe(tls_probe(inp["host"], inp["port"]))
             if tool == "extract_links":
                 return _fmt_extract_links(extract_links(inp["html"], inp["base_url"]))
             return f"Error: tool '{tool}' is not available to {name}"
@@ -251,6 +291,57 @@ def _resolve(local: Optional[str], committee: Optional[str], global_: str) -> st
     return local or committee or global_
 
 
+def _format_for_analyst(findings_by_operator: dict[str, list[RawFinding]]) -> str:
+    lines: list[str] = []
+    for op_name, findings in findings_by_operator.items():
+        title = _OPERATOR_TITLES.get(op_name, op_name)
+        lines.append(f"[{title}]")
+        if not findings:
+            lines.append("  (no findings)")
+        for f in findings:
+            out = f.command_output[:500] + "…" if len(f.command_output) > 500 else f.command_output
+            lines.append(f"  {f.command}")
+            lines.append(f"  → {out}")
+            if f.notes:
+                lines.append(f"  note: {f.notes}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _format_leader_context(
+    approval: OrchestratorApproval,
+    findings_by_operator: dict[str, list[RawFinding]],
+    threat_analysis: ThreatAnalysis,
+) -> str:
+    lines = [
+        f"Target: {approval.target}",
+        f"Run ID: {approval.run_id}",
+        f"Engagement notes: {approval.notes}",
+        "",
+        "━━━ Phase 1: Operator Findings ━━━━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
+    for op_name, findings in findings_by_operator.items():
+        title = _OPERATOR_TITLES.get(op_name, op_name)
+        lines.append(f"[{title}]")
+        for f in findings:
+            out = f.command_output[:500] + "…" if len(f.command_output) > 500 else f.command_output
+            lines.append(f"  {f.command}: {out}")
+        if not findings:
+            lines.append("  (no findings)")
+        lines.append("")
+
+    lines += ["━━━ Threat Analyst Report ━━━━━━━━━━━━━━━━━━━━━━━━━━", ""]
+    lines.append(threat_analysis.summary)
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "Use summon_operator for any recommended follow-up, then output the ReconArtifact JSON.",
+    ]
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -266,48 +357,43 @@ def run_recon_committee(
     global_provider = config.model.provider
     ollama_url = config.model.ollama_base_url
 
-    # Build lookup: stem of config filename → SpecialistConfig
-    spec_by_name = {
-        Path(s.config_path).stem: s for s in recon_cfg.specialists
-    }
-
-    # Registry of all Specialist identities created during this run
+    spec_by_name = {Path(s.config_path).stem: s for s in recon_cfg.specialists}
     summoned: list[Specialist] = []
 
-    def _run_specialist(name: str) -> str:
-        """Runs a specialist agent loop; returns their findings as a JSON string."""
+    def _run_operator(name: str, task: str) -> str:
+        """Run an operator agent loop. Returns findings as a JSON string."""
         if name not in spec_by_name:
-            return json.dumps({"error": f"Unknown specialist: {name!r}"})
-        if name not in _SPECIALIST_TOOLS:
-            return json.dumps({"error": f"No tool set defined for: {name!r}"})
+            return json.dumps({"error": f"Unknown operator: {name!r}"})
+        if name not in _OPERATOR_TOOLS:
+            return json.dumps({"error": f"No tool set for operator: {name!r}"})
 
         spec_cfg = spec_by_name[name]
         model = _resolve(spec_cfg.model, recon_cfg.model, global_model)
         provider = _resolve(spec_cfg.provider, recon_cfg.provider, global_provider)
 
-        specialist = Specialist(title=_SPECIALIST_TITLES[name])
-        summoned.append(specialist)
+        operator = Specialist(title=_OPERATOR_TITLES[name])
+        summoned.append(operator)
 
-        _log.info("summoning %s", name)
+        _log.info("running operator %s", name)
         system = _load_system(spec_cfg.config_path)
         backend = _backend_factory(provider, ollama_url)
 
         initial = (
             f"Target: {approval.target}\n"
-            f"Your specialist ID: {specialist.id}\n\n"
-            "Perform your assigned recon tasks. Output ONLY the JSON array when done."
+            f"Task: {task}\n"
+            f"Your operator ID: {operator.id}\n\n"
+            "Perform your assigned task. Output ONLY the JSON array when done."
         )
 
         raw = run_agent(
             agent_id=f"athena.recon.{name}",
             system=system,
             initial_message=initial,
-            tools=_SPECIALIST_TOOLS[name],
+            tools=_OPERATOR_TOOLS[name],
             tool_dispatch=_make_dispatch(name),
             backend=backend,
             model=model,
             max_iterations=config.max_agent_iterations,
-
         )
 
         try:
@@ -315,20 +401,60 @@ def run_recon_committee(
         except (ValueError, json.JSONDecodeError) as exc:
             return json.dumps({"error": f"Invalid JSON from {name}: {exc}", "raw": raw[:400]})
 
-        # Enforce correct specialist_id — don't trust the LLM to copy it accurately
         findings = [
             RawFinding(
-                specialist_id=specialist.id,
+                specialist_id=operator.id,
                 command=item.get("command", ""),
                 command_output=item.get("command_output", ""),
                 notes=item.get("notes", ""),
             )
-            for item in items
+            for item in (items if isinstance(items, list) else [])
         ]
-        _log.info("%s complete — %d finding(s)", name, len(findings))
+        _log.info("%s — %d finding(s)", name, len(findings))
         return json.dumps([f.model_dump() for f in findings])
 
-    # --- Leader ---
+    # --- Phase 1: Run all operators ---
+    findings_by_operator: dict[str, list[RawFinding]] = {}
+    for op_name, default_task in _DEFAULT_TASKS.items():
+        raw_result = _run_operator(op_name, default_task)
+        try:
+            items = json.loads(raw_result)
+            if isinstance(items, list):
+                findings_by_operator[op_name] = [RawFinding(**item) for item in items]
+            else:
+                findings_by_operator[op_name] = []
+        except Exception as exc:
+            _log.warning("Phase 1 parse error for %s: %s", op_name, exc)
+            findings_by_operator[op_name] = []
+
+    # --- Phase 2: Threat analysis ---
+    threat_analysis: ThreatAnalysis
+    if "threat_analyst" not in spec_by_name:
+        _log.warning("No threat_analyst configured — skipping threat analysis")
+        threat_analysis = ThreatAnalysis(summary="No threat analyst configured.")
+    else:
+        analyst_cfg = spec_by_name["threat_analyst"]
+        analyst_model = _resolve(analyst_cfg.model, recon_cfg.model, global_model)
+        analyst_provider = _resolve(analyst_cfg.provider, recon_cfg.provider, global_provider)
+        analyst_system = _load_system(analyst_cfg.config_path)
+        analyst_backend = _backend_factory(analyst_provider, ollama_url)
+
+        findings_text = _format_for_analyst(findings_by_operator)
+        analyst_initial = (
+            f"Target: {approval.target}\n\n"
+            "Operator Findings\n"
+            "─────────────────\n"
+            f"{findings_text}"
+        )
+
+        _log.info("running threat analyst")
+        analyst_backend.begin(system=analyst_system, initial_message=analyst_initial)
+        analyst_response = analyst_backend.complete(
+            model=analyst_model, tools=None, max_tokens=4096
+        )
+        threat_analysis = ThreatAnalysis(summary=analyst_response.text or "")
+
+    # --- Phase 3+4: Leader loop ---
     leader_cfg = recon_cfg.leader
     leader_model = _resolve(leader_cfg.model, recon_cfg.model, global_model)
     leader_provider = _resolve(leader_cfg.provider, recon_cfg.provider, global_provider)
@@ -338,24 +464,21 @@ def run_recon_committee(
     leader_backend = _backend_factory(leader_provider, ollama_url)
 
     def leader_dispatch(tool: str, inp: dict) -> str:
-        if tool == "summon_specialist":
-            return _run_specialist(inp["name"])
+        if tool == "summon_operator":
+            return _run_operator(
+                inp["name"],
+                inp.get("task", "Follow up on analyst recommendations."),
+            )
         return f"Unknown tool: {tool!r}"
 
-    leader_initial = (
-        f"Target: {approval.target}\n"
-        f"Run ID: {approval.run_id}\n"
-        f"Your specialist ID: {leader.id}\n"
-        f"Engagement notes: {approval.notes}\n\n"
-        "Begin the recon committee workflow."
-    )
+    leader_initial = _format_leader_context(approval, findings_by_operator, threat_analysis)
 
     _log.info("leader synthesising artifact")
     raw_artifact = run_agent(
         agent_id="athena.recon.leader",
         system=leader_system,
         initial_message=leader_initial,
-        tools=[_SUMMON_SPECIALIST],
+        tools=[_SUMMON_OPERATOR],
         tool_dispatch=leader_dispatch,
         backend=leader_backend,
         model=leader_model,
@@ -371,4 +494,5 @@ def run_recon_committee(
         specialists=[leader] + summoned,
         observations=[Observation(**obs) for obs in artifact_data["observations"]],
         summary=artifact_data["summary"],
+        threat_analysis=threat_analysis,
     )

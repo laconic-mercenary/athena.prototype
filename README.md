@@ -1,7 +1,10 @@
 # athena.prototype
 
-Athena is a proof-of-concept agent committee pipeline. The current build plan is in
-`PLAN.md`; standing safety and implementation rules are in `AGENTS.md`.
+Athena is a proof-of-concept agent committee pipeline. A human issues one instruction; an
+orchestrator summons specialist committees that each do a phase of work, emit an artifact,
+and hand off to the next committee.
 
-The demo uses a benign, authorized local target VM/container and bounded Recon tools to
-gather service metadata. It does not include exploit code.
+The demo runs a fully-authorized red team engagement against a local Docker target:
+recon → planning → retrieval → reporting.
+
+Full documentation in `ATHENA_README.md`. Standing rules for coding agents in `AGENTS.md`.

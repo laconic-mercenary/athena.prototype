@@ -4,7 +4,7 @@ max_agent_iterations: 20
 model:
   default: claude-haiku-4-5
   provider: anthropic
-  # ollama_base_url: http://localhost:11434
+  ollama_base_url: https://laconic-mercenary--athena-foundation-sec-serve.modal.run
 
 orchestrator:
   model: claude-sonnet-4-6
@@ -17,11 +17,12 @@ committees:
       config: ./agents/recon/leader.yml
       model: claude-sonnet-4-6
     specialists:
-      - config: ./agents/recon/network_scout.yml
-      - config: ./agents/recon/ssh_expert.yml
-      - config: ./agents/recon/rest_expert.yml
-      - config: ./agents/recon/apache_expert.yml
-        model: claude-sonnet-4-6
+      - config: ./agents/recon/network_operator.yml
+      - config: ./agents/recon/service_operator.yml
+      - config: ./agents/recon/web_operator.yml
+      - config: ./agents/recon/threat_analyst.yml
+        provider: ollama
+        model: foundation-sec-8b
 
   planning:
     model: claude-haiku-4-5

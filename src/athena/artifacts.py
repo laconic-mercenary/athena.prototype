@@ -188,6 +188,7 @@ class RunLogger:
         self._run_dir.mkdir(parents=True, exist_ok=True)
 
         self._logger = logging.getLogger(f"athena.run.{run_id}")
+        self._logger.setLevel(logging.INFO)
         # File handler writes to run.log alongside the JSON artifacts.
         fh = logging.FileHandler(self._run_dir / "run.log")
         fh.setFormatter(UTC_FORMATTER)

@@ -170,11 +170,16 @@ _OLLAMA_FINISH_REASON: dict[str, str] = {
 
 
 class OllamaBackend(ModelBackend):
-    """Calls Ollama's OpenAI-compatible /v1/chat/completions endpoint."""
+    """Calls any OpenAI-compatible /v1/chat/completions endpoint (Ollama or vLLM).
+
+    If the OLLAMA_API_KEY environment variable is set, its value is sent as a
+    Bearer token — required when pointing at a Modal-hosted vLLM endpoint.
+    """
 
     def __init__(self, base_url: str) -> None:
         self._endpoint = f"{base_url.rstrip('/')}/v1/chat/completions"
         self._messages: list[dict] = []
+        self._api_key: str | None = os.environ.get("OLLAMA_API_KEY") or None
 
     def begin(self, *, system: str, initial_message: str) -> None:
         # Ollama/OpenAI uses a system message in the messages list,
@@ -212,14 +217,17 @@ class OllamaBackend(ModelBackend):
             ]
 
         body = json.dumps(payload).encode()
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         req = urllib.request.Request(
             self._endpoint,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=300) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")

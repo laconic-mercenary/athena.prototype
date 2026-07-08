@@ -22,6 +22,7 @@ VALID_YAML = textwrap.dedent("""
     model:
       default: claude-haiku-4-5
       provider: anthropic
+      ollama_base_url: https://laconic-mercenary--athena-foundation-sec-serve.modal.run
 
     orchestrator:
       model: claude-sonnet-4-6
@@ -34,10 +35,12 @@ VALID_YAML = textwrap.dedent("""
           config: ./agents/recon/leader.yml
           model: claude-sonnet-4-6
         specialists:
-          - config: ./agents/recon/network_scout.yml
-          - config: ./agents/recon/ssh_expert.yml
-          - config: ./agents/recon/rest_expert.yml
-          - config: ./agents/recon/apache_expert.yml
+          - config: ./agents/recon/network_operator.yml
+          - config: ./agents/recon/service_operator.yml
+          - config: ./agents/recon/web_operator.yml
+          - config: ./agents/recon/threat_analyst.yml
+            provider: ollama
+            model: foundation-sec-8b
 
       planning:
         model: claude-haiku-4-5
@@ -104,9 +107,29 @@ RECON_ARTIFACT_JSON = json.dumps({
     "summary": "HTTP open on port 80.",
 })
 
-SCOUT_FINDINGS = json.dumps([
+NETWORK_OP_FINDINGS = json.dumps([
     {"command": "nmap_scan target", "command_output": "80/tcp open http", "notes": "HTTP open"},
 ])
+
+SERVICE_OP_FINDINGS = json.dumps([
+    {"command": "ssh_banner target 80", "command_output": "Apache/2.4.6", "notes": "Apache banner"},
+])
+
+WEB_OP_FINDINGS = json.dumps([
+    {"command": "http_head http://target/admin", "command_output": "Status: 200", "notes": "/admin accessible"},
+])
+
+THREAT_ANALYST_RESPONSE = """## CVE Candidates
+- CVE-2017-9798 — Apache 2.4.6 — Optionsbleed
+
+## Risk Indicators
+- Unauthenticated /admin endpoint
+
+## Recommended Follow-up
+- (none)
+
+## Assessment
+Outdated Apache with exposed admin endpoint."""
 
 NETWORK_PLAN_ACTIONS = json.dumps([
     {"priority": "high", "title": "SSH credential reuse test", "category": "credential_access", "description": "Test SSH", "rationale": "Port open", "observation_ids": []},
@@ -160,33 +183,32 @@ REPORT_ARTIFACT_JSON = json.dumps({
 # Tests
 # ---------------------------------------------------------------------------
 
-def _full_pipeline_backends(extra_recon_backends=()):
+def _full_pipeline_backends():
     """Return a backend factory for a full orchestrator run."""
     it = iter([
-        FakeBackend([_end(APPROVAL_JSON)]),
+        FakeBackend([_end(APPROVAL_JSON)]),                      # orchestrator
+        FakeBackend([_end(NETWORK_OP_FINDINGS)]),                 # recon Phase 1: network_operator
+        FakeBackend([_end(SERVICE_OP_FINDINGS)]),                 # recon Phase 1: service_operator
+        FakeBackend([_end(WEB_OP_FINDINGS)]),                    # recon Phase 1: web_operator
+        FakeBackend([_end(THREAT_ANALYST_RESPONSE)]),               # recon Phase 2: threat_analyst
+        FakeBackend([_end(RECON_ARTIFACT_JSON)]),                # recon Phase 3+4: leader (no follow-up)
         FakeBackend([
-            _tool_call("summon_specialist", {"name": "network_scout"}, "tc1"),
-            _end(RECON_ARTIFACT_JSON),
-        ]),
-        FakeBackend([_end(SCOUT_FINDINGS)]),
-        *extra_recon_backends,
-        FakeBackend([
-            _tool_call("summon_specialist", {"name": "network_planner"}, "tc2"),
+            _tool_call("summon_specialist", {"name": "network_planner"}, "tc1"),
             _end(PLAN_ARTIFACT_JSON),
-        ]),
-        FakeBackend([_end(NETWORK_PLAN_ACTIONS)]),
+        ]),                                                       # planning leader
+        FakeBackend([_end(NETWORK_PLAN_ACTIONS)]),               # network_planner
         FakeBackend([
-            _tool_call("summon_specialist", {"name": "web_retriever"}, "tc3"),
+            _tool_call("summon_specialist", {"name": "web_retriever"}, "tc2"),
             _end(RETRIEVAL_SUMMARY_JSON),
-        ]),
-        FakeBackend([_end(WEB_FINDINGS)]),
+        ]),                                                       # retrieval leader
+        FakeBackend([_end(WEB_FINDINGS)]),                       # web_retriever
         FakeBackend([
-            _tool_call("summon_specialist", {"name": "findings_analyst"}, "tc4"),
-            _tool_call("summon_specialist", {"name": "risk_assessor"}, "tc5"),
+            _tool_call("summon_specialist", {"name": "findings_analyst"}, "tc3"),
+            _tool_call("summon_specialist", {"name": "risk_assessor"}, "tc4"),
             _end(REPORT_ARTIFACT_JSON),
-        ]),
-        FakeBackend([_end(FINDINGS_SECTION_JSON)]),
-        FakeBackend([_end(RISK_SECTION_JSON)]),
+        ]),                                                       # reporting leader
+        FakeBackend([_end(FINDINGS_SECTION_JSON)]),              # findings_analyst
+        FakeBackend([_end(RISK_SECTION_JSON)]),                  # risk_assessor
     ])
     return lambda p, u=None: next(it)
 
@@ -255,29 +277,29 @@ def test_ask_user_interaction(config, monkeypatch: pytest.MonkeyPatch) -> None:
         FakeBackend([
             _tool_call("ask_user", {"question": "What is the target hostname?"}, "tc1"),
             _end(APPROVAL_JSON),
-        ]),
+        ]),                                                               # orchestrator
+        FakeBackend([_end(NETWORK_OP_FINDINGS)]),                         # recon Phase 1: network_operator
+        FakeBackend([_end(SERVICE_OP_FINDINGS)]),                         # recon Phase 1: service_operator
+        FakeBackend([_end(WEB_OP_FINDINGS)]),                            # recon Phase 1: web_operator
+        FakeBackend([_end(THREAT_ANALYST_RESPONSE)]),                       # recon Phase 2: threat_analyst
+        FakeBackend([_end(RECON_ARTIFACT_JSON)]),                        # recon Phase 3+4: leader
         FakeBackend([
-            _tool_call("summon_specialist", {"name": "network_scout"}, "tc2"),
-            _end(RECON_ARTIFACT_JSON),
-        ]),
-        FakeBackend([_end(SCOUT_FINDINGS)]),
-        FakeBackend([
-            _tool_call("summon_specialist", {"name": "network_planner"}, "tc3"),
+            _tool_call("summon_specialist", {"name": "network_planner"}, "tc2"),
             _end(PLAN_ARTIFACT_JSON),
-        ]),
-        FakeBackend([_end(NETWORK_PLAN_ACTIONS)]),
+        ]),                                                               # planning leader
+        FakeBackend([_end(NETWORK_PLAN_ACTIONS)]),                       # network_planner
         FakeBackend([
-            _tool_call("summon_specialist", {"name": "web_retriever"}, "tc4"),
+            _tool_call("summon_specialist", {"name": "web_retriever"}, "tc3"),
             _end(RETRIEVAL_SUMMARY_JSON),
-        ]),
-        FakeBackend([_end(WEB_FINDINGS)]),
+        ]),                                                               # retrieval leader
+        FakeBackend([_end(WEB_FINDINGS)]),                               # web_retriever
         FakeBackend([
-            _tool_call("summon_specialist", {"name": "findings_analyst"}, "tc5"),
-            _tool_call("summon_specialist", {"name": "risk_assessor"}, "tc6"),
+            _tool_call("summon_specialist", {"name": "findings_analyst"}, "tc4"),
+            _tool_call("summon_specialist", {"name": "risk_assessor"}, "tc5"),
             _end(REPORT_ARTIFACT_JSON),
-        ]),
-        FakeBackend([_end(FINDINGS_SECTION_JSON)]),
-        FakeBackend([_end(RISK_SECTION_JSON)]),
+        ]),                                                               # reporting leader
+        FakeBackend([_end(FINDINGS_SECTION_JSON)]),                      # findings_analyst
+        FakeBackend([_end(RISK_SECTION_JSON)]),                          # risk_assessor
     ])
 
     result = run_orchestrator(

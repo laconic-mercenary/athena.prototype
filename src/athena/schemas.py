@@ -54,6 +54,10 @@ class Observation(BaseModel):
     comments: list[Comment]
 
 
+class ThreatAnalysis(BaseModel):
+    summary: str
+
+
 class ReconArtifact(BaseModel):
     artifact_id: str = Field(default_factory=new_id)
     run_id: str
@@ -63,6 +67,7 @@ class ReconArtifact(BaseModel):
     specialists: list[Specialist]
     observations: list[Observation]
     summary: str
+    threat_analysis: ThreatAnalysis | None = None
 
 
 class ActionPriority(str, Enum):
