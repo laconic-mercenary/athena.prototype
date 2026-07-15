@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 from pathlib import Path
 from typing import Callable, Optional
 
 import yaml
+from pubsub import pub
 
 from athena.agent_loop import run_agent
 from athena.config import AthenaConfig
@@ -37,6 +39,8 @@ from athena.tools import (
 from athena.utils import extract_json
 
 _log = logging.getLogger("athena.retrieval")
+
+_COMMITTEE = "retrieval"
 
 
 # ---------------------------------------------------------------------------
@@ -166,11 +170,33 @@ def _fmt_postgres(result) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-specialist dispatch
+# Input summary helper (for agent.tool_called events)
 # ---------------------------------------------------------------------------
 
-def _make_dispatch(name: str) -> Callable[[str, dict], str]:
+def _specialist_input_summary(tool: str, inp: dict) -> str:
+    if tool in ("http_get", "http_head"):
+        return inp.get("url", "")
+    if tool == "extract_links":
+        return inp.get("base_url", "")
+    if tool == "postgres_query":
+        return inp.get("query", "")[:80]
+    return str(inp)[:80]
+
+
+# ---------------------------------------------------------------------------
+# Per-specialist dispatch (with tool_called events)
+# ---------------------------------------------------------------------------
+
+def _make_dispatch(name: str, run_id: str, agent_id: str) -> Callable[[str, dict], str]:
     def dispatch(tool: str, inp: dict) -> str:
+        pub.sendMessage(
+            "agent.tool_called",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=agent_id,
+            tool=tool,
+            input_summary=_specialist_input_summary(tool, inp),
+        )
         try:
             if tool == "http_get":
                 return _fmt_http_get(http_get(inp["url"]))
@@ -217,12 +243,14 @@ def run_retrieval_committee(
     recon_artifact: ReconArtifact,
     config: AthenaConfig,
     _backend_factory: BackendFactory = make_backend,
+    leader_queue: queue.Queue | None = None,
 ) -> RetrievalArtifact:
     """Run the Retrieval committee and return a validated RetrievalArtifact."""
     retrieval_cfg = config.committees["retrieval"]
     global_model = config.model.default
     global_provider = config.model.provider
     ollama_url = config.model.ollama_base_url
+    run_id = plan_artifact.run_id
 
     spec_by_name = {
         Path(s.config_path).stem: s for s in retrieval_cfg.specialists
@@ -246,10 +274,19 @@ def run_retrieval_committee(
         provider = _resolve(spec_cfg.provider, retrieval_cfg.provider, global_provider)
 
         specialist = Specialist(title=_SPECIALIST_TITLES[name])
+        agent_id = f"athena.retrieval.{name}"
 
         _log.info("summoning %s", name)
         system = _load_system(spec_cfg.config_path)
         backend = _backend_factory(provider, ollama_url)
+
+        pub.sendMessage(
+            "agent.spawned",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=agent_id,
+            title=_SPECIALIST_TITLES[name],
+        )
 
         initial = (
             f"Target: {plan_artifact.target}\n"
@@ -261,15 +298,17 @@ def run_retrieval_committee(
         )
 
         raw = run_agent(
-            agent_id=f"athena.retrieval.{name}",
+            agent_id=agent_id,
             system=system,
             initial_message=initial,
             tools=_SPECIALIST_TOOLS[name],
-            tool_dispatch=_make_dispatch(name),
+            tool_dispatch=_make_dispatch(name, run_id, agent_id),
             backend=backend,
             model=model,
             max_iterations=config.max_agent_iterations,
         )
+
+        pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=agent_id)
 
         try:
             items = extract_json(raw)
@@ -295,6 +334,7 @@ def run_retrieval_committee(
     leader_cfg = retrieval_cfg.leader
     leader_model = _resolve(leader_cfg.model, retrieval_cfg.model, global_model)
     leader_provider = _resolve(leader_cfg.provider, retrieval_cfg.provider, global_provider)
+    leader_agent_id = "athena.retrieval.leader"
 
     leader = Specialist(title="Retrieval Leader")
     leader_system = _load_system(leader_cfg.config_path)
@@ -302,6 +342,14 @@ def run_retrieval_committee(
 
     def leader_dispatch(tool: str, inp: dict) -> str:
         if tool == "summon_specialist":
+            pub.sendMessage(
+                "agent.tool_called",
+                run_id=run_id,
+                committee=_COMMITTEE,
+                agent_id=leader_agent_id,
+                tool=tool,
+                input_summary=inp.get("name", ""),
+            )
             return _run_specialist(inp["name"])
         return f"Unknown tool: {tool!r}"
 
@@ -314,8 +362,16 @@ def run_retrieval_committee(
     )
 
     _log.info("leader coordinating retrieval")
+    pub.sendMessage(
+        "agent.spawned",
+        run_id=run_id,
+        committee=_COMMITTEE,
+        agent_id=leader_agent_id,
+        title="Retrieval Leader",
+    )
+
     raw_summary = run_agent(
-        agent_id="athena.retrieval.leader",
+        agent_id=leader_agent_id,
         system=leader_system,
         initial_message=leader_initial,
         tools=[_SUMMON_SPECIALIST],
@@ -324,7 +380,10 @@ def run_retrieval_committee(
         model=leader_model,
         max_iterations=config.max_agent_iterations,
         max_tokens=8192,
+        operator_queue=leader_queue,
     )
+
+    pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id)
 
     summary_data = extract_json(raw_summary)
 

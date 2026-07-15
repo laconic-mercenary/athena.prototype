@@ -8,17 +8,20 @@ Flow:
   Phase 3 — Leader (Claude) receives findings + threat analysis. Can use
              summon_operator(name, task) for targeted follow-up based on analyst
              recommendations.
-  Phase 4 — Leader synthesises everything into the final ReconArtifact.
+  Phase 4 — Leader calls record_observation() once per finding to classify and emit
+             real-time agent.finding events, then outputs only {"summary": "..."}.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import queue
 from pathlib import Path
 from typing import Callable, Optional
 
 import yaml
+from pubsub import pub
 
 from athena.agent_loop import run_agent
 from athena.config import AthenaConfig
@@ -48,6 +51,8 @@ from athena.tools import (
 from athena.utils import extract_json
 
 _log = logging.getLogger("athena.recon")
+
+_COMMITTEE = "recon"
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +174,48 @@ _SUMMON_OPERATOR = ToolDefinition(
     },
 )
 
+_RECORD_OBSERVATION = ToolDefinition(
+    name="record_observation",
+    description=(
+        "Classify and record a single finding. Call once per finding — do not batch. "
+        "Each call is immediately surfaced to the operator."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "specialist_id": {"type": "string", "description": "ID of the specialist who collected this finding"},
+            "command": {"type": "string", "description": "Command or request that produced this finding"},
+            "command_output": {"type": "string", "description": "Output of that command"},
+            "classification": {
+                "type": "string",
+                "enum": ["signal_critical", "signal_warn", "signal_info", "noise", "unknown"],
+                "description": "Severity classification",
+            },
+            "category": {
+                "type": "string",
+                "enum": ["network", "service", "configuration", "exposure", "authentication"],
+                "description": "Finding category",
+            },
+            "comments": {
+                "type": "array",
+                "description": "Classification rationale; must include CVE or specific secret for warn/critical",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "author_id": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["author_id", "text"],
+                },
+            },
+        },
+        "required": [
+            "specialist_id", "command", "command_output",
+            "classification", "category", "comments",
+        ],
+    },
+)
+
 _OPERATOR_TOOLS: dict[str, list[ToolDefinition]] = {
     "network_operator": [_NMAP_SCAN, _CHECK_PORT],
     "service_operator": [_SSH_BANNER, _TCP_BANNER, _TLS_PROBE],
@@ -248,11 +295,43 @@ def _fmt_extract_links(result) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-operator dispatch
+# Input summary helpers (for agent.tool_called events)
 # ---------------------------------------------------------------------------
 
-def _make_dispatch(name: str) -> Callable[[str, dict], str]:
+def _operator_input_summary(tool: str, inp: dict) -> str:
+    if tool in ("nmap_scan",):
+        return inp.get("host", "")
+    if tool in ("check_port", "ssh_banner", "tcp_banner", "tls_probe"):
+        return f"{inp.get('host', '')}:{inp.get('port', '')}"
+    if tool in ("http_get", "http_head"):
+        return inp.get("url", "")
+    if tool == "extract_links":
+        return inp.get("base_url", "")
+    return str(inp)[:80]
+
+
+def _leader_input_summary(tool: str, inp: dict) -> str:
+    if tool == "summon_operator":
+        return inp.get("name", "")
+    if tool == "record_observation":
+        return f"{inp.get('classification', '?')}: {inp.get('command', '')[:60]}"
+    return str(inp)[:80]
+
+
+# ---------------------------------------------------------------------------
+# Per-operator dispatch (with tool_called events)
+# ---------------------------------------------------------------------------
+
+def _make_dispatch(name: str, run_id: str, agent_id: str) -> Callable[[str, dict], str]:
     def dispatch(tool: str, inp: dict) -> str:
+        pub.sendMessage(
+            "agent.tool_called",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=agent_id,
+            tool=tool,
+            input_summary=_operator_input_summary(tool, inp),
+        )
         try:
             if tool == "nmap_scan":
                 return _fmt_nmap(nmap_scan(inp["host"]))
@@ -337,7 +416,8 @@ def _format_leader_context(
         "",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
-        "Use summon_operator for any recommended follow-up, then output the ReconArtifact JSON.",
+        "Use summon_operator for any recommended follow-up.",
+        "Then call record_observation once per finding, and output the summary JSON.",
     ]
     return "\n".join(lines)
 
@@ -350,12 +430,14 @@ def run_recon_committee(
     approval: OrchestratorApproval,
     config: AthenaConfig,
     _backend_factory: BackendFactory = make_backend,
+    leader_queue: queue.Queue | None = None,
 ) -> ReconArtifact:
     """Run the Recon committee and return a validated ReconArtifact."""
     recon_cfg = config.committees["recon"]
     global_model = config.model.default
     global_provider = config.model.provider
     ollama_url = config.model.ollama_base_url
+    run_id = approval.run_id
 
     spec_by_name = {Path(s.config_path).stem: s for s in recon_cfg.specialists}
     summoned: list[Specialist] = []
@@ -373,10 +455,19 @@ def run_recon_committee(
 
         operator = Specialist(title=_OPERATOR_TITLES[name])
         summoned.append(operator)
+        agent_id = f"athena.recon.{name}"
 
         _log.info("running operator %s", name)
         system = _load_system(spec_cfg.config_path)
         backend = _backend_factory(provider, ollama_url)
+
+        pub.sendMessage(
+            "agent.spawned",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=agent_id,
+            title=_OPERATOR_TITLES[name],
+        )
 
         initial = (
             f"Target: {approval.target}\n"
@@ -386,15 +477,17 @@ def run_recon_committee(
         )
 
         raw = run_agent(
-            agent_id=f"athena.recon.{name}",
+            agent_id=agent_id,
             system=system,
             initial_message=initial,
             tools=_OPERATOR_TOOLS[name],
-            tool_dispatch=_make_dispatch(name),
+            tool_dispatch=_make_dispatch(name, run_id, agent_id),
             backend=backend,
             model=model,
             max_iterations=config.max_agent_iterations,
         )
+
+        pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=agent_id)
 
         try:
             items = extract_json(raw)
@@ -438,6 +531,9 @@ def run_recon_committee(
         analyst_provider = _resolve(analyst_cfg.provider, recon_cfg.provider, global_provider)
         analyst_system = _load_system(analyst_cfg.config_path)
         analyst_backend = _backend_factory(analyst_provider, ollama_url)
+        analyst_agent_id = "athena.recon.threat_analyst"
+        analyst = Specialist(title="Threat Analyst")
+        summoned.append(analyst)
 
         findings_text = _format_for_analyst(findings_by_operator)
         analyst_initial = (
@@ -448,43 +544,109 @@ def run_recon_committee(
         )
 
         _log.info("running threat analyst")
-        analyst_backend.begin(system=analyst_system, initial_message=analyst_initial)
-        analyst_response = analyst_backend.complete(
-            model=analyst_model, tools=None, max_tokens=4096
+        pub.sendMessage(
+            "agent.spawned",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=analyst_agent_id,
+            title="Threat Analyst",
         )
-        threat_analysis = ThreatAnalysis(summary=analyst_response.text or "")
+        pub.sendMessage(
+            "agent.tool_called",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=analyst_agent_id,
+            tool="analyze_findings",
+            input_summary="operator findings",
+        )
+        try:
+            analyst_backend.begin(system=analyst_system, initial_message=analyst_initial)
+            analyst_response = analyst_backend.complete(
+                model=analyst_model, tools=None, max_tokens=4096
+            )
+            threat_analysis = ThreatAnalysis(summary=analyst_response.text or "")
+        finally:
+            pub.sendMessage(
+                "agent.spun_down",
+                run_id=run_id,
+                committee=_COMMITTEE,
+                agent_id=analyst_agent_id,
+            )
 
     # --- Phase 3+4: Leader loop ---
     leader_cfg = recon_cfg.leader
     leader_model = _resolve(leader_cfg.model, recon_cfg.model, global_model)
     leader_provider = _resolve(leader_cfg.provider, recon_cfg.provider, global_provider)
+    leader_agent_id = "athena.recon.leader"
 
     leader = Specialist(title="Recon Leader")
     leader_system = _load_system(leader_cfg.config_path)
     leader_backend = _backend_factory(leader_provider, ollama_url)
 
+    # Observations are collected here as the leader calls record_observation.
+    collected_observations: list[Observation] = []
+
     def leader_dispatch(tool: str, inp: dict) -> str:
+        pub.sendMessage(
+            "agent.tool_called",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=leader_agent_id,
+            tool=tool,
+            input_summary=_leader_input_summary(tool, inp),
+        )
+
         if tool == "summon_operator":
             return _run_operator(
                 inp["name"],
                 inp.get("task", "Follow up on analyst recommendations."),
             )
+
+        if tool == "record_observation":
+            try:
+                obs = Observation(**inp)
+            except Exception as exc:
+                return f"Error recording observation: {exc}"
+            collected_observations.append(obs)
+            # Derive a human-readable summary for the finding event.
+            comment_text = obs.comments[0].text if obs.comments else obs.command
+            pub.sendMessage(
+                "agent.finding",
+                run_id=run_id,
+                committee=_COMMITTEE,
+                agent_id=leader_agent_id,
+                classification=obs.classification.value,
+                summary=comment_text,
+            )
+            return "Observation recorded."
+
         return f"Unknown tool: {tool!r}"
 
     leader_initial = _format_leader_context(approval, findings_by_operator, threat_analysis)
 
     _log.info("leader synthesising artifact")
+    pub.sendMessage(
+        "agent.spawned",
+        run_id=run_id,
+        committee=_COMMITTEE,
+        agent_id=leader_agent_id,
+        title="Recon Leader",
+    )
+
     raw_artifact = run_agent(
-        agent_id="athena.recon.leader",
+        agent_id=leader_agent_id,
         system=leader_system,
         initial_message=leader_initial,
-        tools=[_SUMMON_OPERATOR],
+        tools=[_SUMMON_OPERATOR, _RECORD_OBSERVATION],
         tool_dispatch=leader_dispatch,
         backend=leader_backend,
         model=leader_model,
         max_iterations=config.max_agent_iterations,
         max_tokens=8192,
+        operator_queue=leader_queue,
     )
+
+    pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id)
 
     artifact_data = extract_json(raw_artifact)
 
@@ -492,7 +654,7 @@ def run_recon_committee(
         run_id=approval.run_id,
         target=approval.target,
         specialists=[leader] + summoned,
-        observations=[Observation(**obs) for obs in artifact_data["observations"]],
+        observations=collected_observations,
         summary=artifact_data["summary"],
         threat_analysis=threat_analysis,
     )

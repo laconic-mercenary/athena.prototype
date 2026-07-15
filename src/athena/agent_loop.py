@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 from typing import Any, Callable
 
 from athena.model_backend import ModelBackend, ToolDefinition
@@ -38,6 +39,7 @@ def run_agent(
     model: str,
     max_iterations: int,
     max_tokens: int = 4096,
+    operator_queue: queue.Queue | None = None,
 ) -> str:
     """Run an agent loop and return the final text response.
 
@@ -76,6 +78,17 @@ def run_agent(
         # The backend appends them to its conversation history in whatever
         # format its provider requires — the loop never sees those details.
         backend.record_tool_results(response, results)
+
+        # Drain any operator messages queued between iterations and inject
+        # them as user turns so the model sees them on the next complete().
+        if operator_queue is not None:
+            while True:
+                try:
+                    msg = operator_queue.get_nowait()
+                    backend.inject_user_message(msg)
+                    logger.debug("operator message injected: %s", msg[:120])
+                except queue.Empty:
+                    break
 
     raise MaxIterationsExceeded(
         f"{agent_id}: reached max_iterations={max_iterations} without end_turn"

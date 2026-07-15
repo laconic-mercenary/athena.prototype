@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 from pathlib import Path
 from typing import Optional
 
 import yaml
+from pubsub import pub
 
 from athena.agent_loop import run_agent
 from athena.config import AthenaConfig
@@ -32,6 +34,8 @@ from athena.schemas import (
 from athena.utils import extract_json
 
 _log = logging.getLogger("athena.reporting")
+
+_COMMITTEE = "reporting"
 
 _SUMMON_SPECIALIST = ToolDefinition(
     name="summon_specialist",
@@ -75,12 +79,14 @@ def run_reporting_committee(
     retrieval_artifact: RetrievalArtifact,
     config: AthenaConfig,
     _backend_factory: BackendFactory = make_backend,
+    leader_queue: queue.Queue | None = None,
 ) -> ReportArtifact:
     """Run the Reporting committee and return a validated ReportArtifact."""
     reporting_cfg = config.committees["reporting"]
     global_model = config.model.default
     global_provider = config.model.provider
     ollama_url = config.model.ollama_base_url
+    run_id = recon_artifact.run_id
 
     spec_by_name = {
         Path(s.config_path).stem: s for s in reporting_cfg.specialists
@@ -100,10 +106,19 @@ def run_reporting_committee(
         provider = _resolve(spec_cfg.provider, reporting_cfg.provider, global_provider)
 
         specialist = Specialist(title=_SPECIALIST_TITLES[name])
+        agent_id = f"athena.reporting.{name}"
 
         _log.info("summoning %s", name)
         system = _load_system(spec_cfg.config_path)
         backend = _backend_factory(provider, ollama_url)
+
+        pub.sendMessage(
+            "agent.spawned",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=agent_id,
+            title=_SPECIALIST_TITLES[name],
+        )
 
         initial = (
             f"Target: {recon_artifact.target}\n"
@@ -116,7 +131,7 @@ def run_reporting_committee(
         )
 
         raw = run_agent(
-            agent_id=f"athena.reporting.{name}",
+            agent_id=agent_id,
             system=system,
             initial_message=initial,
             tools=[],
@@ -127,6 +142,8 @@ def run_reporting_committee(
             max_tokens=8192,
         )
 
+        pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=agent_id)
+
         try:
             return raw if extract_json(raw) else json.dumps({"error": "empty response"})
         except (ValueError, json.JSONDecodeError):
@@ -136,6 +153,7 @@ def run_reporting_committee(
     leader_cfg = reporting_cfg.leader
     leader_model = _resolve(leader_cfg.model, reporting_cfg.model, global_model)
     leader_provider = _resolve(leader_cfg.provider, reporting_cfg.provider, global_provider)
+    leader_agent_id = "athena.reporting.leader"
 
     leader = Specialist(title="Reporting Leader")
     leader_system = _load_system(leader_cfg.config_path)
@@ -143,6 +161,14 @@ def run_reporting_committee(
 
     def leader_dispatch(tool: str, inp: dict) -> str:
         if tool == "summon_specialist":
+            pub.sendMessage(
+                "agent.tool_called",
+                run_id=run_id,
+                committee=_COMMITTEE,
+                agent_id=leader_agent_id,
+                tool=tool,
+                input_summary=inp.get("name", ""),
+            )
             return _run_specialist(inp["name"])
         return f"Unknown tool: {tool!r}"
 
@@ -156,8 +182,16 @@ def run_reporting_committee(
     )
 
     _log.info("leader producing report")
+    pub.sendMessage(
+        "agent.spawned",
+        run_id=run_id,
+        committee=_COMMITTEE,
+        agent_id=leader_agent_id,
+        title="Reporting Leader",
+    )
+
     raw_report = run_agent(
-        agent_id="athena.reporting.leader",
+        agent_id=leader_agent_id,
         system=leader_system,
         initial_message=leader_initial,
         tools=[_SUMMON_SPECIALIST],
@@ -166,7 +200,10 @@ def run_reporting_committee(
         model=leader_model,
         max_iterations=config.max_agent_iterations,
         max_tokens=8192,
+        operator_queue=leader_queue,
     )
+
+    pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id)
 
     report_data = extract_json(raw_report)
 

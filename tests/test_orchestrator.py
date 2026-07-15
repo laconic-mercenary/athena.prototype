@@ -93,19 +93,17 @@ def _tool_call(name: str, inp: dict, tc_id: str) -> ModelResponse:
 
 APPROVAL_JSON = json.dumps({"target": "target", "notes": "Local authorized probe."})
 
-RECON_ARTIFACT_JSON = json.dumps({
-    "observations": [
-        {
-            "specialist_id": "abc",
-            "command": "nmap_scan",
-            "command_output": "80/tcp open",
-            "classification": "signal_info",
-            "category": "network",
-            "comments": [],
-        }
-    ],
-    "summary": "HTTP open on port 80.",
-})
+# Recon leader now emits one record_observation tool call per finding, then
+# outputs only {"summary": "..."} as its final text response.
+RECON_OBS_DATA = {
+    "specialist_id": "abc",
+    "command": "nmap_scan",
+    "command_output": "80/tcp open",
+    "classification": "signal_info",
+    "category": "network",
+    "comments": [],
+}
+RECON_SUMMARY_JSON = json.dumps({"summary": "HTTP open on port 80."})
 
 NETWORK_OP_FINDINGS = json.dumps([
     {"command": "nmap_scan target", "command_output": "80/tcp open http", "notes": "HTTP open"},
@@ -191,7 +189,10 @@ def _full_pipeline_backends():
         FakeBackend([_end(SERVICE_OP_FINDINGS)]),                 # recon Phase 1: service_operator
         FakeBackend([_end(WEB_OP_FINDINGS)]),                    # recon Phase 1: web_operator
         FakeBackend([_end(THREAT_ANALYST_RESPONSE)]),               # recon Phase 2: threat_analyst
-        FakeBackend([_end(RECON_ARTIFACT_JSON)]),                # recon Phase 3+4: leader (no follow-up)
+        FakeBackend([                                            # recon Phase 3+4: leader
+            _tool_call("record_observation", RECON_OBS_DATA, "tc-recon-obs"),
+            _end(RECON_SUMMARY_JSON),
+        ]),
         FakeBackend([
             _tool_call("summon_specialist", {"name": "network_planner"}, "tc1"),
             _end(PLAN_ARTIFACT_JSON),
@@ -282,7 +283,10 @@ def test_ask_user_interaction(config, monkeypatch: pytest.MonkeyPatch) -> None:
         FakeBackend([_end(SERVICE_OP_FINDINGS)]),                         # recon Phase 1: service_operator
         FakeBackend([_end(WEB_OP_FINDINGS)]),                            # recon Phase 1: web_operator
         FakeBackend([_end(THREAT_ANALYST_RESPONSE)]),                       # recon Phase 2: threat_analyst
-        FakeBackend([_end(RECON_ARTIFACT_JSON)]),                        # recon Phase 3+4: leader
+        FakeBackend([                                                     # recon Phase 3+4: leader
+            _tool_call("record_observation", RECON_OBS_DATA, "tc-recon-obs"),
+            _end(RECON_SUMMARY_JSON),
+        ]),
         FakeBackend([
             _tool_call("summon_specialist", {"name": "network_planner"}, "tc2"),
             _end(PLAN_ARTIFACT_JSON),
