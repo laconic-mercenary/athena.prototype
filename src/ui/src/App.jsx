@@ -7,7 +7,7 @@ import './index.css'
 
 const COMMITTEES = ['recon', 'planning', 'retrieval', 'reporting']
 
-const INITIAL_COMMITTEE = { status: 'inactive', classification: null, badgeCount: 0, findings: [] }
+const INITIAL_COMMITTEE = { status: 'inactive', classification: null, badgeCount: 0, findings: [], artifactReady: false }
 
 const initialState = {
   page: 'request',
@@ -91,6 +91,20 @@ function reducer(state, action) {
         [committee]: { ...state.committees[committee], status: 'completed' },
       },
       latestEvent: { kind: 'committee', text: `${committee} committee complete`, ts: Date.now() },
+    }
+  }
+
+  if (type === 'COMMITTEE_ARTIFACT_EMITTED') {
+    // Fired after the committee's .md is written to disk — gate report buttons on
+    // this (not COMMITTEE_COMPLETED, which fires before the file exists).
+    const { committee } = payload
+    if (!state.committees[committee]) return state
+    return {
+      ...state,
+      committees: {
+        ...state.committees,
+        [committee]: { ...state.committees[committee], artifactReady: true },
+      },
     }
   }
 
@@ -219,6 +233,7 @@ export default function App() {
     if (topic === 'engagement.rejected')  dispatch({ type: 'ENGAGEMENT_REJECTED', payload })
     if (topic === 'committee.started')    dispatch({ type: 'COMMITTEE_STARTED', payload })
     if (topic === 'committee.completed')  dispatch({ type: 'COMMITTEE_COMPLETED', payload })
+    if (topic === 'committee.artifact_emitted') dispatch({ type: 'COMMITTEE_ARTIFACT_EMITTED', payload })
     if (topic === 'agent.spawned')        dispatch({ type: 'AGENT_SPAWNED', payload })
     if (topic === 'agent.spun_down')      dispatch({ type: 'AGENT_SPUN_DOWN', payload })
     if (topic === 'agent.tool_called')    dispatch({ type: 'AGENT_TOOL_CALLED', payload })

@@ -23,7 +23,7 @@ from typing import Callable, Optional
 import yaml
 from pubsub import pub
 
-from athena.agent_loop import run_agent
+from athena.agent_loop import SYNTHESIS_MAX_TOKENS, run_agent
 from athena.config import AthenaConfig
 from athena.model_backend import (
     BackendFactory,
@@ -53,6 +53,14 @@ from athena.utils import extract_json
 _log = logging.getLogger("athena.recon")
 
 _COMMITTEE = "recon"
+
+# The leader records one observation per finding in a single agent loop (Phase 4),
+# so its iteration count scales with the number of findings, not reasoning depth.
+# A large recon run (web path enumeration alone yields ~9 findings, plus network,
+# service, and any Phase 3 follow-up) can exhaust the normal 20-iteration cap before
+# the leader emits its summary. This budget is sized with wide headroom over the
+# realistic worst-case finding count so the loop always reaches the summary turn.
+_LEADER_MAX_ITERATIONS = 100
 
 
 # ---------------------------------------------------------------------------
@@ -641,8 +649,8 @@ def run_recon_committee(
         tool_dispatch=leader_dispatch,
         backend=leader_backend,
         model=leader_model,
-        max_iterations=config.max_agent_iterations,
-        max_tokens=8192,
+        max_iterations=_LEADER_MAX_ITERATIONS,
+        max_tokens=SYNTHESIS_MAX_TOKENS,
         operator_queue=leader_queue,
     )
 

@@ -24,6 +24,14 @@ from athena.model_backend import ModelBackend, ToolDefinition
 ToolDispatch = Callable[[str, dict[str, Any]], str]
 
 
+# Output-token ceiling for committee leaders and specialists that emit a full
+# artifact (plan, report, section) in one final turn. If a single call hits its
+# max_tokens ceiling the loop raises a hard RuntimeError and the pipeline halts,
+# so this is sized with wide headroom over any realistic artifact. It is a ceiling
+# only — billing is on tokens actually generated — so being generous is free.
+SYNTHESIS_MAX_TOKENS = 16384
+
+
 class MaxIterationsExceeded(RuntimeError):
     pass
 

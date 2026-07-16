@@ -20,7 +20,7 @@ from typing import Optional
 import yaml
 from pubsub import pub
 
-from athena.agent_loop import run_agent
+from athena.agent_loop import SYNTHESIS_MAX_TOKENS, run_agent
 from athena.config import AthenaConfig
 from athena.model_backend import BackendFactory, ToolDefinition, make_backend
 from athena.schemas import (
@@ -139,7 +139,7 @@ def run_reporting_committee(
             backend=backend,
             model=model,
             max_iterations=config.max_agent_iterations,
-            max_tokens=8192,
+            max_tokens=SYNTHESIS_MAX_TOKENS,
         )
 
         pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=agent_id)
@@ -199,7 +199,7 @@ def run_reporting_committee(
         backend=leader_backend,
         model=leader_model,
         max_iterations=config.max_agent_iterations,
-        max_tokens=8192,
+        max_tokens=SYNTHESIS_MAX_TOKENS,
         operator_queue=leader_queue,
     )
 

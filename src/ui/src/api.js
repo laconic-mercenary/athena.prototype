@@ -38,3 +38,9 @@ export async function getArtifact(runId, name) {
   if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
   return resp.text()
 }
+
+export async function getArtifactMarkdown(runId, name) {
+  const resp = await fetch(`${BASE}/engagements/${runId}/artifacts/${name}/markdown`)
+  if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
+  return resp.text()
+}

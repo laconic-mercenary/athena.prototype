@@ -34,6 +34,13 @@ from athena.utils import extract_json, new_id
 
 _log = logging.getLogger("athena.orchestrator")
 
+# The orchestrator must only end its turn with the approval JSON; every operator
+# message must go through ask_user. Models sometimes break this by answering a
+# mid-briefing question in plain text and stopping. When that happens we deliver
+# the text to the operator and re-run the briefing with that context. This bounds
+# how many such recoveries we attempt before giving up.
+_MAX_BRIEFING_ATTEMPTS = 4
+
 _ASK_USER = ToolDefinition(
     name="ask_user",
     description="Ask the user a clarifying question and wait for their answer.",
@@ -109,41 +116,71 @@ def run_orchestrator(
     has_ask_user = sys.stdin.isatty() or ask_user_handler is not None
     tools = [_ASK_USER, _REJECT_RUN] if has_ask_user else [_REJECT_RUN]
 
+    def _ask(question: str) -> str:
+        """Deliver a message to the operator and return their reply."""
+        if ask_user_handler is not None:
+            return ask_user_handler(question)
+        # CLI path: handler not injected, send event here and read stdin.
+        pub.sendMessage("orchestrator.question", run_id=effective_run_id, question=question)
+        print(f"\n[Orchestrator] {question}")
+        answer = input("> ").strip()
+        pub.sendMessage("orchestrator.answer", run_id=effective_run_id, answer=answer)
+        return answer
+
     def dispatch(tool: str, inp: dict) -> str:
         if tool == "ask_user":
-            question = inp["question"]
-            if ask_user_handler is not None:
-                answer = ask_user_handler(question)
-            else:
-                # CLI path: handler not injected, send event here and read stdin
-                pub.sendMessage("orchestrator.question", run_id=effective_run_id, question=question)
-                print(f"\n[Orchestrator] {question}")
-                answer = input("> ").strip()
-                pub.sendMessage("orchestrator.answer", run_id=effective_run_id, answer=answer)
-            return answer
+            return _ask(inp["question"])
         if tool == "reject_run":
             raise RunRejected(inp["reason"])
         return f"Unknown tool: {tool!r}"
 
     # --- Phase 1: clarification loop ---
+    # A well-behaved orchestrator only ends its turn with the approval JSON. If it
+    # instead ends with plain prose, it answered the operator without using ask_user;
+    # rather than crash on extract_json, deliver that prose to the operator, take
+    # their reply, and re-run the briefing with the added context. Bounded so a
+    # persistently malformed model still terminates.
     _log.info("reading instructions...")
-    try:
-        approval_json = run_agent(
-            agent_id="athena.orchestrator",
-            system=system,
-            initial_message=instructions,
-            tools=tools,
-            tool_dispatch=dispatch,
-            backend=_backend_factory(provider, config.model.ollama_base_url),
-            model=orch_cfg.model,
-            max_iterations=config.max_agent_iterations,
-        )
-    except RunRejected as exc:
-        _log.info("run rejected: %s", exc.reason)
-        pub.sendMessage("engagement.rejected", run_id=effective_run_id, reason=exc.reason)
-        return None
+    briefing_input = instructions
+    data: dict | None = None
+    for _ in range(_MAX_BRIEFING_ATTEMPTS):
+        try:
+            approval_json = run_agent(
+                agent_id="athena.orchestrator",
+                system=system,
+                initial_message=briefing_input,
+                tools=tools,
+                tool_dispatch=dispatch,
+                backend=_backend_factory(provider, config.model.ollama_base_url),
+                model=orch_cfg.model,
+                max_iterations=config.max_agent_iterations,
+            )
+        except RunRejected as exc:
+            _log.info("run rejected: %s", exc.reason)
+            pub.sendMessage("engagement.rejected", run_id=effective_run_id, reason=exc.reason)
+            return None
 
-    data = extract_json(approval_json)
+        try:
+            data = extract_json(approval_json)
+            break
+        except ValueError:
+            _log.info("orchestrator ended with prose instead of approval JSON; recovering")
+            reply = _ask(approval_json)
+            briefing_input = (
+                f"{instructions}\n\n"
+                "[The pre-engagement briefing is already underway — do NOT repeat your "
+                "opening brief. Your previous message to the operator was:\n"
+                f"{approval_json}\n\n"
+                f"The operator replied: {reply}\n\n"
+                "Respond only via ask_user, and output the approval JSON strictly after "
+                "the operator types CONFIRM.]"
+            )
+
+    if data is None:
+        raise RuntimeError(
+            f"orchestrator: briefing did not yield an approval after {_MAX_BRIEFING_ATTEMPTS} attempts"
+        )
+
     approval = OrchestratorApproval(
         run_id=effective_run_id,
         target=data["target"],

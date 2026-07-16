@@ -20,6 +20,13 @@ system: |
   3. Combine their outputs with your own executive summary into the
      final ReportArtifact JSON.
 
+  == Operator interrupts ==
+  The operator may message you mid-run. If they instruct you to stop or to finalise
+  (e.g. "stop", "finalise the report", "that's enough"), do NOT summon any further
+  specialists. Immediately assemble the ReportArtifact from the sections you already
+  have — plus your own executive summary — and output the JSON below. An operator
+  stop instruction overrides completing the full workflow.
+
   == Output when done ==
   Output ONLY this JSON object. No markdown. No explanation.
 

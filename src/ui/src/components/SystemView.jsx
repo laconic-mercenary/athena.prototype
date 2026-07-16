@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   ReactFlow,
   Background,
@@ -185,14 +185,19 @@ function SystemAgentNode({ data }) {
 
 // ── Finding node ─────────────────────────────────────────────────────
 function FindingNode({ data }) {
-  const { finding } = data
+  const { finding, onOpenChat } = data
   const color  = FINDING_BORDER[finding.classification] || '#475569'
   const label  = FINDING_LABEL[finding.classification]
   const isCrit = finding.classification === 'signal_critical'
   const isWarn = finding.classification === 'signal_warn'
 
   return (
-    <div style={{
+    <div
+      // Click handled by ReactFlow onNodeClick (see below), not an inner onClick,
+      // which the pan handler swallows. nopan stops a click from starting a pan.
+      className="nodrag nopan"
+      title={onOpenChat ? 'Discuss this finding with the committee lead' : undefined}
+      style={{
       background: '#07101f',
       border: `1px solid ${color}44`,
       borderLeft: `3px solid ${color}`,
@@ -202,6 +207,7 @@ function FindingNode({ data }) {
       boxShadow: (isCrit || isWarn) ? `0 0 14px ${color}2a` : 'none',
       animation: isCrit ? 'node-pulse 2s ease-in-out infinite' : 'none',
       userSelect: 'none',
+      cursor: onOpenChat ? 'pointer' : 'default',
     }}>
       <Handle type="target" position={Position.Left}  style={{ visibility: 'hidden' }} />
       {label && (
@@ -339,12 +345,27 @@ export function SystemView({ state, dispatch }) {
     })
 
     // ── Finding nodes ─────────────────────────────────────────────
-    const fNodes = allFindings.map((f, i) => ({
-      id: f.nodeId,
-      type: 'finding',
-      position: { x: FINDING_X, y: FINDING_INIT_Y + i * FINDING_GAP },
-      data: { finding: f.finding },
-    }))
+    const fNodes = allFindings.map((f, i) => {
+      // Chat targets the committee lead (a valid operator-queue target).
+      const leaderId = `athena.${f.agent.committee}.leader`
+      return {
+        id: f.nodeId,
+        type: 'finding',
+        position: { x: FINDING_X, y: FINDING_INIT_Y + i * FINDING_GAP },
+        data: {
+          finding: f.finding,
+          onOpenChat: () => dispatch({
+            type: 'OPEN_CHAT',
+            payload: {
+              agentId: leaderId,
+              agentTitle: agents[leaderId]?.title || `${f.agent.committee} lead`,
+              findings: agents[leaderId]?.findings || [f.finding],
+              focusFindings: true,
+            },
+          }),
+        },
+      }
+    })
 
     // Discovery edges: agent → finding
     allFindings.forEach(f => {
@@ -380,6 +401,10 @@ export function SystemView({ state, dispatch }) {
     [systemNodes, agentNodes, findingNodes]
   )
 
+  const onNodeClick = useCallback((_event, node) => {
+    if (node.data?.onOpenChat) node.data.onOpenChat()
+  }, [])
+
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <style>{`
@@ -392,6 +417,7 @@ export function SystemView({ state, dispatch }) {
         nodes={allNodes}
         edges={allEdges}
         nodeTypes={nodeTypes}
+        onNodeClick={onNodeClick}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         nodesDraggable={false}
