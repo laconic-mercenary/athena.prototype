@@ -209,6 +209,37 @@ html, body, #root {
   position: relative;
   overflow: hidden;
 }
+.graph-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 7px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.graph-footer-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.graph-footer-btn {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--orange);
+  border: 1px solid rgba(249,115,22,0.35);
+  border-radius: 3px;
+  padding: 3px 9px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s;
+}
+.graph-footer-btn:hover {
+  border-color: var(--orange);
+  background: rgba(249,115,22,0.08);
+}
 .side-pane {
   width: 320px;
   flex-shrink: 0;

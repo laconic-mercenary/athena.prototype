@@ -206,6 +206,13 @@ export function Dashboard({ state, dispatch }) {
               : <SystemView state={state} dispatch={dispatch} />
             }
           </div>
+
+          <div className="graph-footer">
+            <span className="graph-footer-label">Looking for other ways to make Athena more capable?</span>
+            <a href="/marketplace.html" target="_blank" rel="noopener noreferrer" className="graph-footer-btn">
+              View Marketplace
+            </a>
+          </div>
         </div>
 
         {graphTab === 'agent' && showArtifacts && (

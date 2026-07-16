@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Athena Marketplace</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #060d18;
+      --surface:  #0a1628;
+      --border:   #1a2d45;
+      --text:     #cbd5e1;
+      --muted:    #3b5270;
+      --orange:   #f97316;
+      --blue:     #3b82f6;
+      --green:    #22c55e;
+      --red:      #ef4444;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 48px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .logo {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+
+    .logo-name {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: #e2e8f0;
+    }
+
+    .logo-sub {
+      font-size: 9px;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      font-size: 10px;
+      letter-spacing: 1px;
+      color: var(--muted);
+    }
+
+    .badge {
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }
+
+    .badge--preview { background: rgba(249,115,22,0.12); color: var(--orange); border: 1px solid rgba(249,115,22,0.3); }
+
+    /* ── Hero ── */
+    .hero {
+      padding: 60px 48px 48px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .hero-eyebrow {
+      font-size: 9px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--orange);
+      margin-bottom: 14px;
+    }
+
+    .hero-title {
+      font-size: 28px;
+      font-weight: 700;
+      color: #e2e8f0;
+      letter-spacing: 1px;
+      margin-bottom: 16px;
+      line-height: 1.2;
+    }
+
+    .hero-desc {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.7;
+      max-width: 620px;
+    }
+
+    /* ── Filter bar ── */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 20px 48px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .filter-chip {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      padding: 4px 12px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+
+    .filter-chip--active {
+      border-color: var(--orange);
+      color: var(--orange);
+      background: rgba(249,115,22,0.08);
+    }
+
+    .filter-chip:hover:not(.filter-chip--active) {
+      border-color: #2d4060;
+      color: var(--text);
+    }
+
+    /* ── Grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border-top: 1px solid var(--border);
+    }
+
+    .card {
+      background: var(--surface);
+      padding: 28px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      transition: background 0.15s;
+    }
+
+    .card:hover { background: #0d1e33; }
+
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .card-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .card-tags {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .tag {
+      font-size: 8px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 2px;
+      border: 1px solid;
+    }
+
+    .tag--recon     { color: #f97316; border-color: rgba(249,115,22,0.3); background: rgba(249,115,22,0.07); }
+    .tag--planning  { color: #22c55e; border-color: rgba(34,197,94,0.3);  background: rgba(34,197,94,0.07);  }
+    .tag--retrieval { color: #ef4444; border-color: rgba(239,68,68,0.3);  background: rgba(239,68,68,0.07);  }
+    .tag--reporting { color: #eab308; border-color: rgba(234,179,8,0.3);  background: rgba(234,179,8,0.07);  }
+    .tag--comms     { color: #3b82f6; border-color: rgba(59,130,246,0.3); background: rgba(59,130,246,0.07); }
+
+    .card-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: #e2e8f0;
+      letter-spacing: 0.5px;
+    }
+
+    .card-author {
+      font-size: 9px;
+      letter-spacing: 1px;
+      color: var(--muted);
+    }
+
+    .card-desc {
+      font-size: 11px;
+      color: #64748b;
+      line-height: 1.65;
+    }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .card-meta {
+      font-size: 9px;
+      color: var(--muted);
+      letter-spacing: 0.5px;
+    }
+
+    .card-btn {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      padding: 5px 12px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s;
+      text-decoration: none;
+    }
+
+    .card-btn:hover {
+      border-color: var(--orange);
+      color: var(--orange);
+      background: rgba(249,115,22,0.07);
+    }
+
+    /* ── Footer ── */
+    footer {
+      padding: 24px 48px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 9px;
+      letter-spacing: 1px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">
+      <span class="logo-name">Athena</span>
+      <span class="logo-sub">Marketplace</span>
+    </div>
+    <div class="header-meta">
+      <span>community modules</span>
+      <span class="badge badge--preview">Preview</span>
+    </div>
+  </header>
+
+  <div class="hero">
+    <div class="hero-eyebrow">Extend the pipeline</div>
+    <h1 class="hero-title">Capability Modules</h1>
+    <p class="hero-desc">
+      Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque vehicula
+      augue nec est laoreet, ac fringilla purus tincidunt. Modules extend Athena's
+      four-phase pipeline with additional specialists, integrations, and reporting
+      templates contributed by the community and verified partners.
+    </p>
+  </div>
+
+  <div class="filter-bar">
+    <button class="filter-chip filter-chip--active">All</button>
+    <button class="filter-chip">Recon</button>
+    <button class="filter-chip">Planning</button>
+    <button class="filter-chip">Retrieval</button>
+    <button class="filter-chip">Reporting</button>
+    <button class="filter-chip">Integrations</button>
+  </div>
+
+  <div class="grid">
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon" style="background:rgba(249,115,22,0.1)">🌐</div>
+        <div class="card-tags">
+          <span class="tag tag--recon">recon</span>
+        </div>
+      </div>
+      <div>
+        <div class="card-name">Shodan Surface Scanner</div>
+        <div class="card-author">by laconic-mercenary</div>
+      </div>
+      <div class="card-desc">
+        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Integrates the Shodan
+        API into the reconnaissance phase to enumerate internet-facing exposure, known
+        CVEs, and historical port data without active scanning.
+      </div>
+      <div class="card-footer">
+        <span class="card-meta">v1.2.0 · 340 installs</span>
+        <a href="#" class="card-btn">Install</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon" style="background:rgba(239,68,68,0.1)">🗄️</div>
+        <div class="card-tags">
+          <span class="tag tag--retrieval">retrieval</span>
+        </div>
+      </div>
+      <div>
+        <div class="card-name">MSSQL Specialist</div>
+        <div class="card-author">by community</div>
+      </div>
+      <div class="card-desc">
+        Pellentesque habitant morbi tristique senectus et netus. Extends the retrieval
+        committee with a specialist agent capable of enumerating Microsoft SQL Server
+        instances, schema inspection, and privilege mapping.
+      </div>
+      <div class="card-footer">
+        <span class="card-meta">v0.9.1 · 118 installs</span>
+        <a href="#" class="card-btn">Install</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon" style="background:rgba(234,179,8,0.1)">📊</div>
+        <div class="card-tags">
+          <span class="tag tag--reporting">reporting</span>
+        </div>
+      </div>
+      <div>
+        <div class="card-name">Executive PDF Export</div>
+        <div class="card-author">by laconic-mercenary</div>
+      </div>
+      <div class="card-desc">
+        Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Renders
+        the final ReportArtifact as a branded PDF suitable for board-level and
+        executive distribution, with risk heat-maps and remediation timelines.
+      </div>
+      <div class="card-footer">
+        <span class="card-meta">v2.0.0 · 891 installs</span>
+        <a href="#" class="card-btn">Install</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon" style="background:rgba(59,130,246,0.1)">🔔</div>
+        <div class="card-tags">
+          <span class="tag tag--comms">integration</span>
+        </div>
+      </div>
+      <div>
+        <div class="card-name">Slack Alerts</div>
+        <div class="card-author">by community</div>
+      </div>
+      <div class="card-desc">
+        Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris. Pushes
+        critical and warn findings to a configured Slack channel in real time as the
+        pipeline runs, without requiring the operator to watch the dashboard.
+      </div>
+      <div class="card-footer">
+        <span class="card-meta">v1.0.3 · 204 installs</span>
+        <a href="#" class="card-btn">Install</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon" style="background:rgba(22,197,94,0.1)">🧠</div>
+        <div class="card-tags">
+          <span class="tag tag--planning">planning</span>
+        </div>
+      </div>
+      <div>
+        <div class="card-name">CVE Correlator</div>
+        <div class="card-author">by laconic-mercenary</div>
+      </div>
+      <div class="card-desc">
+        Duis aute irure dolor in reprehenderit in voluptate velit esse cillum.
+        Enriches the planning phase by cross-referencing observed service banners
+        against the NVD CVE database and injecting exploitability scores into
+        the PlanArtifact.
+      </div>
+      <div class="card-footer">
+        <span class="card-meta">v1.1.0 · 563 installs</span>
+        <a href="#" class="card-btn">Install</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon" style="background:rgba(249,115,22,0.1)">📡</div>
+        <div class="card-tags">
+          <span class="tag tag--recon">recon</span>
+          <span class="tag tag--retrieval">retrieval</span>
+        </div>
+      </div>
+      <div>
+        <div class="card-name">DNS Recon Suite</div>
+        <div class="card-author">by community</div>
+      </div>
+      <div class="card-desc">
+        Excepteur sint occaecat cupidatat non proident, sunt in culpa. Adds DNS
+        enumeration specialists covering zone transfer attempts, subdomain brute-force,
+        MX and SPF record analysis, and passive DNS history lookup.
+      </div>
+      <div class="card-footer">
+        <span class="card-meta">v0.8.0 · 77 installs</span>
+        <a href="#" class="card-btn">Install</a>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <span>Athena Marketplace · Preview</span>
+    <span>Modules are community-contributed and run in isolated containers.</span>
+  </footer>
+
+</body>
+</html>
