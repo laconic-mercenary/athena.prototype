@@ -15,17 +15,72 @@ const COMMITTEE_COLORS = {
   reporting:    '#eab308',
 }
 
-function classificationColor(cls) {
-  if (cls === 'signal_critical') return '#ef4444'
-  if (cls === 'signal_warn')     return '#f97316'
-  return null
+const FINDING_BORDER = {
+  signal_critical: '#ef4444',
+  signal_warn:     '#f97316',
+  signal_info:     '#3b82f6',
 }
 
-// ── Committee node ──────────────────────────────────────────────────
+const FINDING_LABEL = {
+  signal_critical: 'CRIT',
+  signal_warn:     'WARN',
+  signal_info:     'INFO',
+}
+
+// ── Finding node (grey artifact) ────────────────────────────────────
+function FindingNode({ data }) {
+  const { finding } = data
+  const color  = FINDING_BORDER[finding.classification] || '#475569'
+  const label  = FINDING_LABEL[finding.classification]
+  const isCrit = finding.classification === 'signal_critical'
+  const isWarn = finding.classification === 'signal_warn'
+
+  return (
+    <div style={{
+      background: '#07101f',
+      border: `1px solid ${color}44`,
+      borderLeft: `3px solid ${color}`,
+      borderRadius: 4,
+      padding: '7px 11px',
+      width: 220,
+      boxShadow: (isCrit || isWarn) ? `0 0 16px ${color}2a` : 'none',
+      animation: isCrit ? 'node-pulse 2s ease-in-out infinite' : 'none',
+      userSelect: 'none',
+    }}>
+      <Handle type="target" position={Position.Left}  style={{ visibility: 'hidden' }} />
+      {label && (
+        <div style={{
+          fontSize: 8,
+          fontWeight: 800,
+          letterSpacing: 2,
+          color,
+          textTransform: 'uppercase',
+          marginBottom: 4,
+        }}>
+          {label}
+        </div>
+      )}
+      <div style={{
+        fontSize: 10,
+        color: '#64748b',
+        lineHeight: 1.5,
+        display: '-webkit-box',
+        WebkitLineClamp: 2,
+        WebkitBoxOrient: 'vertical',
+        overflow: 'hidden',
+      }}>
+        {finding.summary}
+      </div>
+      <Handle type="source" position={Position.Right} style={{ visibility: 'hidden' }} />
+    </div>
+  )
+}
+
+// ── Committee node ───────────────────────────────────────────────────
 function CommitteeNode({ data }) {
   const { label, committee, status, classification, badgeCount, onClick } = data
-  const color     = COMMITTEE_COLORS[committee] || '#94a3b8'
-  const alertColor = classificationColor(classification)
+  const color      = COMMITTEE_COLORS[committee] || '#94a3b8'
+  const alertColor = FINDING_BORDER[classification]
   const isActive   = status === 'active'
   const isDone     = status === 'completed'
 
@@ -43,7 +98,7 @@ function CommitteeNode({ data }) {
         minWidth: 160,
         textAlign: 'center',
         cursor: badgeCount > 0 ? 'pointer' : 'default',
-        boxShadow: isActive ? `0 0 16px 4px ${color}55` : 'none',
+        boxShadow: isActive ? `0 0 18px 4px ${color}44` : 'none',
         opacity: isDone ? 0.7 : 1,
         transition: 'box-shadow 0.4s, border-color 0.3s',
         position: 'relative',
@@ -60,7 +115,7 @@ function CommitteeNode({ data }) {
           marginTop: 4,
           letterSpacing: 1.5,
           textTransform: 'uppercase',
-          color: isActive ? color : `${color}88`,
+          color: isActive ? color : `${color}66`,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -69,8 +124,7 @@ function CommitteeNode({ data }) {
           {isActive && (
             <span style={{
               display: 'inline-block',
-              width: 5,
-              height: 5,
+              width: 5, height: 5,
               borderRadius: '50%',
               background: color,
               boxShadow: `0 0 6px ${color}`,
@@ -85,15 +139,12 @@ function CommitteeNode({ data }) {
         <div style={{
           position: 'absolute',
           top: -9, right: -9,
-          background: alertColor === '#ef4444' ? '#ef4444' : '#f97316',
+          background: alertColor || '#f97316',
           color: '#fff',
           borderRadius: '50%',
           width: 20, height: 20,
-          fontSize: 10,
-          fontWeight: 700,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          fontSize: 10, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: `0 0 6px ${alertColor || '#f97316'}`,
         }}>
           {badgeCount > 9 ? '9+' : badgeCount}
@@ -109,7 +160,7 @@ function CommitteeNode({ data }) {
 function AgentNode({ data }) {
   const { title, committee, status, classification, toolHistory, onChat, onFinding } = data
   const color      = COMMITTEE_COLORS[committee] || '#94a3b8'
-  const alertColor = classificationColor(classification)
+  const alertColor = FINDING_BORDER[classification]
   const isActive   = status === 'active'
   const hasAlert   = !!alertColor
 
@@ -118,89 +169,68 @@ function AgentNode({ data }) {
   return (
     <div style={{
       background: '#080e1a',
-      border: `1px solid ${alertColor ? alertColor + '88' : color + '55'}`,
+      border: `1px solid ${alertColor ? alertColor + '88' : color + '44'}`,
       borderRadius: 6,
-      padding: '8px 12px 8px 12px',
-      color: `${color}cc`,
-      fontSize: 11,
-      minWidth: 150,
+      padding: '8px 12px',
+      minWidth: 155,
       position: 'relative',
-      boxShadow: isActive ? `0 0 10px 2px ${color}33` : 'none',
-      transition: 'box-shadow 0.4s, border-color 0.3s',
+      boxShadow: isActive ? `0 0 10px 2px ${color}2a` : 'none',
+      transition: 'box-shadow 0.4s',
       userSelect: 'none',
     }}>
       <Handle type="target" position={Position.Top}    style={{ visibility: 'hidden' }} />
 
-      {/* (!) badge — top-left, appears on warn/critical */}
+      {/* (!) badge — critical/warn alert */}
       {hasAlert && (
         <div
+          className="nopan nodrag"
           title="View finding"
-          onClick={(e) => { e.stopPropagation(); onFinding() }}
+          onClick={e => { e.stopPropagation(); onFinding() }}
           style={{
-            position: 'absolute',
-            top: -8, left: -8,
-            width: 17, height: 17,
-            borderRadius: '50%',
-            background: alertColor,
-            color: '#fff',
-            fontSize: 10,
-            fontWeight: 900,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            position: 'absolute', top: -8, left: -8,
+            width: 17, height: 17, borderRadius: '50%',
+            background: alertColor, color: '#fff',
+            fontSize: 10, fontWeight: 900,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
             cursor: 'pointer',
             boxShadow: `0 0 6px ${alertColor}`,
-            zIndex: 10,
-            lineHeight: 1,
+            zIndex: 10, lineHeight: 1,
           }}
         >
           !
         </div>
       )}
 
-      {/* (?) badge — top-right, available when agent is active */}
+      {/* (?) badge — chat available */}
       {isActive && (
         <div
+          className="nopan nodrag"
           title="Chat with agent"
-          onClick={(e) => { e.stopPropagation(); onChat() }}
+          onClick={e => { e.stopPropagation(); onChat() }}
           style={{
-            position: 'absolute',
-            top: -8, right: -8,
-            width: 17, height: 17,
-            borderRadius: '50%',
+            position: 'absolute', top: -8, right: -8,
+            width: 17, height: 17, borderRadius: '50%',
             background: '#0f172a',
             border: `1px solid ${color}88`,
-            color,
-            fontSize: 10,
-            fontWeight: 700,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            zIndex: 10,
-            lineHeight: 1,
-            transition: 'background 0.15s',
+            color, fontSize: 10, fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', zIndex: 10, lineHeight: 1,
           }}
         >
           ?
         </div>
       )}
 
-      {/* Title */}
-      <div style={{ fontWeight: 700, fontSize: 11, marginBottom: recentTools.length ? 5 : 0 }}>
+      <div style={{ fontWeight: 700, fontSize: 11, color: `${color}cc`, marginBottom: recentTools.length ? 5 : 0 }}>
         {title}
       </div>
 
-      {/* Tool micro-feed — last 3, newest on top */}
       {recentTools.map((t, i) => (
         <div key={i} style={{
           fontSize: 9,
-          color: i === 0 ? `${color}99` : `${color}44`,
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          maxWidth: 160,
-          lineHeight: 1.5,
+          color: i === 0 ? `${color}88` : `${color}33`,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          maxWidth: 160, lineHeight: 1.5,
         }}>
           › {t.tool}
         </div>
@@ -211,9 +241,8 @@ function AgentNode({ data }) {
   )
 }
 
-const nodeTypes = { committee: CommitteeNode, agent: AgentNode }
+const nodeTypes = { committee: CommitteeNode, agent: AgentNode, finding: FindingNode }
 
-// Wider spread so committees don't crowd each other
 const TOP_LEVEL_POSITIONS = {
   orchestrator: { x: 400, y: 0 },
   recon:        { x: 0,   y: 210 },
@@ -223,7 +252,10 @@ const TOP_LEVEL_POSITIONS = {
 }
 
 const AGENT_COLUMN_OFFSET_Y = 130
-const AGENT_ROW_GAP = 85
+const AGENT_ROW_GAP         = 85
+const FINDING_X             = 1280
+const FINDING_START_Y       = 50
+const FINDING_GAP           = 88
 
 const COMMITTEE_LABELS = {
   orchestrator: 'Orchestrator',
@@ -236,6 +268,7 @@ const COMMITTEE_LABELS = {
 export function CommitteeGraph({ state, dispatch }) {
   const { committees, agents, engagement } = state
 
+  // ── Committee nodes ───────────────────────────────────────────────
   const committeeNodes = useMemo(() =>
     Object.entries(TOP_LEVEL_POSITIONS).map(([key, pos]) => {
       const data = committees[key] || {}
@@ -258,13 +291,13 @@ export function CommitteeGraph({ state, dispatch }) {
     [committees, engagement.status, dispatch]
   )
 
+  // ── Agent nodes ───────────────────────────────────────────────────
   const agentNodes = useMemo(() => {
     const byCommittee = {}
     Object.values(agents).forEach(a => {
       if (!byCommittee[a.committee]) byCommittee[a.committee] = []
       byCommittee[a.committee].push(a)
     })
-
     const nodes = []
     Object.entries(byCommittee).forEach(([committee, list]) => {
       const parentPos = TOP_LEVEL_POSITIONS[committee] || { x: 400, y: 210 }
@@ -272,10 +305,7 @@ export function CommitteeGraph({ state, dispatch }) {
         nodes.push({
           id: `agent-${agent.id}`,
           type: 'agent',
-          position: {
-            x: parentPos.x + 8,
-            y: parentPos.y + AGENT_COLUMN_OFFSET_Y + i * AGENT_ROW_GAP,
-          },
+          position: { x: parentPos.x + 8, y: parentPos.y + AGENT_COLUMN_OFFSET_Y + i * AGENT_ROW_GAP },
           data: {
             title: agent.title || agent.id.split('.').pop(),
             committee,
@@ -297,43 +327,128 @@ export function CommitteeGraph({ state, dispatch }) {
     return nodes
   }, [agents, dispatch])
 
-  const edges = useMemo(() => {
+  // ── Hierarchy edges (committee ↔ committee, committee ↔ agent) ────
+  const hierarchyEdges = useMemo(() => {
     const base = [
-      { id: 'e-orch-recon',     source: 'committee-orchestrator', target: 'committee-recon',     type: 'smoothstep', animated: committees.recon?.status     === 'active', style: { stroke: committees.recon?.status     === 'active' ? '#f9731655' : '#1e293b' } },
-      { id: 'e-orch-planning',  source: 'committee-orchestrator', target: 'committee-planning',  type: 'smoothstep', animated: committees.planning?.status  === 'active', style: { stroke: committees.planning?.status  === 'active' ? '#22c55e55' : '#1e293b' } },
-      { id: 'e-orch-retrieval', source: 'committee-orchestrator', target: 'committee-retrieval', type: 'smoothstep', animated: committees.retrieval?.status === 'active', style: { stroke: committees.retrieval?.status === 'active' ? '#ef444455' : '#1e293b' } },
-      { id: 'e-orch-reporting', source: 'committee-orchestrator', target: 'committee-reporting', type: 'smoothstep', animated: committees.reporting?.status === 'active', style: { stroke: committees.reporting?.status === 'active' ? '#eab30855' : '#1e293b' } },
+      { id: 'e-orch-recon',     source: 'committee-orchestrator', target: 'committee-recon',     type: 'smoothstep', animated: committees.recon?.status     === 'active', style: { stroke: committees.recon?.status     === 'active' ? '#f9731644' : '#1a2540' } },
+      { id: 'e-orch-planning',  source: 'committee-orchestrator', target: 'committee-planning',  type: 'smoothstep', animated: committees.planning?.status  === 'active', style: { stroke: committees.planning?.status  === 'active' ? '#22c55e44' : '#1a2540' } },
+      { id: 'e-orch-retrieval', source: 'committee-orchestrator', target: 'committee-retrieval', type: 'smoothstep', animated: committees.retrieval?.status === 'active', style: { stroke: committees.retrieval?.status === 'active' ? '#ef444444' : '#1a2540' } },
+      { id: 'e-orch-reporting', source: 'committee-orchestrator', target: 'committee-reporting', type: 'smoothstep', animated: committees.reporting?.status === 'active', style: { stroke: committees.reporting?.status === 'active' ? '#eab30844' : '#1a2540' } },
     ]
     Object.values(agents).forEach(agent => {
       const color = COMMITTEE_COLORS[agent.committee] || '#94a3b8'
+      const active = agent.status === 'active'
       base.push({
-        id: `e-${agent.committee}-${agent.id}`,
+        id: `e-comm-${agent.id}`,
         source: `committee-${agent.committee}`,
         target: `agent-${agent.id}`,
         type: 'smoothstep',
-        animated: agent.status === 'active',
-        style: { stroke: agent.status === 'active' ? `${color}66` : `${color}22` },
+        animated: active,
+        style: { stroke: active ? `${color}55` : `${color}1a` },
       })
     })
     return base
   }, [agents, committees])
 
-  const allNodes = useMemo(() => [...committeeNodes, ...agentNodes], [committeeNodes, agentNodes])
+  // ── Finding nodes + discovery edges + swarm edges ─────────────────
+  const { findingNodes, findingEdges } = useMemo(() => {
+    const nodes = []
+    const edges = []
+
+    // Collect displayable findings across all agents, sorted by discovery time
+    const allFindings = []
+    Object.values(agents).forEach(agent => {
+      ;(agent.findings || []).forEach((finding, idx) => {
+        if (finding.classification === 'noise' || finding.classification === 'unknown') return
+        allFindings.push({
+          finding,
+          agentId: agent.id,
+          committee: agent.committee,
+          agentStatus: agent.status,
+          nodeId: `finding-${agent.id}-${idx}`,
+        })
+      })
+    })
+    allFindings.sort((a, b) => a.finding.ts - b.finding.ts)
+
+    // Create finding nodes
+    allFindings.forEach((f, i) => {
+      nodes.push({
+        id: f.nodeId,
+        type: 'finding',
+        position: { x: FINDING_X, y: FINDING_START_Y + i * FINDING_GAP },
+        data: { finding: f.finding, agentId: f.agentId, committee: f.committee },
+      })
+
+      // Discovery edge: discovering agent → finding
+      const color = COMMITTEE_COLORS[f.committee] || '#94a3b8'
+      edges.push({
+        id: `e-disc-${f.nodeId}`,
+        source: `agent-${f.agentId}`,
+        target: f.nodeId,
+        type: 'smoothstep',
+        animated: f.agentStatus === 'active',
+        style: {
+          stroke: `${color}55`,
+          strokeDasharray: '5 4',
+          strokeWidth: 1,
+        },
+      })
+    })
+
+    // Swarm edges: retrieval agents → all alert-level findings
+    const alertFindings = allFindings.filter(
+      f => f.finding.classification === 'signal_critical' || f.finding.classification === 'signal_warn'
+    )
+
+    if (alertFindings.length > 0) {
+      Object.values(agents)
+        .filter(a => a.committee === 'retrieval')
+        .forEach(agent => {
+          alertFindings.forEach(f => {
+            const edgeColor = FINDING_BORDER[f.finding.classification] || '#ef4444'
+            edges.push({
+              id: `e-swarm-${agent.id}-${f.nodeId}`,
+              source: `agent-${agent.id}`,
+              target: f.nodeId,
+              type: 'smoothstep',
+              animated: agent.status === 'active',
+              style: {
+                stroke: `${edgeColor}77`,
+                strokeWidth: 1.5,
+              },
+            })
+          })
+        })
+    }
+
+    return { findingNodes: nodes, findingEdges: edges }
+  }, [agents])
+
+  const allNodes = useMemo(
+    () => [...committeeNodes, ...agentNodes, ...findingNodes],
+    [committeeNodes, agentNodes, findingNodes]
+  )
+
+  const allEdges = useMemo(
+    () => [...hierarchyEdges, ...findingEdges],
+    [hierarchyEdges, findingEdges]
+  )
 
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <style>{`
         @keyframes node-pulse {
           0%, 100% { opacity: 1; }
-          50%       { opacity: 0.3; }
+          50%       { opacity: 0.35; }
         }
       `}</style>
       <ReactFlow
         nodes={allNodes}
-        edges={edges}
+        edges={allEdges}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.25 }}
+        fitViewOptions={{ padding: 0.2 }}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
@@ -341,7 +456,7 @@ export function CommitteeGraph({ state, dispatch }) {
         zoomOnScroll={true}
         proOptions={{ hideAttribution: true }}
       >
-        <Background color="#0f172a" gap={28} />
+        <Background color="#0a1628" gap={30} />
       </ReactFlow>
     </div>
   )

@@ -16,6 +16,7 @@ const initialState = {
   agents: {},
   dialogMessages: [],
   chat: { isOpen: false, agentId: null, agentTitle: null, findings: [] },
+  latestEvent: null,
 }
 
 // Returns the highest-severity classification from a list of findings.
@@ -43,7 +44,11 @@ function reducer(state, action) {
   }
 
   if (type === 'ENGAGEMENT_COMPLETED') {
-    return { ...state, engagement: { ...state.engagement, status: 'completed' } }
+    return {
+      ...state,
+      engagement: { ...state.engagement, status: 'completed' },
+      latestEvent: { kind: 'done', text: 'Engagement complete', ts: Date.now() },
+    }
   }
 
   if (type === 'ENGAGEMENT_REJECTED') {
@@ -59,6 +64,7 @@ function reducer(state, action) {
       committees: initialState.committees,
       agents: {},
       dialogMessages: [],
+      latestEvent: null,
     }
   }
 
@@ -71,6 +77,7 @@ function reducer(state, action) {
         ...state.committees,
         [committee]: { ...state.committees[committee], status: 'active' },
       },
+      latestEvent: { kind: 'committee', text: `${committee} committee started`, ts: Date.now() },
     }
   }
 
@@ -83,6 +90,7 @@ function reducer(state, action) {
         ...state.committees,
         [committee]: { ...state.committees[committee], status: 'completed' },
       },
+      latestEvent: { kind: 'committee', text: `${committee} committee complete`, ts: Date.now() },
     }
   }
 
@@ -94,6 +102,7 @@ function reducer(state, action) {
         ...state.agents,
         [agent_id]: { id: agent_id, committee, title, status: 'active', findings: [], lastTool: null, toolHistory: [] },
       },
+      latestEvent: { kind: 'spawned', text: `${title} online`, committee, ts: Date.now() },
     }
   }
 
@@ -111,6 +120,8 @@ function reducer(state, action) {
     if (!state.agents[agent_id]) return state
     const entry = { tool, input_summary, ts: Date.now() }
     const prev = state.agents[agent_id]
+    const agentTitle = prev.title || agent_id.split('.').pop()
+    const summary = input_summary ? `${tool}  ${input_summary}` : tool
     return {
       ...state,
       agents: {
@@ -121,6 +132,7 @@ function reducer(state, action) {
           toolHistory: [...(prev.toolHistory || []), entry].slice(-20),
         },
       },
+      latestEvent: { kind: 'tool', text: `${agentTitle} › ${summary}`, committee: prev.committee, ts: Date.now() },
     }
   }
 
@@ -130,6 +142,9 @@ function reducer(state, action) {
     const finding = { classification, summary, ts: Date.now() }
     const updatedFindings = [...state.agents[agent_id].findings, finding]
     const agentClassification = dominantClassification(updatedFindings)
+
+    const FINDING_LABELS = { signal_critical: 'CRIT', signal_warn: 'WARN', signal_info: 'INFO' }
+    const label = FINDING_LABELS[classification] || classification
 
     // Escalate committee badge count on warn/critical
     const committeeUpdate = {}
@@ -151,6 +166,7 @@ function reducer(state, action) {
         [agent_id]: { ...state.agents[agent_id], findings: updatedFindings, classification: agentClassification },
       },
       committees: { ...state.committees, ...committeeUpdate },
+      latestEvent: { kind: 'finding', text: `${label}  ${summary}`, classification, committee, ts: Date.now() },
     }
   }
 

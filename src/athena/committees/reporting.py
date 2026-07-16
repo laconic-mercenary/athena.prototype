@@ -57,8 +57,8 @@ _SUMMON_SPECIALIST = ToolDefinition(
 )
 
 _SPECIALIST_TITLES: dict[str, str] = {
-    "findings_analyst": "Findings Analyst",
-    "risk_assessor":    "Risk Assessor",
+    "findings_analyst": "Intel Analyst",
+    "risk_assessor":    "Risk Analyst",
 }
 
 
@@ -155,7 +155,7 @@ def run_reporting_committee(
     leader_provider = _resolve(leader_cfg.provider, reporting_cfg.provider, global_provider)
     leader_agent_id = "athena.reporting.leader"
 
-    leader = Specialist(title="Reporting Leader")
+    leader = Specialist(title="Reporting Lead")
     leader_system = _load_system(leader_cfg.config_path)
     leader_backend = _backend_factory(leader_provider, ollama_url)
 
@@ -187,7 +187,7 @@ def run_reporting_committee(
         run_id=run_id,
         committee=_COMMITTEE,
         agent_id=leader_agent_id,
-        title="Reporting Leader",
+        title="Reporting Lead",
     )
 
     raw_report = run_agent(

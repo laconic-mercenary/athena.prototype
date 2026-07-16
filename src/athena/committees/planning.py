@@ -50,8 +50,8 @@ _SUMMON_TOOL = ToolDefinition(
 )
 
 _SPECIALIST_TITLES: dict[str, str] = {
-    "network_planner": "Network Planner",
-    "web_planner": "Web Planner",
+    "network_planner": "Net Strategist",
+    "web_planner":     "Web Strategist",
 }
 
 
@@ -160,7 +160,7 @@ def run_planning_committee(
     leader_provider = _resolve(leader_cfg.provider, planning_cfg.provider, global_provider)
     leader_agent_id = "athena.planning.leader"
 
-    leader = Specialist(title="Planning Leader")
+    leader = Specialist(title="Planning Lead")
     leader_system = _load_system(leader_cfg.config_path)
     leader_backend = _backend_factory(leader_provider, ollama_url)
 
@@ -190,7 +190,7 @@ def run_planning_committee(
         run_id=run_id,
         committee=_COMMITTEE,
         agent_id=leader_agent_id,
-        title="Planning Leader",
+        title="Planning Lead",
     )
 
     raw_plan = run_agent(

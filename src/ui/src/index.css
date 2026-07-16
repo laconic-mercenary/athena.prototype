@@ -143,7 +143,71 @@ html, body, #root {
 }
 .graph-pane {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   position: relative;
+  overflow: hidden;
+}
+.graph-tab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.graph-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 6px 14px 8px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.graph-tab:hover {
+  color: var(--text);
+}
+.graph-tab--active {
+  color: var(--text);
+  border-bottom-color: var(--accent-orch);
+}
+.status-ticker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  border-bottom: 1px solid #0d1a2a;
+  background: #070e1a;
+  flex-shrink: 0;
+  min-height: 26px;
+}
+.ticker-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+.ticker-text {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.3s;
+}
+@keyframes ticker-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+.graph-canvas {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
 }
 .side-pane {
   width: 320px;

@@ -126,8 +126,8 @@ _SPECIALIST_TOOLS: dict[str, list[ToolDefinition]] = {
 }
 
 _SPECIALIST_TITLES: dict[str, str] = {
-    "web_retriever": "Web Retriever",
-    "db_specialist": "Database Specialist",
+    "web_retriever": "Web Extractor",
+    "db_specialist": "DB Extractor",
 }
 
 
@@ -336,7 +336,7 @@ def run_retrieval_committee(
     leader_provider = _resolve(leader_cfg.provider, retrieval_cfg.provider, global_provider)
     leader_agent_id = "athena.retrieval.leader"
 
-    leader = Specialist(title="Retrieval Leader")
+    leader = Specialist(title="Retrieval Lead")
     leader_system = _load_system(leader_cfg.config_path)
     leader_backend = _backend_factory(leader_provider, ollama_url)
 
@@ -367,7 +367,7 @@ def run_retrieval_committee(
         run_id=run_id,
         committee=_COMMITTEE,
         agent_id=leader_agent_id,
-        title="Retrieval Leader",
+        title="Retrieval Lead",
     )
 
     raw_summary = run_agent(

@@ -223,9 +223,9 @@ _OPERATOR_TOOLS: dict[str, list[ToolDefinition]] = {
 }
 
 _OPERATOR_TITLES: dict[str, str] = {
-    "network_operator": "Network Operator",
-    "service_operator": "Service Operator",
-    "web_operator":     "Web Operator",
+    "network_operator": "Port Scanner",
+    "service_operator": "Banner Probe",
+    "web_operator":     "Web Crawler",
 }
 
 _DEFAULT_TASKS: dict[str, str] = {
@@ -532,7 +532,7 @@ def run_recon_committee(
         analyst_system = _load_system(analyst_cfg.config_path)
         analyst_backend = _backend_factory(analyst_provider, ollama_url)
         analyst_agent_id = "athena.recon.threat_analyst"
-        analyst = Specialist(title="Threat Analyst")
+        analyst = Specialist(title="Signal Analyst")
         summoned.append(analyst)
 
         findings_text = _format_for_analyst(findings_by_operator)
@@ -549,7 +549,7 @@ def run_recon_committee(
             run_id=run_id,
             committee=_COMMITTEE,
             agent_id=analyst_agent_id,
-            title="Threat Analyst",
+            title="Signal Analyst",
         )
         pub.sendMessage(
             "agent.tool_called",
@@ -579,7 +579,7 @@ def run_recon_committee(
     leader_provider = _resolve(leader_cfg.provider, recon_cfg.provider, global_provider)
     leader_agent_id = "athena.recon.leader"
 
-    leader = Specialist(title="Recon Leader")
+    leader = Specialist(title="Recon Lead")
     leader_system = _load_system(leader_cfg.config_path)
     leader_backend = _backend_factory(leader_provider, ollama_url)
 
@@ -630,7 +630,7 @@ def run_recon_committee(
         run_id=run_id,
         committee=_COMMITTEE,
         agent_id=leader_agent_id,
-        title="Recon Leader",
+        title="Recon Lead",
     )
 
     raw_artifact = run_agent(
