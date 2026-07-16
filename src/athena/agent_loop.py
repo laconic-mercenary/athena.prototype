@@ -48,6 +48,7 @@ def run_agent(
     max_iterations: int,
     max_tokens: int = 4096,
     operator_queue: queue.Queue | None = None,
+    on_operator_reply: Callable[[str], None] | None = None,
 ) -> str:
     """Run an agent loop and return the final text response.
 
@@ -60,9 +61,21 @@ def run_agent(
     # Each ModelBackend instance is single-use per conversation.
     backend.begin(system=system, initial_message=initial_message)
 
+    # True when operator messages were injected at the end of the previous
+    # iteration; we capture the model's next text response as the reply.
+    _pending_operator_reply = False
+
     for _ in range(max_iterations):
         # Send the current conversation state to the model and get its next action.
         response = backend.complete(model=model, tools=tools or None, max_tokens=max_tokens)
+
+        # Surface the model's conversational reply to an operator injection.
+        # Only capture text from tool_use responses — end_turn text is the artifact JSON.
+        if _pending_operator_reply and on_operator_reply and response.stop_reason == "tool_use":
+            text = (response.text or "").strip()
+            if text:
+                on_operator_reply(text)
+        _pending_operator_reply = False
 
         if response.stop_reason == "end_turn":
             # The model is done — it produced a final text response (the artifact).
@@ -89,14 +102,20 @@ def run_agent(
 
         # Drain any operator messages queued between iterations and inject
         # them as user turns so the model sees them on the next complete().
+        # The [OPERATOR INTERRUPT] tag matches the framing in leader system prompts
+        # so the model recognises it as a mid-task note, not a new conversation.
         if operator_queue is not None:
+            _had_inject = False
             while True:
                 try:
                     msg = operator_queue.get_nowait()
-                    backend.inject_user_message(msg)
+                    backend.inject_user_message(f"[OPERATOR INTERRUPT]: {msg}")
                     logger.debug("operator message injected: %s", msg[:120])
+                    _had_inject = True
                 except queue.Empty:
                     break
+            if _had_inject:
+                _pending_operator_reply = True
 
     raise MaxIterationsExceeded(
         f"{agent_id}: reached max_iterations={max_iterations} without end_turn"

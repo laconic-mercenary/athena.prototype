@@ -15,10 +15,11 @@ const COMMITTEE_COLORS = {
   reporting:    '#eab308',
 }
 
+// Only critical and warn trigger the (!) badge — info findings are recorded but
+// don't warrant interrupting the operator.
 const FINDING_BORDER = {
   signal_critical: '#ef4444',
   signal_warn:     '#f97316',
-  signal_info:     '#3b82f6',
 }
 
 const FINDING_LABEL = {
@@ -187,11 +188,12 @@ function AgentNode({ data }) {
     }}>
       <Handle type="target" position={Position.Top}    style={{ visibility: 'hidden' }} />
 
-      {/* (!) badge — critical/warn alert */}
+      {/* (!) badge — finding alert; routes to committee lead (has the operator queue) */}
       {hasAlert && (
         <div
           className="nopan nodrag"
-          title="View finding"
+          title="View findings"
+          onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); onFinding() }}
           style={{
             position: 'absolute', top: -8, left: -8,
@@ -208,13 +210,12 @@ function AgentNode({ data }) {
         </div>
       )}
 
-      {/* (?) badge — chat available. Only leaders are valid chat targets
-          (specialists have no operator queue), so gate the badge to them. */}
+      {/* (?) badge — only leaders have an operator queue */}
       {isActive && isLeader && (
         <div
           className="nopan nodrag"
           title="Chat with lead"
-          onMouseDown={e => e.stopPropagation()}
+          onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); onChat() }}
           style={{
             position: 'absolute', top: -8, right: -8,
@@ -244,6 +245,21 @@ function AgentNode({ data }) {
           › {t.tool}
         </div>
       ))}
+
+      {/* Processing bar — 2px strip at bottom, slides while active */}
+      {isActive && (
+        <div style={{
+          position: 'absolute', bottom: 0, left: 0, right: 0,
+          height: 2, borderRadius: '0 0 6px 6px', overflow: 'hidden',
+          background: `${color}18`,
+        }}>
+          <div style={{
+            width: '38%', height: '100%',
+            background: `linear-gradient(90deg, transparent, ${color}, transparent)`,
+            animation: 'slide-bar 1.4s linear infinite',
+          }} />
+        </div>
+      )}
 
       <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
     </div>
@@ -326,10 +342,16 @@ export function CommitteeGraph({ state, dispatch }) {
               type: 'OPEN_CHAT',
               payload: { agentId: agent.id, agentTitle: agent.title || agent.id, findings: agent.findings || [] },
             }),
-            onFinding: () => dispatch({
-              type: 'OPEN_CHAT',
-              payload: { agentId: agent.id, agentTitle: agent.title || agent.id, findings: agent.findings || [], focusFindings: true },
-            }),
+            // (!) always targets the committee leader (has the operator queue).
+            // For specialist agents we route to their lead and show the specialist's own findings.
+            onFinding: () => {
+              const leaderId    = agent.id.endsWith('.leader') ? agent.id : `athena.${committee}.leader`
+              const leaderTitle = agents[leaderId]?.title || `${committee} lead`
+              dispatch({
+                type: 'OPEN_CHAT',
+                payload: { agentId: leaderId, agentTitle: leaderTitle, findings: agent.findings || [], focusFindings: true },
+              })
+            },
           },
         })
       })
@@ -474,6 +496,10 @@ export function CommitteeGraph({ state, dispatch }) {
         @keyframes node-pulse {
           0%, 100% { opacity: 1; }
           50%       { opacity: 0.35; }
+        }
+        @keyframes slide-bar {
+          0%   { transform: translateX(-100%); }
+          100% { transform: translateX(360%); }
         }
       `}</style>
       <ReactFlow

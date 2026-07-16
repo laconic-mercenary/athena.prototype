@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { sendChat } from '../api'
 
 const CLASSIFICATION_COLOR = {
@@ -13,19 +13,27 @@ const CLASSIFICATION_LABEL = {
   signal_info:     'INFO',
 }
 
-export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindings, onClose }) {
+export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindings, agentReplies, onClose }) {
   const [tab, setTab] = useState(focusFindings && findings?.length ? 'findings' : 'chat')
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [queued, setQueued] = useState(false)
   const [error, setError] = useState(null)
   const threadRef = useRef(null)
+
+  // Merge operator-sent messages with agent replies, sorted by timestamp.
+  const thread = useMemo(() => {
+    const ops = messages.map(m => ({ ...m, role: 'operator' }))
+    const reps = (agentReplies || []).map(r => ({ ...r, role: 'agent' }))
+    return [...ops, ...reps].sort((a, b) => a.ts - b.ts)
+  }, [messages, agentReplies])
 
   useEffect(() => {
     if (threadRef.current) {
       threadRef.current.scrollTop = threadRef.current.scrollHeight
     }
-  }, [messages])
+  }, [thread])
 
   async function handleSend(e) {
     e.preventDefault()
@@ -36,8 +44,11 @@ export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindin
     setInput('')
     setSending(true)
     setError(null)
+    setQueued(false)
     try {
       await sendChat(runId, agentId, text)
+      setQueued(true)
+      setTimeout(() => setQueued(false), 3000)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -101,15 +112,17 @@ export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindin
         {tab === 'chat' && (
           <>
             <div className="chat-thread" ref={threadRef}>
-              {messages.length === 0 && (
+              {thread.length === 0 && (
                 <div className="chat-empty">
                   Messages sent here are injected into this agent's queue during its run.
                 </div>
               )}
-              {messages.map((m, i) => (
-                <div key={i} className="chat-msg">
+              {thread.map((m, i) => (
+                <div key={i} className={`chat-msg${m.role === 'agent' ? ' chat-msg--agent' : ''}`}>
                   <div className="chat-msg-meta">
-                    <span className="chat-msg-role">Operator</span>
+                    <span className={`chat-msg-role${m.role === 'agent' ? ' chat-msg-role--agent' : ''}`}>
+                      {m.role === 'agent' ? agentTitle : 'Operator'}
+                    </span>
                     <span className="chat-msg-time">
                       {new Date(m.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                     </span>
@@ -131,9 +144,10 @@ export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindin
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(e) } }}
               />
               <div className="chat-actions">
-                {error && <span className="chat-error">{error}</span>}
+                {error  && <span className="chat-error">{error}</span>}
+                {queued && <span className="chat-queued">Queued ✓ — injected on next agent iteration</span>}
                 <button type="submit" className="chat-send" disabled={sending || !input.trim()}>
-                  {sending ? 'Sending…' : 'Send'}
+                  {sending ? 'Sending…' : 'Inject'}
                 </button>
               </div>
             </form>

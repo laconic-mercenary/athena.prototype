@@ -59,10 +59,87 @@ function groupByTactic(techniques) {
   return groups
 }
 
+// MITRE ATT&CK tactics in canonical order.
+// enabled = our pipeline has agents that cover this objective.
+// tactic = the matching tactic name in TECHNIQUES (for counting selected techniques).
+const OBJECTIVES = [
+  {
+    id: 'TA0043', name: 'Reconnaissance',      enabled: true,
+    tactic: 'Reconnaissance',
+    desc: 'Map the external attack surface — hosts, open ports, exposed services, and web endpoints.',
+  },
+  {
+    id: 'TA0042', name: 'Resource Development', enabled: false,
+    tactic: null,
+    desc: 'Acquire infrastructure, accounts, and tooling required before active operations begin.',
+  },
+  {
+    id: 'TA0001', name: 'Initial Access',       enabled: false,
+    tactic: null,
+    desc: 'Establish a foothold via phishing, exploitation of public-facing applications, or supply-chain compromise.',
+  },
+  {
+    id: 'TA0002', name: 'Execution',            enabled: false,
+    tactic: 'Execution',
+    desc: 'Run adversary-controlled code on target systems to trigger further stages.',
+  },
+  {
+    id: 'TA0003', name: 'Persistence',          enabled: false,
+    tactic: null,
+    desc: 'Maintain access across reboots, credential rotations, and defensive clean-up actions.',
+  },
+  {
+    id: 'TA0004', name: 'Privilege Escalation', enabled: false,
+    tactic: null,
+    desc: 'Gain elevated permissions to unlock restricted resources and high-value targets.',
+  },
+  {
+    id: 'TA0005', name: 'Defense Evasion',      enabled: false,
+    tactic: null,
+    desc: 'Bypass or suppress security controls, logging pipelines, and detection mechanisms.',
+  },
+  {
+    id: 'TA0006', name: 'Credential Access',    enabled: false,
+    tactic: 'Credential Access',
+    desc: 'Harvest or brute-force credentials to authenticate as legitimate users.',
+  },
+  {
+    id: 'TA0007', name: 'Discovery',            enabled: true,
+    tactic: 'Discovery',
+    desc: 'Enumerate internal network topology, live hosts, running services, and account structure.',
+  },
+  {
+    id: 'TA0008', name: 'Lateral Movement',     enabled: false,
+    tactic: 'Lateral Movement',
+    desc: 'Pivot across the network to reach additional hosts, segments, and high-value systems.',
+  },
+  {
+    id: 'TA0009', name: 'Collection',           enabled: true,
+    tactic: 'Collection',
+    desc: 'Retrieve and consolidate data from identified sources — databases, repositories, and local stores.',
+  },
+  {
+    id: 'TA0011', name: 'Command and Control',  enabled: false,
+    tactic: null,
+    desc: 'Establish persistent, covert channels to direct ongoing agent operations from outside.',
+  },
+  {
+    id: 'TA0010', name: 'Exfiltration',         enabled: false,
+    tactic: 'Exfiltration',
+    desc: 'Transfer collected data out of the target environment via covert or encrypted channels.',
+  },
+  {
+    id: 'TA0040', name: 'Impact',               enabled: false,
+    tactic: 'Impact',
+    desc: 'Manipulate, disrupt, or destroy target systems, data, and availability.',
+  },
+]
+
 export function OrchestratorDialog({ state, dispatch }) {
   const { engagement, dialogMessages } = state
 
-  const [tab, setTab] = useState('techniques')
+  const [tab, setTab] = useState('objectives')
+  const [panelOpen, setPanelOpen] = useState(false)
   const [selected, setSelected] = useState(() =>
     new Set(TECHNIQUES.filter(t => t.enabled).map(t => t.id))
   )
@@ -130,7 +207,15 @@ export function OrchestratorDialog({ state, dispatch }) {
           <span className="dialog-step-arrow">›</span>
           <span className="dialog-step dialog-step--next">Engagement</span>
         </div>
-        <span className="dialog-run-id">{engagement.run_id}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            className={`dash-action-btn${panelOpen ? ' dash-action-btn--on' : ''}`}
+            onClick={() => setPanelOpen(o => !o)}
+          >
+            {panelOpen ? 'Hide Techniques' : 'View Techniques'}
+          </button>
+          <span className="dialog-run-id">{engagement.run_id}</span>
+        </div>
       </div>
 
       <div className="dialog-body">
@@ -214,8 +299,14 @@ export function OrchestratorDialog({ state, dispatch }) {
         </div>
 
         {/* ── Extensions pane ── */}
-        <div className="dialog-ext-pane">
+        <div className={`dialog-ext-pane${panelOpen ? '' : ' dialog-ext-pane--hidden'}`}>
           <div className="dialog-tabs">
+            <button
+              className={`dialog-tab${tab === 'objectives' ? ' dialog-tab--active' : ''}`}
+              onClick={() => setTab('objectives')}
+            >
+              Objectives
+            </button>
             <button
               className={`dialog-tab${tab === 'techniques' ? ' dialog-tab--active' : ''}`}
               onClick={() => setTab('techniques')}
@@ -229,6 +320,39 @@ export function OrchestratorDialog({ state, dispatch }) {
               Tools
             </button>
           </div>
+
+          {tab === 'objectives' && (
+            <div className="dialog-ext-scroll">
+              {OBJECTIVES.map(obj => {
+                const techCount = obj.tactic
+                  ? TECHNIQUES.filter(t => t.tactic === obj.tactic && t.enabled && selected.has(t.id)).length
+                  : 0
+                return (
+                  <div
+                    key={obj.id}
+                    className={`dialog-obj-card${obj.enabled ? ' dialog-obj-card--active' : ' dialog-obj-card--locked'}`}
+                  >
+                    <div className="dialog-obj-status">
+                      {obj.enabled
+                        ? <span className="dialog-obj-dot" />
+                        : <span className="dialog-ext-lock">🔒</span>
+                      }
+                    </div>
+                    <div className="dialog-obj-body">
+                      <div className="dialog-obj-header">
+                        <span className={`dialog-obj-id${obj.enabled ? '' : ' dialog-obj-id--dim'}`}>{obj.id}</span>
+                        <span className={`dialog-obj-name${obj.enabled ? '' : ' dialog-obj-name--dim'}`}>{obj.name}</span>
+                        {obj.enabled && techCount > 0 && (
+                          <span className="dialog-obj-count">{techCount} technique{techCount !== 1 ? 's' : ''}</span>
+                        )}
+                      </div>
+                      <div className={`dialog-obj-desc${obj.enabled ? '' : ' dialog-obj-desc--dim'}`}>{obj.desc}</div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
 
           {tab === 'techniques' && (
             <div className="dialog-ext-scroll">

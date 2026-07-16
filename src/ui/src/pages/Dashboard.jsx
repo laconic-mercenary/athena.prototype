@@ -205,6 +205,7 @@ export function Dashboard({ state, dispatch }) {
           agentTitle={chat.agentTitle}
           findings={chat.findings}
           focusFindings={chat.focusFindings}
+          agentReplies={state.agentReplies?.[chat.agentId] || []}
           onClose={() => dispatch({ type: 'CLOSE_CHAT' })}
         />
       )}

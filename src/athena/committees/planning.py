@@ -193,6 +193,9 @@ def run_planning_committee(
         title="Planning Lead",
     )
 
+    def _on_leader_reply(text: str) -> None:
+        pub.sendMessage("agent.operator_reply", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id, text=text)
+
     raw_plan = run_agent(
         agent_id=leader_agent_id,
         system=leader_system,
@@ -204,6 +207,7 @@ def run_planning_committee(
         max_iterations=config.max_agent_iterations,
         max_tokens=SYNTHESIS_MAX_TOKENS,
         operator_queue=leader_queue,
+        on_operator_reply=_on_leader_reply,
     )
 
     pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id)

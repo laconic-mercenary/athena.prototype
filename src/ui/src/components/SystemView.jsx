@@ -14,10 +14,10 @@ const COMMITTEE_COLORS = {
   reporting: '#eab308',
 }
 
+// Only critical and warn trigger the (!) badge — info findings don't interrupt the operator.
 const FINDING_BORDER = {
   signal_critical: '#ef4444',
   signal_warn:     '#f97316',
-  signal_info:     '#3b82f6',
 }
 
 const FINDING_LABEL = {
@@ -140,7 +140,8 @@ function SystemAgentNode({ data }) {
       {alertColor && (
         <div
           className="nopan nodrag"
-          title="View finding"
+          title="View findings"
+          onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); onFinding() }}
           style={{
             position: 'absolute', top: -7, left: -7,
@@ -175,6 +176,20 @@ function SystemAgentNode({ data }) {
       {lastTool && (
         <div style={{ fontSize: 8, color: `${color}55`, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130 }}>
           › {lastTool.tool}
+        </div>
+      )}
+
+      {isActive && (
+        <div style={{
+          position: 'absolute', bottom: 0, left: 0, right: 0,
+          height: 2, borderRadius: '0 0 6px 6px', overflow: 'hidden',
+          background: `${color}18`,
+        }}>
+          <div style={{
+            width: '38%', height: '100%',
+            background: `linear-gradient(90deg, transparent, ${color}, transparent)`,
+            animation: 'slide-bar 1.4s linear infinite',
+          }} />
         </div>
       )}
 
@@ -411,6 +426,10 @@ export function SystemView({ state, dispatch }) {
         @keyframes node-pulse {
           0%, 100% { opacity: 1; }
           50%       { opacity: 0.35; }
+        }
+        @keyframes slide-bar {
+          0%   { transform: translateX(-100%); }
+          100% { transform: translateX(360%); }
         }
       `}</style>
       <ReactFlow

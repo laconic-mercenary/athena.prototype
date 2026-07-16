@@ -641,6 +641,9 @@ def run_recon_committee(
         title="Recon Lead",
     )
 
+    def _on_leader_reply(text: str) -> None:
+        pub.sendMessage("agent.operator_reply", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id, text=text)
+
     raw_artifact = run_agent(
         agent_id=leader_agent_id,
         system=leader_system,
@@ -652,6 +655,7 @@ def run_recon_committee(
         max_iterations=_LEADER_MAX_ITERATIONS,
         max_tokens=SYNTHESIS_MAX_TOKENS,
         operator_queue=leader_queue,
+        on_operator_reply=_on_leader_reply,
     )
 
     pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id)

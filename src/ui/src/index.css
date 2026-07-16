@@ -396,6 +396,7 @@ html, body, #root {
 .chat-msg { display: flex; flex-direction: column; gap: 3px; }
 .chat-msg-meta { display: flex; align-items: center; gap: 7px; }
 .chat-msg-role { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--orange); }
+.chat-msg-role--agent { color: var(--blue, #3b82f6); }
 .chat-msg-time { font-size: 9px; color: var(--text-muted); }
 .chat-msg-body {
   background: rgba(249,115,22,0.05);
@@ -406,6 +407,11 @@ html, body, #root {
   font-size: 12px;
   line-height: 1.5;
   color: var(--text);
+}
+.chat-msg--agent .chat-msg-body {
+  background: rgba(59,130,246,0.06);
+  border-color: rgba(59,130,246,0.18);
+  border-left-color: #3b82f6;
 }
 
 .chat-form { display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -424,7 +430,8 @@ html, body, #root {
 .chat-input:focus { background: #0f172a; }
 .chat-input::placeholder { color: var(--text-muted); }
 .chat-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 8px 12px; }
-.chat-error { color: var(--red); font-size: 11px; flex: 1; }
+.chat-error  { color: var(--red);   font-size: 11px; flex: 1; }
+.chat-queued { color: var(--green); font-size: 11px; flex: 1; }
 .chat-send {
   background: var(--accent-plan);
   color: #000;
@@ -711,6 +718,7 @@ html, body, #root {
   flex-direction: column;
   background: var(--bg-surface);
 }
+.dialog-ext-pane--hidden { display: none; }
 
 .dialog-tabs {
   display: flex;
@@ -854,6 +862,94 @@ html, body, #root {
   color: var(--orange);
   border: 1px solid rgba(249,115,22,0.3);
 }
+
+/* ── Objectives tab ── */
+.dialog-obj-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 11px 12px;
+  margin-bottom: 5px;
+}
+
+.dialog-obj-card--active {
+  border-color: rgba(34,197,94,0.25);
+  background: rgba(34,197,94,0.04);
+}
+
+.dialog-obj-card--locked { opacity: 0.35; }
+
+.dialog-obj-status {
+  padding-top: 2px;
+  flex-shrink: 0;
+  width: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.dialog-obj-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 6px #22c55e;
+  animation: ticker-pulse 2.2s ease-in-out infinite;
+  margin-top: 3px;
+}
+
+.dialog-obj-body { flex: 1; min-width: 0; }
+
+.dialog-obj-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.dialog-obj-id {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: #22c55e;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.dialog-obj-id--dim { color: var(--text-muted); }
+
+.dialog-obj-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.dialog-obj-name--dim { color: var(--text-muted); }
+
+.dialog-obj-count {
+  margin-left: auto;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: #22c55e;
+  background: rgba(34,197,94,0.1);
+  border: 1px solid rgba(34,197,94,0.25);
+  border-radius: 2px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.dialog-obj-desc {
+  font-size: 10px;
+  color: var(--text);
+  line-height: 1.55;
+  opacity: 0.75;
+}
+
+.dialog-obj-desc--dim { color: var(--text-muted); }
 
 /* ── Tools tab ── */
 .dialog-tools-note {
