@@ -44,3 +44,19 @@ export async function getArtifactMarkdown(runId, name) {
   if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
   return resp.text()
 }
+
+export async function planReviewChat(runId, message) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/plan-review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  }))
+}
+
+export async function reportChat(runId, message) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/report-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  }))
+}

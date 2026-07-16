@@ -56,6 +56,12 @@ class EngagementContext:
     pending_answer: str | None = None
     # Per-leader queues for mid-run operator injection.
     agent_queues: dict[str, queue.Queue] = field(default_factory=dict)
+    # Plan-review approval gate — blocks pipeline between planning and retrieval.
+    approval_event: threading.Event = field(default_factory=threading.Event)
+    approval_rejected: bool = False
+    awaiting_approval: bool = False
+    plan_review_history: list = field(default_factory=list)   # [{"q": str, "a": str}]
+    report_chat_history: list = field(default_factory=list)   # [{"q": str, "a": str}]
 
 
 def get_context(run_id: str) -> EngagementContext | None:
@@ -90,6 +96,15 @@ def start_engagement(instructions: str, config: AthenaConfig) -> str:
         ctx.pending_answer = None
         return answer
 
+    def _approval_gate_handler() -> bool:
+        ctx.awaiting_approval = True
+        ctx.approval_rejected = False
+        ctx.approval_event.clear()
+        pub.sendMessage("engagement.awaiting_approval", run_id=run_id)
+        ctx.approval_event.wait()
+        ctx.awaiting_approval = False
+        return not ctx.approval_rejected
+
     def _run() -> None:
         try:
             result = run_orchestrator(
@@ -99,6 +114,7 @@ def start_engagement(instructions: str, config: AthenaConfig) -> str:
                 ask_user_handler=_ask_user_handler,
                 run_id=run_id,
                 leader_queues=ctx.agent_queues,
+                approval_gate_handler=_approval_gate_handler,
             )
             ctx.status = "completed" if result is not None else "rejected"
         except Exception:
@@ -128,3 +144,48 @@ def send_to_agent(run_id: str, agent_id: str, message: str) -> None:
     if q is None:
         raise KeyError(f"No queue for agent: {agent_id!r}")
     q.put_nowait(message)
+
+
+def resolve_approval(run_id: str, *, approved: bool) -> None:
+    """Unblock the plan-review approval gate. approved=True continues retrieval, False cancels."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    if not ctx.awaiting_approval:
+        raise ValueError("Engagement is not currently awaiting approval")
+    ctx.approval_rejected = not approved
+    ctx.approval_event.set()
+    if approved:
+        pub.sendMessage("engagement.approved", run_id=run_id)
+
+
+def get_plan_review_history(run_id: str) -> list:
+    """Return the running Q&A history for the plan review session."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    return ctx.plan_review_history
+
+
+def add_plan_review_exchange(run_id: str, question: str, answer: str) -> None:
+    """Append a Q&A exchange to the plan review history."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    ctx.plan_review_history.append({"q": question, "a": answer})
+
+
+def get_report_chat_history(run_id: str) -> list:
+    """Return the running Q&A history for the report debrief session."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    return ctx.report_chat_history
+
+
+def add_report_chat_exchange(run_id: str, question: str, answer: str) -> None:
+    """Append a Q&A exchange to the report chat history."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    ctx.report_chat_history.append({"q": question, "a": answer})

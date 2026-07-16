@@ -1,6 +1,9 @@
 artifacts_dir: ./artifacts
 max_agent_iterations: 20
 
+plan_review:
+  model: claude-haiku-4-5
+
 model:
   default: claude-haiku-4-5
   provider: anthropic

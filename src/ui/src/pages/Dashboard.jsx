@@ -3,6 +3,8 @@ import { CommitteeGraph } from '../components/CommitteeGraph'
 import { SystemView } from '../components/SystemView'
 import { ArtifactTable } from '../components/ArtifactTable'
 import { OperatorChat } from '../components/OperatorChat'
+import { PlanReviewChat } from '../components/PlanReviewChat'
+import { ReportChat } from '../components/ReportChat'
 import { ReportModal } from '../components/ReportModal'
 
 // Report buttons: which committee's artifact_emitted unlocks them, the .md
@@ -86,6 +88,8 @@ export function Dashboard({ state, dispatch }) {
   const [graphTab, setGraphTab] = useState('agent')
   const [showArtifacts, setShowArtifacts] = useState(false)
   const [openReport, setOpenReport] = useState(null)
+  const [planReviewOpen, setPlanReviewOpen] = useState(false)
+  const [reportChatOpen, setReportChatOpen] = useState(false)
 
   // Highest-severity committee currently needing operator attention. Drives the
   // header alert button — a guaranteed-clickable path to brief the lead about a
@@ -118,7 +122,14 @@ export function Dashboard({ state, dispatch }) {
     <div className="dashboard">
       <header className="dashboard-header">
         <h1 className="dash-title">Athena</h1>
-        {attention && !chat.isOpen && (
+        {engagement.awaitingApproval ? (
+          <button
+            className="dash-alert-btn dash-alert-btn--approval"
+            onClick={() => setPlanReviewOpen(true)}
+          >
+            ✦ Planning complete — review plan and approve Retrieval →
+          </button>
+        ) : attention && !chat.isOpen && (
           <button
             className={`dash-alert-btn dash-alert-btn--${attention.sev === 'signal_critical' ? 'crit' : 'warn'}`}
             onClick={() => openLeadChat(attention)}
@@ -167,6 +178,15 @@ export function Dashboard({ state, dispatch }) {
                   </button>
                 )
               )}
+              {committees.reporting?.artifactReady && (
+                <button
+                  className="dash-action-btn"
+                  style={{ borderColor: '#3b82f6', color: '#3b82f6' }}
+                  onClick={() => setReportChatOpen(true)}
+                >
+                  Discuss Report
+                </button>
+              )}
               {graphTab === 'agent' && (
                 <button
                   className={`dash-action-btn${showArtifacts ? ' dash-action-btn--on' : ''}`}
@@ -197,6 +217,22 @@ export function Dashboard({ state, dispatch }) {
           </div>
         )}
       </div>
+
+      {reportChatOpen && (
+        <ReportChat
+          runId={engagement.run_id}
+          onClose={() => setReportChatOpen(false)}
+        />
+      )}
+
+      {planReviewOpen && engagement.awaitingApproval && (
+        <PlanReviewChat
+          runId={engagement.run_id}
+          onApproved={() => { setPlanReviewOpen(false); dispatch({ type: 'ENGAGEMENT_APPROVED', payload: {} }) }}
+          onRejected={() => { setPlanReviewOpen(false); dispatch({ type: 'ENGAGEMENT_REJECTED', payload: {} }) }}
+          onClose={() => setPlanReviewOpen(false)}
+        />
+      )}
 
       {chat.isOpen && (
         <OperatorChat

@@ -11,7 +11,7 @@ const INITIAL_COMMITTEE = { status: 'inactive', classification: null, badgeCount
 
 const initialState = {
   page: 'request',
-  engagement: { run_id: null, status: 'idle', target: null, notes: null },
+  engagement: { run_id: null, status: 'idle', target: null, notes: null, awaitingApproval: false },
   committees: Object.fromEntries(COMMITTEES.map(c => [c, { ...INITIAL_COMMITTEE, findings: [] }])),
   agents: {},
   agentReplies: {},
@@ -53,7 +53,23 @@ function reducer(state, action) {
   }
 
   if (type === 'ENGAGEMENT_REJECTED') {
-    return { ...state, engagement: { ...state.engagement, status: 'rejected' } }
+    return { ...state, engagement: { ...state.engagement, status: 'rejected', awaitingApproval: false } }
+  }
+
+  if (type === 'AWAITING_APPROVAL') {
+    return {
+      ...state,
+      engagement: { ...state.engagement, awaitingApproval: true },
+      latestEvent: { kind: 'committee', text: 'Planning complete — awaiting operator approval', ts: Date.now() },
+    }
+  }
+
+  if (type === 'ENGAGEMENT_APPROVED') {
+    return {
+      ...state,
+      engagement: { ...state.engagement, awaitingApproval: false },
+      latestEvent: { kind: 'committee', text: 'Retrieval phase approved', ts: Date.now() },
+    }
   }
 
   if (type === 'RUN_STARTED') {
@@ -61,7 +77,7 @@ function reducer(state, action) {
     return {
       ...state,
       page: 'dialog',
-      engagement: { ...state.engagement, run_id: payload.run_id, status: 'running' },
+      engagement: { ...state.engagement, run_id: payload.run_id, status: 'running', awaitingApproval: false },
       committees: initialState.committees,
       agents: {},
       agentReplies: {},
@@ -262,7 +278,9 @@ export default function App() {
     if (topic === 'agent.spun_down')      dispatch({ type: 'AGENT_SPUN_DOWN', payload })
     if (topic === 'agent.tool_called')    dispatch({ type: 'AGENT_TOOL_CALLED', payload })
     if (topic === 'agent.finding')         dispatch({ type: 'AGENT_FINDING', payload })
-    if (topic === 'agent.operator_reply')  dispatch({ type: 'AGENT_OPERATOR_REPLY', payload })
+    if (topic === 'agent.operator_reply')       dispatch({ type: 'AGENT_OPERATOR_REPLY', payload })
+    if (topic === 'engagement.awaiting_approval') dispatch({ type: 'AWAITING_APPROVAL', payload })
+    if (topic === 'engagement.approved')          dispatch({ type: 'ENGAGEMENT_APPROVED', payload })
     if (topic === 'orchestrator.question') dispatch({ type: 'ORCHESTRATOR_QUESTION', payload })
     if (topic === 'orchestrator.answer')   dispatch({ type: 'ORCHESTRATOR_ANSWER', payload })
   }, [])

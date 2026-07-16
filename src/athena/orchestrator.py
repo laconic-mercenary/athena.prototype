@@ -22,7 +22,7 @@ import yaml
 from pubsub import pub
 
 from athena.agent_loop import run_agent
-from athena.artifacts import RunLogger, render_plan_report, render_report, render_retrieval_report
+from athena.artifacts import RunLogger, render_plan_report, render_recon_report, render_report, render_retrieval_report
 from athena.committees.planning import run_planning_committee
 from athena.committees.recon import run_recon_committee
 from athena.committees.reporting import run_reporting_committee
@@ -90,6 +90,7 @@ def run_orchestrator(
     ask_user_handler: Callable[[str], str] | None = None,
     run_id: str | None = None,
     leader_queues: dict[str, queue.Queue] | None = None,
+    approval_gate_handler: Callable[[], bool] | None = None,
 ) -> OrchestratorApproval | None:
     """Run the full two-phase pipeline.
 
@@ -217,6 +218,7 @@ def run_orchestrator(
     pub.sendMessage("committee.completed", run_id=approval.run_id, committee="recon")
     logger.log("recon artifact emitted")
     logger.write_artifact("recon", recon_artifact.model_dump_json(indent=2))
+    (logger.run_dir / "recon.md").write_text(render_recon_report(recon_artifact))
     pub.sendMessage(
         "committee.artifact_emitted",
         run_id=approval.run_id,
@@ -246,6 +248,19 @@ def run_orchestrator(
         artifact_path="plan.json",
     )
     logger.log("planning committee spun down")
+
+    # Operator approval gate — block until the operator reviews the plan and approves.
+    if approval_gate_handler is not None:
+        approved = approval_gate_handler()
+        if not approved:
+            _log.info("retrieval phase rejected by operator at approval gate")
+            pub.sendMessage(
+                "engagement.rejected",
+                run_id=approval.run_id,
+                reason="Operator rejected the retrieval phase after plan review.",
+            )
+            return None
+        _log.info("retrieval phase approved by operator")
 
     logger.log("retrieval committee summoned")
     pub.sendMessage("committee.started", run_id=approval.run_id, committee="retrieval")

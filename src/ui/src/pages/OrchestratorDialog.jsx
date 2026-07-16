@@ -212,7 +212,7 @@ export function OrchestratorDialog({ state, dispatch }) {
             className={`dash-action-btn${panelOpen ? ' dash-action-btn--on' : ''}`}
             onClick={() => setPanelOpen(o => !o)}
           >
-            {panelOpen ? 'Hide Techniques' : 'View Techniques'}
+            {panelOpen ? 'Hide Playbook' : 'View Playbook'}
           </button>
           <span className="dialog-run-id">{engagement.run_id}</span>
         </div>

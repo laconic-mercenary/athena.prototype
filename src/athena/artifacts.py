@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from athena.logging_setup import UTC_FORMATTER
 
 if TYPE_CHECKING:
-    from athena.schemas import PlanArtifact, ReportArtifact, RetrievalArtifact
+    from athena.schemas import PlanArtifact, ReconArtifact, ReportArtifact, RetrievalArtifact
 
 _PRIORITY_LABEL = {
     "critical": "CRITICAL",
@@ -23,6 +23,63 @@ _PRIORITY_LABEL = {
     "medium":   "MEDIUM",
     "low":      "LOW",
 }
+
+
+def render_recon_report(artifact: "ReconArtifact") -> str:
+    """Render a ReconArtifact as a human-readable markdown report."""
+    lines: list[str] = [
+        "# Athena Reconnaissance Report",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| **Target** | `{artifact.target}` |",
+        f"| **Run ID** | `{artifact.run_id}` |",
+        f"| **Generated** | {artifact.created_at.strftime('%Y-%m-%dT%H:%M:%SZ')} |",
+        "",
+        "---",
+        "",
+        "## Summary",
+        "",
+        artifact.summary,
+        "",
+    ]
+
+    if artifact.threat_analysis:
+        lines += [
+            "---",
+            "",
+            "## Threat Analysis",
+            "",
+            artifact.threat_analysis.summary,
+            "",
+        ]
+
+    if artifact.observations:
+        lines += [
+            "---",
+            "",
+            f"## Observations ({len(artifact.observations)})",
+            "",
+        ]
+        for i, obs in enumerate(artifact.observations, 1):
+            cls = obs.classification.value if hasattr(obs.classification, "value") else str(obs.classification)
+            cat = obs.category.value if hasattr(obs.category, "value") else str(obs.category)
+            excerpt = obs.command_output[:600] + ("…" if len(obs.command_output) > 600 else "")
+            lines += [
+                f"### {i}. `{obs.command}`",
+                "",
+                f"**Classification:** {cls.upper()}  **Category:** {cat}  **ID:** `{obs.id}`",
+                "",
+                "```",
+                excerpt,
+                "```",
+                "",
+            ]
+            for c in obs.comments:
+                lines += [f"> {c.author_id}: {c.text}", ""]
+            lines += ["---", ""]
+
+    return "\n".join(lines)
 
 
 def render_plan_report(artifact: "PlanArtifact") -> str:

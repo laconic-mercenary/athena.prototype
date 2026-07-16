@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from athena.config import AthenaConfig
 from athena.server import bus
-from athena.server.routes import artifacts, chat, engagements, events
+from athena.server.routes import artifacts, chat, engagements, events, plan_review, report_chat
 
 _UI_DIST = Path(__file__).parent.parent.parent.parent / "src" / "ui" / "dist"
 
@@ -50,6 +50,8 @@ def create_app(config: AthenaConfig) -> FastAPI:
     app.include_router(events.router)
     app.include_router(chat.router)
     app.include_router(artifacts.router)
+    app.include_router(plan_review.router)
+    app.include_router(report_chat.router)
 
     # Serve the built React app when dist/ exists (production mode).
     if _UI_DIST.is_dir():
