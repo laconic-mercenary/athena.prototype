@@ -15,7 +15,7 @@ import json
 import logging
 import queue
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import yaml
 from pubsub import pub
@@ -70,6 +70,7 @@ def run_planning_committee(
     recon_artifact: ReconArtifact,
     config: AthenaConfig,
     _backend_factory: BackendFactory = make_backend,
+    ask_user_handler: Callable[[str], str] | None = None,
     leader_queue: queue.Queue | None = None,
 ) -> PlanArtifact:
     """Run the Planning committee and return a validated PlanArtifact."""
@@ -165,6 +166,17 @@ def run_planning_committee(
     leader_backend = _backend_factory(leader_provider, ollama_url)
 
     def leader_dispatch(tool: str, inp: dict) -> str:
+        if tool == "ask_user":
+            question = inp["question"]
+            if ask_user_handler is not None:
+                answer = ask_user_handler(question)
+            else:
+                # CLI path: handler not injected, send event here and read stdin
+                pub.sendMessage("planning.leader.question", run_id=run_id, question=question)
+                print(f"\n[PlanningLeader] {question}")
+                answer = input("> ").strip()
+                pub.sendMessage("planning.leader.answer", run_id=run_id, answer=answer)
+            return _run_specialist(inp["name"])
         if tool == "summon_specialist":
             pub.sendMessage(
                 "agent.tool_called",
