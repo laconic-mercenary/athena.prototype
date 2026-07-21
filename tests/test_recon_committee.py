@@ -102,27 +102,26 @@ THREAT_ANALYST_RESPONSE = """## CVE Candidates
 Outdated Apache 2.4.6 with an unauthenticated admin endpoint presents high risk.
 CVE-2017-9798 applies if OPTIONS method is enabled. Immediate follow-up recommended."""
 
-ARTIFACT_JSON = json.dumps({
-    "observations": [
-        {
-            "specialist_id": "PLACEHOLDER",
-            "command": "nmap_scan target",
-            "command_output": "22/tcp open ssh, 80/tcp open http",
-            "classification": "signal_info",
-            "category": "network",
-            "comments": [],
-        },
-        {
-            "specialist_id": "PLACEHOLDER",
-            "command": "http_head http://target/admin",
-            "command_output": "Status: 200, Server: Apache/2.4.6",
-            "classification": "signal_warn",
-            "category": "exposure",
-            "comments": [{"author_id": "leader-id", "text": "CVE-2017-9798 candidate"}],
-        },
-    ],
-    "summary": "Apache 2.4.6 exposed on port 80 with unauthenticated /admin endpoint.",
-})
+# Recon leader now calls record_observation once per finding, then outputs
+# only {"summary": "..."}.  These constants represent the two observations the
+# scripted leader backend will emit as tool calls.
+OBS1_DATA = {
+    "specialist_id": "PLACEHOLDER",
+    "command": "nmap_scan target",
+    "command_output": "22/tcp open ssh, 80/tcp open http",
+    "classification": "signal_info",
+    "category": "network",
+    "comments": [],
+}
+OBS2_DATA = {
+    "specialist_id": "PLACEHOLDER",
+    "command": "http_head http://target/admin",
+    "command_output": "Status: 200, Server: Apache/2.4.6",
+    "classification": "signal_warn",
+    "category": "exposure",
+    "comments": [{"author_id": "leader-id", "text": "CVE-2017-9798 candidate"}],
+}
+LEADER_SUMMARY_JSON = json.dumps({"summary": "Apache 2.4.6 exposed on port 80 with unauthenticated /admin endpoint."})
 
 
 def _make_backends(*responses_per_backend):
@@ -137,7 +136,11 @@ def test_returns_valid_recon_artifact(config, approval):
         [_end(SERVICE_FINDINGS)],           # service_operator (Phase 1)
         [_end(WEB_FINDINGS)],              # web_operator (Phase 1)
         [_end(THREAT_ANALYST_RESPONSE)],      # threat_analyst (Phase 2)
-        [_end(ARTIFACT_JSON)],             # leader — no follow-up (Phase 3+4)
+        [                                  # leader — record_observation calls, then summary
+            _tool_call("record_observation", OBS1_DATA, "tc-obs1"),
+            _tool_call("record_observation", OBS2_DATA, "tc-obs2"),
+            _end(LEADER_SUMMARY_JSON),
+        ],
     )
 
     artifact = run_recon_committee(approval=approval, config=config, _backend_factory=factory)
@@ -154,7 +157,7 @@ def test_threat_analysis_populated(config, approval):
         [_end(SERVICE_FINDINGS)],
         [_end(WEB_FINDINGS)],
         [_end(THREAT_ANALYST_RESPONSE)],
-        [_end(ARTIFACT_JSON)],
+        [_end(LEADER_SUMMARY_JSON)],
     )
 
     artifact = run_recon_committee(approval=approval, config=config, _backend_factory=factory)
@@ -176,10 +179,10 @@ def test_leader_can_summon_operator_for_followup(config, approval):
         [_end(SERVICE_FINDINGS)],
         [_end(WEB_FINDINGS)],
         [_end(THREAT_ANALYST_RESPONSE)],
-        # Leader calls summon_operator then emits artifact
+        # Leader calls summon_operator, then emits summary
         [
             _tool_call("summon_operator", {"name": "web_operator", "task": "GET /server-info"}, "tc1"),
-            _end(ARTIFACT_JSON),
+            _end(LEADER_SUMMARY_JSON),
         ],
         [_end(followup_findings)],  # web_operator Phase 3
     )
@@ -199,7 +202,7 @@ def test_operator_ids_are_python_assigned(config, approval):
         [_end(SERVICE_FINDINGS)],
         [_end(WEB_FINDINGS)],
         [_end(THREAT_ANALYST_RESPONSE)],
-        [_end(ARTIFACT_JSON)],
+        [_end(LEADER_SUMMARY_JSON)],
     )
 
     artifact = run_recon_committee(approval=approval, config=config, _backend_factory=factory)
@@ -220,7 +223,7 @@ def test_threat_analyst_json_parse_failure_produces_summary_fallback(config, app
         [_end(SERVICE_FINDINGS)],
         [_end(WEB_FINDINGS)],
         [_end("The target appears to be running a vulnerable Apache installation.")],
-        [_end(ARTIFACT_JSON)],
+        [_end(LEADER_SUMMARY_JSON)],
     )
 
     artifact = run_recon_committee(approval=approval, config=config, _backend_factory=factory)
@@ -260,7 +263,7 @@ def test_missing_threat_analyst_config_does_not_crash(tmp_path, approval):
         [_end(NETWORK_FINDINGS)],
         [_end(SERVICE_FINDINGS)],
         [_end(WEB_FINDINGS)],
-        [_end(ARTIFACT_JSON)],
+        [_end(LEADER_SUMMARY_JSON)],
     )
 
     artifact = run_recon_committee(approval=approval, config=config, _backend_factory=factory)
@@ -269,27 +272,33 @@ def test_missing_threat_analyst_config_does_not_crash(tmp_path, approval):
     assert "No threat analyst" in artifact.threat_analysis.summary
 
 
-def test_recon_artifact_rejects_bad_classification(config, approval):
-    """ReconArtifact raises on an invalid classification value."""
-    bad_artifact = json.dumps({
-        "observations": [{
-            "specialist_id": "abc",
-            "command": "nmap_scan",
-            "command_output": "open",
-            "classification": "INVALID_VALUE",
-            "category": "network",
-            "comments": [],
-        }],
-        "summary": "Done.",
-    })
+def test_bad_classification_drops_observation(config, approval):
+    """record_observation with an invalid classification is rejected by Pydantic.
+
+    The leader's dispatch handler catches the ValidationError and returns an
+    error string to the model (so the agent loop stays intact). The bad
+    observation is NOT added to collected_observations, leaving the artifact
+    with zero valid observations rather than raising.
+    """
+    bad_obs = {
+        "specialist_id": "abc",
+        "command": "nmap_scan",
+        "command_output": "open",
+        "classification": "INVALID_VALUE",
+        "category": "network",
+        "comments": [],
+    }
 
     factory = _make_backends(
         [_end(NETWORK_FINDINGS)],
         [_end(SERVICE_FINDINGS)],
         [_end(WEB_FINDINGS)],
         [_end(THREAT_ANALYST_RESPONSE)],
-        [_end(bad_artifact)],
+        [
+            _tool_call("record_observation", bad_obs, "tc-bad"),
+            _end(LEADER_SUMMARY_JSON),
+        ],
     )
 
-    with pytest.raises(Exception):
-        run_recon_committee(approval=approval, config=config, _backend_factory=factory)
+    artifact = run_recon_committee(approval=approval, config=config, _backend_factory=factory)
+    assert len(artifact.observations) == 0

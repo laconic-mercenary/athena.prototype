@@ -13,26 +13,30 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import yaml
+from pubsub import pub
 
-from athena.agent_loop import run_agent
+from athena.agent_loop import SYNTHESIS_MAX_TOKENS, run_agent
 from athena.config import AthenaConfig
-from athena.model_backend import BackendFactory, make_backend
+from athena.model_backend import BackendFactory, ToolDefinition, make_backend
 from athena.schemas import PlanArtifact, PlannedAction, ReconArtifact, Specialist
 from athena.utils import extract_json
 
 _log = logging.getLogger("athena.planning")
 
-_SUMMON_SPECIALIST = {
-    "name": "summon_specialist",
-    "description": (
+_COMMITTEE = "planning"
+
+_SUMMON_TOOL = ToolDefinition(
+    name="summon_specialist",
+    description=(
         "Summon a planning specialist with the full ReconArtifact. "
         "Returns their suggested actions as a JSON array."
     ),
-    "parameters": {
+    parameters={
         "type": "object",
         "properties": {
             "name": {
@@ -43,19 +47,11 @@ _SUMMON_SPECIALIST = {
         },
         "required": ["name"],
     },
-}
-
-from athena.model_backend import ToolDefinition
-
-_SUMMON_TOOL = ToolDefinition(
-    name=_SUMMON_SPECIALIST["name"],
-    description=_SUMMON_SPECIALIST["description"],
-    parameters=_SUMMON_SPECIALIST["parameters"],
 )
 
 _SPECIALIST_TITLES: dict[str, str] = {
-    "network_planner": "Network Planner",
-    "web_planner": "Web Planner",
+    "network_planner": "Net Strategist",
+    "web_planner":     "Web Strategist",
 }
 
 
@@ -74,12 +70,15 @@ def run_planning_committee(
     recon_artifact: ReconArtifact,
     config: AthenaConfig,
     _backend_factory: BackendFactory = make_backend,
+    ask_user_handler: Callable[[str], str] | None = None,
+    leader_queue: queue.Queue | None = None,
 ) -> PlanArtifact:
     """Run the Planning committee and return a validated PlanArtifact."""
     planning_cfg = config.committees["planning"]
     global_model = config.model.default
     global_provider = config.model.provider
     ollama_url = config.model.ollama_base_url
+    run_id = recon_artifact.run_id
 
     spec_by_name = {
         Path(s.config_path).stem: s for s in planning_cfg.specialists
@@ -100,10 +99,19 @@ def run_planning_committee(
 
         specialist = Specialist(title=_SPECIALIST_TITLES[name])
         summoned.append(specialist)
+        agent_id = f"athena.planning.{name}"
 
         _log.info("summoning %s", name)
         system = _load_system(spec_cfg.config_path)
         backend = _backend_factory(provider, ollama_url)
+
+        pub.sendMessage(
+            "agent.spawned",
+            run_id=run_id,
+            committee=_COMMITTEE,
+            agent_id=agent_id,
+            title=_SPECIALIST_TITLES[name],
+        )
 
         # Full ReconArtifact handed off here — this is the inter-committee handoff.
         initial = (
@@ -115,7 +123,7 @@ def run_planning_committee(
         )
 
         raw = run_agent(
-            agent_id=f"athena.planning.{name}",
+            agent_id=agent_id,
             system=system,
             initial_message=initial,
             tools=[],
@@ -124,6 +132,8 @@ def run_planning_committee(
             model=model,
             max_iterations=config.max_agent_iterations,
         )
+
+        pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=agent_id)
 
         try:
             items = extract_json(raw)
@@ -149,13 +159,33 @@ def run_planning_committee(
     leader_cfg = planning_cfg.leader
     leader_model = _resolve(leader_cfg.model, planning_cfg.model, global_model)
     leader_provider = _resolve(leader_cfg.provider, planning_cfg.provider, global_provider)
+    leader_agent_id = "athena.planning.leader"
 
-    leader = Specialist(title="Planning Leader")
+    leader = Specialist(title="Planning Lead")
     leader_system = _load_system(leader_cfg.config_path)
     leader_backend = _backend_factory(leader_provider, ollama_url)
 
     def leader_dispatch(tool: str, inp: dict) -> str:
+        if tool == "ask_user":
+            question = inp["question"]
+            if ask_user_handler is not None:
+                answer = ask_user_handler(question)
+            else:
+                # CLI path: handler not injected, send event here and read stdin
+                pub.sendMessage("planning.leader.question", run_id=run_id, question=question)
+                print(f"\n[PlanningLeader] {question}")
+                answer = input("> ").strip()
+                pub.sendMessage("planning.leader.answer", run_id=run_id, answer=answer)
+            return _run_specialist(inp["name"])
         if tool == "summon_specialist":
+            pub.sendMessage(
+                "agent.tool_called",
+                run_id=run_id,
+                committee=_COMMITTEE,
+                agent_id=leader_agent_id,
+                tool=tool,
+                input_summary=inp.get("name", ""),
+            )
             return _run_specialist(inp["name"])
         return f"Unknown tool: {tool!r}"
 
@@ -167,8 +197,19 @@ def run_planning_committee(
     )
 
     _log.info("leader synthesising plan")
+    pub.sendMessage(
+        "agent.spawned",
+        run_id=run_id,
+        committee=_COMMITTEE,
+        agent_id=leader_agent_id,
+        title="Planning Lead",
+    )
+
+    def _on_leader_reply(text: str) -> None:
+        pub.sendMessage("agent.operator_reply", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id, text=text)
+
     raw_plan = run_agent(
-        agent_id="athena.planning.leader",
+        agent_id=leader_agent_id,
         system=leader_system,
         initial_message=leader_initial,
         tools=[_SUMMON_TOOL],
@@ -176,8 +217,12 @@ def run_planning_committee(
         backend=leader_backend,
         model=leader_model,
         max_iterations=config.max_agent_iterations,
-        max_tokens=8192,
+        max_tokens=SYNTHESIS_MAX_TOKENS,
+        operator_queue=leader_queue,
+        on_operator_reply=_on_leader_reply,
     )
+
+    pub.sendMessage("agent.spun_down", run_id=run_id, committee=_COMMITTEE, agent_id=leader_agent_id)
 
     plan_data = extract_json(raw_plan)
 

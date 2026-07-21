@@ -61,3 +61,19 @@ Update this file as deficiencies are resolved or new ones are identified.
   If the operator's browser disconnects and reconnects mid-engagement, events
   fired during the gap are lost. The `asyncio.Queue` is not persistent. A simple
   fix is an in-memory event log per engagement that replays on reconnect. Deferred.
+
+---
+
+## Demo shortcuts (intentional, for the live demonstration)
+
+- **Operator steering of planning is narrative, not causal.**
+  Clicking a critical finding on the graph opens a chat with the recon lead, and the
+  operator can tell it to stop and pivot. The **stop is real** — the recon leader
+  obeys an operator "stop" instruction (`agents/recon/leader.yml`, "Operator
+  interrupts") and ends its loop early, so recon completes and planning auto-starts.
+  But the subsequent "build the plan around credentials.json" is **not caused by the
+  operator message** — the `PlanArtifact` already prioritises `signal_critical`
+  observations regardless of any chat input, because the planning committee reasons
+  over the full ReconArtifact. A genuinely operator-driven plan would require
+  injecting the message into the planning leader's loop and verifying it altered the
+  actions. Deferred beyond the demo.

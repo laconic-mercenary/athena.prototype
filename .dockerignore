@@ -6,3 +6,5 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+src/ui/node_modules/
+src/ui/dist/
