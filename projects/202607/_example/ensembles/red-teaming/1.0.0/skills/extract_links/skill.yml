@@ -1,0 +1,16 @@
+name: extract_links
+description: >
+  Parses HTML and returns all unique absolute URLs resolved against a base URL.
+  Extracts hrefs from anchor tags, form actions, and link elements. Excludes
+  javascript:, mailto:, #, and data: targets.
+parameters:
+  html:
+    type: string
+    description: Raw HTML content to parse.
+    required: true
+  base_url:
+    type: string
+    description: Base URL for resolving relative links. Hostname must be in the ensemble allowlist.
+    required: true
+returns: >
+  ExtractLinksResult — base_url, links (tuple of absolute URL strings), summary string.

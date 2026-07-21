@@ -1,0 +1,18 @@
+name: tcp_banner
+description: >
+  Connects to a TCP port and waits briefly for a server-initiated banner without
+  sending any probe. Use for services that send a greeting on connect (FTP 220,
+  SMTP 220, custom daemons). Does not work for protocols that require a client
+  greeting first.
+parameters:
+  host:
+    type: string
+    description: Target hostname. Must be in the ensemble allowlist.
+    required: true
+  port:
+    type: integer
+    description: TCP port number.
+    required: true
+returns: >
+  TcpBannerResult — host, port, banner (string | null), error (string | null), summary string.
+notes: 3-second receive timeout after connect.

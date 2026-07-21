@@ -1,0 +1,18 @@
+name: tls_probe
+description: >
+  Performs a TLS handshake and reports the negotiated protocol version and cipher
+  suite. Certificate verification is disabled (self-signed certs will not block
+  the handshake). Use to identify weak TLS versions (TLS 1.0/1.1) or deprecated
+  cipher suites.
+parameters:
+  host:
+    type: string
+    description: Target hostname. Must be in the ensemble allowlist.
+    required: true
+  port:
+    type: integer
+    description: TCP port to probe for TLS.
+    required: true
+returns: >
+  TlsProbeResult — host, port, tls_version (string | null), cipher (string | null),
+  error (string | null), summary string.

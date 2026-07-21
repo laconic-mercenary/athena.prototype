@@ -1,0 +1,17 @@
+name: nmap_scan
+description: >
+  TCP connect scan against a hardcoded common port list with service version detection.
+  Returns open ports with service name and version string. Port scope is fixed in the
+  implementation — callers cannot modify it.
+parameters:
+  host:
+    type: string
+    description: Target hostname. Must be in the ensemble allowlist.
+    required: true
+returns: >
+  NmapResult — host, open_ports (list of PortInfo with port/protocol/state/service/version),
+  raw_output, summary string.
+notes: >
+  Scope: ports 21,22,23,25,53,80,110,143,443,445,3306,3389,5432,5900,6379,8080,8443,9200,27017.
+  Uses TCP connect (-sT) with service detection (-sV --version-light) and normal timing (-T3).
+  Hardcoded to prevent LLM influence on scan scope.
