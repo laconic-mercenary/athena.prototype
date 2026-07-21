@@ -93,19 +93,17 @@ def _tool_call(name: str, inp: dict, tc_id: str) -> ModelResponse:
 
 APPROVAL_JSON = json.dumps({"target": "target", "notes": "Local authorized probe."})
 
-RECON_ARTIFACT_JSON = json.dumps({
-    "observations": [
-        {
-            "specialist_id": "abc",
-            "command": "nmap_scan",
-            "command_output": "80/tcp open",
-            "classification": "signal_info",
-            "category": "network",
-            "comments": [],
-        }
-    ],
-    "summary": "HTTP open on port 80.",
-})
+# Recon leader now emits one record_observation tool call per finding, then
+# outputs only {"summary": "..."} as its final text response.
+RECON_OBS_DATA = {
+    "specialist_id": "abc",
+    "command": "nmap_scan",
+    "command_output": "80/tcp open",
+    "classification": "signal_info",
+    "category": "network",
+    "comments": [],
+}
+RECON_SUMMARY_JSON = json.dumps({"summary": "HTTP open on port 80."})
 
 NETWORK_OP_FINDINGS = json.dumps([
     {"command": "nmap_scan target", "command_output": "80/tcp open http", "notes": "HTTP open"},
@@ -183,15 +181,17 @@ REPORT_ARTIFACT_JSON = json.dumps({
 # Tests
 # ---------------------------------------------------------------------------
 
-def _full_pipeline_backends():
-    """Return a backend factory for a full orchestrator run."""
-    it = iter([
-        FakeBackend([_end(APPROVAL_JSON)]),                      # orchestrator
+def _committee_backends():
+    """Backends for the four committees, in call order (excludes the orchestrator)."""
+    return [
         FakeBackend([_end(NETWORK_OP_FINDINGS)]),                 # recon Phase 1: network_operator
         FakeBackend([_end(SERVICE_OP_FINDINGS)]),                 # recon Phase 1: service_operator
         FakeBackend([_end(WEB_OP_FINDINGS)]),                    # recon Phase 1: web_operator
         FakeBackend([_end(THREAT_ANALYST_RESPONSE)]),               # recon Phase 2: threat_analyst
-        FakeBackend([_end(RECON_ARTIFACT_JSON)]),                # recon Phase 3+4: leader (no follow-up)
+        FakeBackend([                                            # recon Phase 3+4: leader
+            _tool_call("record_observation", RECON_OBS_DATA, "tc-recon-obs"),
+            _end(RECON_SUMMARY_JSON),
+        ]),
         FakeBackend([
             _tool_call("summon_specialist", {"name": "network_planner"}, "tc1"),
             _end(PLAN_ARTIFACT_JSON),
@@ -209,7 +209,12 @@ def _full_pipeline_backends():
         ]),                                                       # reporting leader
         FakeBackend([_end(FINDINGS_SECTION_JSON)]),              # findings_analyst
         FakeBackend([_end(RISK_SECTION_JSON)]),                  # risk_assessor
-    ])
+    ]
+
+
+def _full_pipeline_backends():
+    """Return a backend factory for a full orchestrator run."""
+    it = iter([FakeBackend([_end(APPROVAL_JSON)])] + _committee_backends())  # orchestrator + committees
     return lambda p, u=None: next(it)
 
 
@@ -282,7 +287,10 @@ def test_ask_user_interaction(config, monkeypatch: pytest.MonkeyPatch) -> None:
         FakeBackend([_end(SERVICE_OP_FINDINGS)]),                         # recon Phase 1: service_operator
         FakeBackend([_end(WEB_OP_FINDINGS)]),                            # recon Phase 1: web_operator
         FakeBackend([_end(THREAT_ANALYST_RESPONSE)]),                       # recon Phase 2: threat_analyst
-        FakeBackend([_end(RECON_ARTIFACT_JSON)]),                        # recon Phase 3+4: leader
+        FakeBackend([                                                     # recon Phase 3+4: leader
+            _tool_call("record_observation", RECON_OBS_DATA, "tc-recon-obs"),
+            _end(RECON_SUMMARY_JSON),
+        ]),
         FakeBackend([
             _tool_call("summon_specialist", {"name": "network_planner"}, "tc2"),
             _end(PLAN_ARTIFACT_JSON),
@@ -306,6 +314,34 @@ def test_ask_user_interaction(config, monkeypatch: pytest.MonkeyPatch) -> None:
         instructions="Probe something.",
         config=config,
         _backend_factory=lambda p, u=None: next(backends),
+    )
+
+    assert result is not None
+    assert result.target == "target"
+
+
+def test_orchestrator_recovers_from_prose_briefing(config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A plain-text end_turn (model answered without ask_user) is recovered, not fatal.
+
+    Reproduces the briefing failure where the orchestrator explained a technique in
+    prose and stopped, instead of routing through ask_user or emitting approval JSON.
+    """
+    monkeypatch.setattr("builtins.input", lambda _: "CONFIRM")
+
+    it = iter(
+        [
+            # Attempt 1: prose end_turn with no JSON — the failure mode.
+            FakeBackend([_end("Great question. Here is how T1046 works... (no JSON here)")]),
+            # Attempt 2 (after operator reply is fed back in): valid approval.
+            FakeBackend([_end(APPROVAL_JSON)]),
+        ]
+        + _committee_backends()
+    )
+
+    result = run_orchestrator(
+        instructions="Probe the target.",
+        config=config,
+        _backend_factory=lambda p, u=None: next(it),
     )
 
     assert result is not None

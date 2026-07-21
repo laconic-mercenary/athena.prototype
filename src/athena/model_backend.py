@@ -81,6 +81,15 @@ class ModelBackend(ABC):
         """
         ...
 
+    @abstractmethod
+    def inject_user_message(self, text: str) -> None:
+        """Append an operator message mid-run for committee leader chat.
+
+        Called between agent loop iterations to inject operator input so the
+        model sees it on its next complete() call.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Anthropic
@@ -156,6 +165,24 @@ class AnthropicBackend(ModelBackend):
                 for tc, result in zip(assistant_response.tool_calls, results)
             ],
         })
+
+    def inject_user_message(self, text: str) -> None:
+        formatted = f"[Operator]: {text}"
+        # After record_tool_results the last message is already a user turn
+        # (containing tool_result blocks). Anthropic forbids consecutive user
+        # roles, so we merge the operator text into that existing turn as an
+        # additional text block rather than appending a new user message.
+        if self._messages and self._messages[-1]["role"] == "user":
+            content = self._messages[-1]["content"]
+            if isinstance(content, list):
+                content.append({"type": "text", "text": formatted})
+            else:
+                self._messages[-1]["content"] = [
+                    {"type": "text", "text": str(content)},
+                    {"type": "text", "text": formatted},
+                ]
+        else:
+            self._messages.append({"role": "user", "content": formatted})
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +306,11 @@ class OllamaBackend(ModelBackend):
                 "content": result,
             })
 
+    def inject_user_message(self, text: str) -> None:
+        # OpenAI-compatible format allows a user message after tool messages
+        # without the alternation constraint Anthropic imposes.
+        self._messages.append({"role": "user", "content": f"[Operator]: {text}"})
+
 
 # ---------------------------------------------------------------------------
 # Fake (tests)
@@ -294,6 +326,7 @@ class FakeBackend(ModelBackend):
         self.initial_message: str = ""
         self.calls: list[dict[str, Any]] = []
         self.recorded: list[tuple[ModelResponse, list[str]]] = []
+        self.injected: list[str] = []
 
     def begin(self, *, system: str, initial_message: str) -> None:
         self.system = system
@@ -317,6 +350,9 @@ class FakeBackend(ModelBackend):
         results: list[str],
     ) -> None:
         self.recorded.append((assistant_response, results))
+
+    def inject_user_message(self, text: str) -> None:
+        self.injected.append(text)
 
 
 # ---------------------------------------------------------------------------

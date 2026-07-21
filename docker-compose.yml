@@ -21,6 +21,30 @@ services:
     networks:
       - athena-net
 
+  web:
+    build: .
+    command:
+      - python
+      - server.py
+      - --config
+      - /app/athena.yml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+    env_file: .env
+    ports:
+      - 8000:8000
+    depends_on:
+      target:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    networks:
+      - athena-net
+
   target:
     build: ./target
     networks:

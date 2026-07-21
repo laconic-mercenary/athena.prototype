@@ -70,6 +70,10 @@ def download_model() -> None:
     memory=32768,
     volumes={"/models": model_volume},
     secrets=[modal.Secret.from_name("athena-vllm-key")],
+    # Keep one container warm so the Signal Analyst never pays an 8B cold-start
+    # (container spin-up + weight load) on the first request. Costs a continuously
+    # running A10G — set back to 0 outside demo/active-use windows to save spend.
+    min_containers=1,
     scaledown_window=300,
     timeout=3600,
 )

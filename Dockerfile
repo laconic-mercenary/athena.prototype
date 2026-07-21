@@ -1,3 +1,12 @@
+FROM node:20-alpine AS ui-builder
+
+WORKDIR /ui
+COPY src/ui/package*.json ./
+RUN npm ci
+COPY src/ui/ ./
+RUN npm run build
+
+
 FROM python:3.10-slim
 
 RUN apt-get update \
@@ -9,6 +18,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY . .
+COPY --from=ui-builder /ui/dist /app/src/ui/dist
 RUN pip install --no-cache-dir -e ".[dev]"
 
 CMD ["athena"]
