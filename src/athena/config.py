@@ -46,12 +46,18 @@ class CommitteeConfig:
 
 
 @dataclass(frozen=True)
+class PlanReviewConfig:
+    model: str
+
+
+@dataclass(frozen=True)
 class AthenaConfig:
     artifacts_dir: Path
     max_agent_iterations: int
     model: ModelConfig
     orchestrator: OrchestratorConfig
     committees: dict[str, CommitteeConfig]
+    plan_review: PlanReviewConfig
 
 
 def _require(mapping: dict, key: str, context: str) -> Any:
@@ -102,10 +108,16 @@ def load_config(path: Path) -> AthenaConfig:
             specialists=specialists,
         )
 
+    plan_review_raw = _require(raw, "plan_review", "root")
+    plan_review = PlanReviewConfig(
+        model=_require(plan_review_raw, "model", "plan_review"),
+    )
+
     return AthenaConfig(
         artifacts_dir=Path(_require(raw, "artifacts_dir", "root")),
         max_agent_iterations=int(_require(raw, "max_agent_iterations", "root")),
         model=model,
         orchestrator=orchestrator,
         committees=committees,
+        plan_review=plan_review,
     )

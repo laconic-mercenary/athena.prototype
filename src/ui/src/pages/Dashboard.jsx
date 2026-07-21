@@ -1,8 +1,18 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { CommitteeGraph } from '../components/CommitteeGraph'
 import { SystemView } from '../components/SystemView'
 import { ArtifactTable } from '../components/ArtifactTable'
 import { OperatorChat } from '../components/OperatorChat'
+import { PlanReviewChat } from '../components/PlanReviewChat'
+import { ReportChat } from '../components/ReportChat'
+import { ReportModal } from '../components/ReportModal'
+
+// Report buttons: which committee's artifact_emitted unlocks them, the .md
+// artifact name to fetch, and the accent colour for the modal header.
+const REPORTS = [
+  { committee: 'planning',  name: 'plan',   label: 'View Planning Report',   title: 'Planning Report',   accent: '#22c55e' },
+  { committee: 'reporting', name: 'report', label: 'View Engagement Report', title: 'Engagement Report', accent: '#eab308' },
+]
 
 const STATUS_LABEL = {
   idle:      'Idle',
@@ -71,14 +81,63 @@ function StatusTicker({ event, engagementStatus }) {
   )
 }
 
+const COMMITTEE_ORDER = ['recon', 'planning', 'retrieval', 'reporting']
+
 export function Dashboard({ state, dispatch }) {
   const { engagement, committees, agents, chat, latestEvent } = state
   const [graphTab, setGraphTab] = useState('agent')
+  const [showArtifacts, setShowArtifacts] = useState(false)
+  const [openReport, setOpenReport] = useState(null)
+  const [planReviewOpen, setPlanReviewOpen] = useState(false)
+  const [reportChatOpen, setReportChatOpen] = useState(false)
+
+  // Highest-severity committee currently needing operator attention. Drives the
+  // header alert button — a guaranteed-clickable path to brief the lead about a
+  // critical finding, independent of the graph's click handling.
+  const attention = useMemo(() => {
+    for (const sev of ['signal_critical', 'signal_warn']) {
+      for (const c of COMMITTEE_ORDER) {
+        if (committees[c]?.classification === sev) {
+          const leaderId = `athena.${c}.leader`
+          return {
+            committee: c,
+            sev,
+            leaderId,
+            leaderTitle: agents[leaderId]?.title || `${c} lead`,
+            findings: agents[leaderId]?.findings || committees[c]?.findings || [],
+            count: (committees[c]?.findings || []).length,
+          }
+        }
+      }
+    }
+    return null
+  }, [committees, agents])
+
+  const openLeadChat = (a) => dispatch({
+    type: 'OPEN_CHAT',
+    payload: { agentId: a.leaderId, agentTitle: a.leaderTitle, findings: a.findings, focusFindings: true },
+  })
 
   return (
     <div className="dashboard">
       <header className="dashboard-header">
         <h1 className="dash-title">Athena</h1>
+        {engagement.awaitingApproval ? (
+          <button
+            className="dash-alert-btn dash-alert-btn--approval"
+            onClick={() => setPlanReviewOpen(true)}
+          >
+            ✦ Planning complete — review plan and approve Retrieval →
+          </button>
+        ) : attention && !chat.isOpen && (
+          <button
+            className={`dash-alert-btn dash-alert-btn--${attention.sev === 'signal_critical' ? 'crit' : 'warn'}`}
+            onClick={() => openLeadChat(attention)}
+          >
+            {attention.sev === 'signal_critical' ? '⚠ Critical finding' : '⚠ Finding flagged'}
+            {attention.count > 1 ? ` ×${attention.count}` : ''} — brief the {attention.committee} lead →
+          </button>
+        )}
         <div className="dash-meta">
           {engagement.target && (
             <span className="dash-target">{engagement.target}</span>
@@ -105,6 +164,38 @@ export function Dashboard({ state, dispatch }) {
             >
               System View
             </button>
+
+            <div className="graph-actions">
+              {REPORTS.map(r =>
+                committees[r.committee]?.artifactReady && (
+                  <button
+                    key={r.name}
+                    className="dash-action-btn"
+                    style={{ borderColor: r.accent, color: r.accent }}
+                    onClick={() => setOpenReport(r)}
+                  >
+                    {r.label}
+                  </button>
+                )
+              )}
+              {committees.reporting?.artifactReady && (
+                <button
+                  className="dash-action-btn"
+                  style={{ borderColor: '#3b82f6', color: '#3b82f6' }}
+                  onClick={() => setReportChatOpen(true)}
+                >
+                  Discuss Report
+                </button>
+              )}
+              {graphTab === 'agent' && (
+                <button
+                  className={`dash-action-btn${showArtifacts ? ' dash-action-btn--on' : ''}`}
+                  onClick={() => setShowArtifacts(v => !v)}
+                >
+                  {showArtifacts ? 'Hide Artifacts' : 'View Artifacts'}
+                </button>
+              )}
+            </div>
           </div>
 
           <StatusTicker event={latestEvent} engagementStatus={engagement.status} />
@@ -115,9 +206,16 @@ export function Dashboard({ state, dispatch }) {
               : <SystemView state={state} dispatch={dispatch} />
             }
           </div>
+
+          <div className="graph-footer">
+            <span className="graph-footer-label">Looking for other ways to make Athena more capable?</span>
+            <a href="/marketplace.html" target="_blank" rel="noopener noreferrer" className="graph-footer-btn">
+              View Marketplace
+            </a>
+          </div>
         </div>
 
-        {graphTab === 'agent' && (
+        {graphTab === 'agent' && showArtifacts && (
           <div className="side-pane">
             <ArtifactTable
               runId={engagement.run_id}
@@ -127,6 +225,22 @@ export function Dashboard({ state, dispatch }) {
         )}
       </div>
 
+      {reportChatOpen && (
+        <ReportChat
+          runId={engagement.run_id}
+          onClose={() => setReportChatOpen(false)}
+        />
+      )}
+
+      {planReviewOpen && engagement.awaitingApproval && (
+        <PlanReviewChat
+          runId={engagement.run_id}
+          onApproved={() => { setPlanReviewOpen(false); dispatch({ type: 'ENGAGEMENT_APPROVED', payload: {} }) }}
+          onRejected={() => { setPlanReviewOpen(false); dispatch({ type: 'ENGAGEMENT_REJECTED', payload: {} }) }}
+          onClose={() => setPlanReviewOpen(false)}
+        />
+      )}
+
       {chat.isOpen && (
         <OperatorChat
           runId={engagement.run_id}
@@ -134,7 +248,18 @@ export function Dashboard({ state, dispatch }) {
           agentTitle={chat.agentTitle}
           findings={chat.findings}
           focusFindings={chat.focusFindings}
+          agentReplies={state.agentReplies?.[chat.agentId] || []}
           onClose={() => dispatch({ type: 'CLOSE_CHAT' })}
+        />
+      )}
+
+      {openReport && (
+        <ReportModal
+          runId={engagement.run_id}
+          name={openReport.name}
+          title={openReport.title}
+          accent={openReport.accent}
+          onClose={() => setOpenReport(null)}
         />
       )}
     </div>

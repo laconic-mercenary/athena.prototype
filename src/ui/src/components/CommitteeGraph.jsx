@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   ReactFlow,
   Background,
@@ -15,10 +15,11 @@ const COMMITTEE_COLORS = {
   reporting:    '#eab308',
 }
 
+// Only critical and warn trigger the (!) badge — info findings are recorded but
+// don't warrant interrupting the operator.
 const FINDING_BORDER = {
   signal_critical: '#ef4444',
   signal_warn:     '#f97316',
-  signal_info:     '#3b82f6',
 }
 
 const FINDING_LABEL = {
@@ -29,14 +30,20 @@ const FINDING_LABEL = {
 
 // ── Finding node (grey artifact) ────────────────────────────────────
 function FindingNode({ data }) {
-  const { finding } = data
+  const { finding, onOpenChat } = data
   const color  = FINDING_BORDER[finding.classification] || '#475569'
   const label  = FINDING_LABEL[finding.classification]
   const isCrit = finding.classification === 'signal_critical'
   const isWarn = finding.classification === 'signal_warn'
 
   return (
-    <div style={{
+    <div
+      // Clicks are handled by ReactFlow's onNodeClick (below) rather than an inner
+      // onClick — React Flow drives panning off native pointer events, so an inner
+      // handler gets swallowed by the pan. nopan keeps a click from starting a pan.
+      className="nodrag nopan"
+      title={onOpenChat ? 'Discuss this finding with the committee lead' : undefined}
+      style={{
       background: '#07101f',
       border: `1px solid ${color}44`,
       borderLeft: `3px solid ${color}`,
@@ -46,6 +53,7 @@ function FindingNode({ data }) {
       boxShadow: (isCrit || isWarn) ? `0 0 16px ${color}2a` : 'none',
       animation: isCrit ? 'node-pulse 2s ease-in-out infinite' : 'none',
       userSelect: 'none',
+      cursor: onOpenChat ? 'pointer' : 'default',
     }}>
       <Handle type="target" position={Position.Left}  style={{ visibility: 'hidden' }} />
       {label && (
@@ -158,7 +166,7 @@ function CommitteeNode({ data }) {
 
 // ── Agent node ───────────────────────────────────────────────────────
 function AgentNode({ data }) {
-  const { title, committee, status, classification, toolHistory, onChat, onFinding } = data
+  const { title, committee, status, classification, toolHistory, isLeader, onChat, onFinding } = data
   const color      = COMMITTEE_COLORS[committee] || '#94a3b8'
   const alertColor = FINDING_BORDER[classification]
   const isActive   = status === 'active'
@@ -180,11 +188,12 @@ function AgentNode({ data }) {
     }}>
       <Handle type="target" position={Position.Top}    style={{ visibility: 'hidden' }} />
 
-      {/* (!) badge — critical/warn alert */}
+      {/* (!) badge — finding alert; routes to committee lead (has the operator queue) */}
       {hasAlert && (
         <div
           className="nopan nodrag"
-          title="View finding"
+          title="View findings"
+          onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); onFinding() }}
           style={{
             position: 'absolute', top: -8, left: -8,
@@ -201,11 +210,12 @@ function AgentNode({ data }) {
         </div>
       )}
 
-      {/* (?) badge — chat available */}
-      {isActive && (
+      {/* (?) badge — only leaders have an operator queue */}
+      {isActive && isLeader && (
         <div
           className="nopan nodrag"
-          title="Chat with agent"
+          title="Chat with lead"
+          onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); onChat() }}
           style={{
             position: 'absolute', top: -8, right: -8,
@@ -235,6 +245,21 @@ function AgentNode({ data }) {
           › {t.tool}
         </div>
       ))}
+
+      {/* Processing bar — 2px strip at bottom, slides while active */}
+      {isActive && (
+        <div style={{
+          position: 'absolute', bottom: 0, left: 0, right: 0,
+          height: 2, borderRadius: '0 0 6px 6px', overflow: 'hidden',
+          background: `${color}18`,
+        }}>
+          <div style={{
+            width: '38%', height: '100%',
+            background: `linear-gradient(90deg, transparent, ${color}, transparent)`,
+            animation: 'slide-bar 1.4s linear infinite',
+          }} />
+        </div>
+      )}
 
       <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
     </div>
@@ -312,14 +337,21 @@ export function CommitteeGraph({ state, dispatch }) {
             status: agent.status,
             classification: agent.classification || null,
             toolHistory: agent.toolHistory || [],
+            isLeader: agent.id.endsWith('.leader'),
             onChat: () => dispatch({
               type: 'OPEN_CHAT',
               payload: { agentId: agent.id, agentTitle: agent.title || agent.id, findings: agent.findings || [] },
             }),
-            onFinding: () => dispatch({
-              type: 'OPEN_CHAT',
-              payload: { agentId: agent.id, agentTitle: agent.title || agent.id, findings: agent.findings || [], focusFindings: true },
-            }),
+            // (!) always targets the committee leader (has the operator queue).
+            // For specialist agents we route to their lead and show the specialist's own findings.
+            onFinding: () => {
+              const leaderId    = agent.id.endsWith('.leader') ? agent.id : `athena.${committee}.leader`
+              const leaderTitle = agents[leaderId]?.title || `${committee} lead`
+              dispatch({
+                type: 'OPEN_CHAT',
+                payload: { agentId: leaderId, agentTitle: leaderTitle, findings: agent.findings || [], focusFindings: true },
+              })
+            },
           },
         })
       })
@@ -373,11 +405,28 @@ export function CommitteeGraph({ state, dispatch }) {
 
     // Create finding nodes
     allFindings.forEach((f, i) => {
+      // Chat targets the committee lead: it is a valid operator-queue target and
+      // is where recon findings are attributed. Pass the lead's full finding set
+      // so the chat's Findings tab shows every critical/warn, not just this one.
+      const leaderId = `athena.${f.committee}.leader`
       nodes.push({
         id: f.nodeId,
         type: 'finding',
         position: { x: FINDING_X, y: FINDING_START_Y + i * FINDING_GAP },
-        data: { finding: f.finding, agentId: f.agentId, committee: f.committee },
+        data: {
+          finding: f.finding,
+          agentId: f.agentId,
+          committee: f.committee,
+          onOpenChat: () => dispatch({
+            type: 'OPEN_CHAT',
+            payload: {
+              agentId: leaderId,
+              agentTitle: agents[leaderId]?.title || `${f.committee} lead`,
+              findings: agents[leaderId]?.findings || [f.finding],
+              focusFindings: true,
+            },
+          }),
+        },
       })
 
       // Discovery edge: discovering agent → finding
@@ -423,7 +472,7 @@ export function CommitteeGraph({ state, dispatch }) {
     }
 
     return { findingNodes: nodes, findingEdges: edges }
-  }, [agents])
+  }, [agents, dispatch])
 
   const allNodes = useMemo(
     () => [...committeeNodes, ...agentNodes, ...findingNodes],
@@ -435,6 +484,12 @@ export function CommitteeGraph({ state, dispatch }) {
     [hierarchyEdges, findingEdges]
   )
 
+  // React Flow's own click detection — fires on a genuine click (not a pan) even
+  // with panOnDrag enabled, which an inner node onClick cannot reliably do.
+  const onNodeClick = useCallback((_event, node) => {
+    if (node.data?.onOpenChat) node.data.onOpenChat()
+  }, [])
+
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <style>{`
@@ -442,11 +497,16 @@ export function CommitteeGraph({ state, dispatch }) {
           0%, 100% { opacity: 1; }
           50%       { opacity: 0.35; }
         }
+        @keyframes slide-bar {
+          0%   { transform: translateX(-100%); }
+          100% { transform: translateX(360%); }
+        }
       `}</style>
       <ReactFlow
         nodes={allNodes}
         edges={allEdges}
         nodeTypes={nodeTypes}
+        onNodeClick={onNodeClick}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         nodesDraggable={false}

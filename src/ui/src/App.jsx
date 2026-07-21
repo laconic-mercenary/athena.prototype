@@ -1,4 +1,4 @@
-import { useReducer, useCallback } from 'react'
+import { useReducer, useCallback, useEffect } from 'react'
 import { useEvents } from './useEvents'
 import { EngagementRequest } from './pages/EngagementRequest'
 import { OrchestratorDialog } from './pages/OrchestratorDialog'
@@ -7,13 +7,14 @@ import './index.css'
 
 const COMMITTEES = ['recon', 'planning', 'retrieval', 'reporting']
 
-const INITIAL_COMMITTEE = { status: 'inactive', classification: null, badgeCount: 0, findings: [] }
+const INITIAL_COMMITTEE = { status: 'inactive', classification: null, badgeCount: 0, findings: [], artifactReady: false }
 
 const initialState = {
   page: 'request',
-  engagement: { run_id: null, status: 'idle', target: null, notes: null },
+  engagement: { run_id: null, status: 'idle', target: null, notes: null, awaitingApproval: false },
   committees: Object.fromEntries(COMMITTEES.map(c => [c, { ...INITIAL_COMMITTEE, findings: [] }])),
   agents: {},
+  agentReplies: {},
   dialogMessages: [],
   chat: { isOpen: false, agentId: null, agentTitle: null, findings: [] },
   latestEvent: null,
@@ -52,7 +53,23 @@ function reducer(state, action) {
   }
 
   if (type === 'ENGAGEMENT_REJECTED') {
-    return { ...state, engagement: { ...state.engagement, status: 'rejected' } }
+    return { ...state, engagement: { ...state.engagement, status: 'rejected', awaitingApproval: false } }
+  }
+
+  if (type === 'AWAITING_APPROVAL') {
+    return {
+      ...state,
+      engagement: { ...state.engagement, awaitingApproval: true },
+      latestEvent: { kind: 'committee', text: 'Planning complete — awaiting operator approval', ts: Date.now() },
+    }
+  }
+
+  if (type === 'ENGAGEMENT_APPROVED') {
+    return {
+      ...state,
+      engagement: { ...state.engagement, awaitingApproval: false },
+      latestEvent: { kind: 'committee', text: 'Retrieval phase approved', ts: Date.now() },
+    }
   }
 
   if (type === 'RUN_STARTED') {
@@ -60,9 +77,10 @@ function reducer(state, action) {
     return {
       ...state,
       page: 'dialog',
-      engagement: { ...state.engagement, run_id: payload.run_id, status: 'running' },
+      engagement: { ...state.engagement, run_id: payload.run_id, status: 'running', awaitingApproval: false },
       committees: initialState.committees,
       agents: {},
+      agentReplies: {},
       dialogMessages: [],
       latestEvent: null,
     }
@@ -91,6 +109,20 @@ function reducer(state, action) {
         [committee]: { ...state.committees[committee], status: 'completed' },
       },
       latestEvent: { kind: 'committee', text: `${committee} committee complete`, ts: Date.now() },
+    }
+  }
+
+  if (type === 'COMMITTEE_ARTIFACT_EMITTED') {
+    // Fired after the committee's .md is written to disk — gate report buttons on
+    // this (not COMMITTEE_COMPLETED, which fires before the file exists).
+    const { committee } = payload
+    if (!state.committees[committee]) return state
+    return {
+      ...state,
+      committees: {
+        ...state.committees,
+        [committee]: { ...state.committees[committee], artifactReady: true },
+      },
     }
   }
 
@@ -206,11 +238,33 @@ function reducer(state, action) {
     }
   }
 
+  if (type === 'AGENT_OPERATOR_REPLY') {
+    const { agent_id, text } = payload
+    const prev = state.agentReplies[agent_id] || []
+    return {
+      ...state,
+      agentReplies: {
+        ...state.agentReplies,
+        [agent_id]: [...prev, { text, ts: Date.now(), role: 'agent' }],
+      },
+    }
+  }
+
   return state
+}
+
+const PAGE_TITLES = {
+  request:   'athena | start',
+  dialog:    'athena | briefing',
+  dashboard: 'athena | engagement',
 }
 
 export default function App() {
   const [state, dispatch] = useReducer(reducer, initialState)
+
+  useEffect(() => {
+    document.title = PAGE_TITLES[state.page] || 'athena'
+  }, [state.page])
 
   const handleEvent = useCallback((event) => {
     const { topic, ...payload } = event
@@ -219,10 +273,14 @@ export default function App() {
     if (topic === 'engagement.rejected')  dispatch({ type: 'ENGAGEMENT_REJECTED', payload })
     if (topic === 'committee.started')    dispatch({ type: 'COMMITTEE_STARTED', payload })
     if (topic === 'committee.completed')  dispatch({ type: 'COMMITTEE_COMPLETED', payload })
+    if (topic === 'committee.artifact_emitted') dispatch({ type: 'COMMITTEE_ARTIFACT_EMITTED', payload })
     if (topic === 'agent.spawned')        dispatch({ type: 'AGENT_SPAWNED', payload })
     if (topic === 'agent.spun_down')      dispatch({ type: 'AGENT_SPUN_DOWN', payload })
     if (topic === 'agent.tool_called')    dispatch({ type: 'AGENT_TOOL_CALLED', payload })
-    if (topic === 'agent.finding')        dispatch({ type: 'AGENT_FINDING', payload })
+    if (topic === 'agent.finding')         dispatch({ type: 'AGENT_FINDING', payload })
+    if (topic === 'agent.operator_reply')       dispatch({ type: 'AGENT_OPERATOR_REPLY', payload })
+    if (topic === 'engagement.awaiting_approval') dispatch({ type: 'AWAITING_APPROVAL', payload })
+    if (topic === 'engagement.approved')          dispatch({ type: 'ENGAGEMENT_APPROVED', payload })
     if (topic === 'orchestrator.question') dispatch({ type: 'ORCHESTRATOR_QUESTION', payload })
     if (topic === 'orchestrator.answer')   dispatch({ type: 'ORCHESTRATOR_ANSWER', payload })
   }, [])

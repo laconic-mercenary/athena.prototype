@@ -25,7 +25,6 @@ export function EngagementRequest({ onSubmit }) {
     <div className="request-page">
       <div className="request-card">
         <h1 className="request-title">Athena</h1>
-        <p className="request-subtitle">Security engagement orchestration</p>
         <form onSubmit={handleSubmit} className="request-form">
           <label className="request-label" htmlFor="instructions">
             Engagement instructions

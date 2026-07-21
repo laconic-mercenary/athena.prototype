@@ -22,7 +22,7 @@ import yaml
 from pubsub import pub
 
 from athena.agent_loop import run_agent
-from athena.artifacts import RunLogger, render_plan_report, render_report, render_retrieval_report
+from athena.artifacts import RunLogger, render_plan_report, render_recon_report, render_report, render_retrieval_report
 from athena.committees.planning import run_planning_committee
 from athena.committees.recon import run_recon_committee
 from athena.committees.reporting import run_reporting_committee
@@ -33,6 +33,13 @@ from athena.schemas import OrchestratorApproval
 from athena.utils import extract_json, new_id
 
 _log = logging.getLogger("athena.orchestrator")
+
+# The orchestrator must only end its turn with the approval JSON; every operator
+# message must go through ask_user. Models sometimes break this by answering a
+# mid-briefing question in plain text and stopping. When that happens we deliver
+# the text to the operator and re-run the briefing with that context. This bounds
+# how many such recoveries we attempt before giving up.
+_MAX_BRIEFING_ATTEMPTS = 4
 
 _ASK_USER = ToolDefinition(
     name="ask_user",
@@ -83,6 +90,7 @@ def run_orchestrator(
     ask_user_handler: Callable[[str], str] | None = None,
     run_id: str | None = None,
     leader_queues: dict[str, queue.Queue] | None = None,
+    approval_gate_handler: Callable[[], bool] | None = None,
 ) -> OrchestratorApproval | None:
     """Run the full two-phase pipeline.
 
@@ -109,41 +117,71 @@ def run_orchestrator(
     has_ask_user = sys.stdin.isatty() or ask_user_handler is not None
     tools = [_ASK_USER, _REJECT_RUN] if has_ask_user else [_REJECT_RUN]
 
+    def _ask(question: str) -> str:
+        """Deliver a message to the operator and return their reply."""
+        if ask_user_handler is not None:
+            return ask_user_handler(question)
+        # CLI path: handler not injected, send event here and read stdin.
+        pub.sendMessage("orchestrator.question", run_id=effective_run_id, question=question)
+        print(f"\n[Orchestrator] {question}")
+        answer = input("> ").strip()
+        pub.sendMessage("orchestrator.answer", run_id=effective_run_id, answer=answer)
+        return answer
+
     def dispatch(tool: str, inp: dict) -> str:
         if tool == "ask_user":
-            question = inp["question"]
-            if ask_user_handler is not None:
-                answer = ask_user_handler(question)
-            else:
-                # CLI path: handler not injected, send event here and read stdin
-                pub.sendMessage("orchestrator.question", run_id=effective_run_id, question=question)
-                print(f"\n[Orchestrator] {question}")
-                answer = input("> ").strip()
-                pub.sendMessage("orchestrator.answer", run_id=effective_run_id, answer=answer)
-            return answer
+            return _ask(inp["question"])
         if tool == "reject_run":
             raise RunRejected(inp["reason"])
         return f"Unknown tool: {tool!r}"
 
     # --- Phase 1: clarification loop ---
+    # A well-behaved orchestrator only ends its turn with the approval JSON. If it
+    # instead ends with plain prose, it answered the operator without using ask_user;
+    # rather than crash on extract_json, deliver that prose to the operator, take
+    # their reply, and re-run the briefing with the added context. Bounded so a
+    # persistently malformed model still terminates.
     _log.info("reading instructions...")
-    try:
-        approval_json = run_agent(
-            agent_id="athena.orchestrator",
-            system=system,
-            initial_message=instructions,
-            tools=tools,
-            tool_dispatch=dispatch,
-            backend=_backend_factory(provider, config.model.ollama_base_url),
-            model=orch_cfg.model,
-            max_iterations=config.max_agent_iterations,
-        )
-    except RunRejected as exc:
-        _log.info("run rejected: %s", exc.reason)
-        pub.sendMessage("engagement.rejected", run_id=effective_run_id, reason=exc.reason)
-        return None
+    briefing_input = instructions
+    data: dict | None = None
+    for _ in range(_MAX_BRIEFING_ATTEMPTS):
+        try:
+            approval_json = run_agent(
+                agent_id="athena.orchestrator",
+                system=system,
+                initial_message=briefing_input,
+                tools=tools,
+                tool_dispatch=dispatch,
+                backend=_backend_factory(provider, config.model.ollama_base_url),
+                model=orch_cfg.model,
+                max_iterations=config.max_agent_iterations,
+            )
+        except RunRejected as exc:
+            _log.info("run rejected: %s", exc.reason)
+            pub.sendMessage("engagement.rejected", run_id=effective_run_id, reason=exc.reason)
+            return None
 
-    data = extract_json(approval_json)
+        try:
+            data = extract_json(approval_json)
+            break
+        except ValueError:
+            _log.info("orchestrator ended with prose instead of approval JSON; recovering")
+            reply = _ask(approval_json)
+            briefing_input = (
+                f"{instructions}\n\n"
+                "[The pre-engagement briefing is already underway — do NOT repeat your "
+                "opening brief. Your previous message to the operator was:\n"
+                f"{approval_json}\n\n"
+                f"The operator replied: {reply}\n\n"
+                "Respond only via ask_user, and output the approval JSON strictly after "
+                "the operator types CONFIRM.]"
+            )
+
+    if data is None:
+        raise RuntimeError(
+            f"orchestrator: briefing did not yield an approval after {_MAX_BRIEFING_ATTEMPTS} attempts"
+        )
+
     approval = OrchestratorApproval(
         run_id=effective_run_id,
         target=data["target"],
@@ -180,6 +218,7 @@ def run_orchestrator(
     pub.sendMessage("committee.completed", run_id=approval.run_id, committee="recon")
     logger.log("recon artifact emitted")
     logger.write_artifact("recon", recon_artifact.model_dump_json(indent=2))
+    (logger.run_dir / "recon.md").write_text(render_recon_report(recon_artifact))
     pub.sendMessage(
         "committee.artifact_emitted",
         run_id=approval.run_id,
@@ -209,6 +248,19 @@ def run_orchestrator(
         artifact_path="plan.json",
     )
     logger.log("planning committee spun down")
+
+    # Operator approval gate — block until the operator reviews the plan and approves.
+    if approval_gate_handler is not None:
+        approved = approval_gate_handler()
+        if not approved:
+            _log.info("retrieval phase rejected by operator at approval gate")
+            pub.sendMessage(
+                "engagement.rejected",
+                run_id=approval.run_id,
+                reason="Operator rejected the retrieval phase after plan review.",
+            )
+            return None
+        _log.info("retrieval phase approved by operator")
 
     logger.log("retrieval committee summoned")
     pub.sendMessage("committee.started", run_id=approval.run_id, committee="retrieval")
