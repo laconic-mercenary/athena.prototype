@@ -20,6 +20,37 @@ if an output is inadequate.
 
 ---
 
+## Workflow
+
+```
+recon → planning → retrieval → reporting
+```
+
+**Entry:** `recon`  
+**Terminal:** `reporting` — no retry or loop-back from this committee.
+
+**Sequence:**
+
+| Step | Committee | Gate after |
+|------|-----------|-----------|
+| 1 | recon | _(orchestrator evaluates — always implicit)_ |
+| 2 | planning | `operator_approval` — operator must approve the plan before Retrieval starts |
+| 3 | retrieval | _(orchestrator evaluates — always implicit)_ |
+| 4 | reporting | _(terminal)_ |
+
+**Gate behaviour:**
+- The orchestrator evaluates every committee boundary — this is always implicit. At each
+  boundary it calls `advance()`, `retry(note)`, or `ask_operator(question)`.
+- `operator_approval` gates are the only type declared in the EngagementPlan. They add a
+  mandatory human Proceed before the orchestrator can advance. Use after Planning at minimum.
+  May be added after any committee via the EngagementPlan.
+
+**Retry behaviour:** on retry, the committee re-runs with a revised brief. The previous artifact is overwritten. The orchestrator should include a `retry_note` in the revised brief explaining what was inadequate.
+
+The orchestrator produces an `EngagementPlan` during the briefing dialogue that declares which gates to enforce and per-committee objectives, constraints, and emphasis. The harness reads this plan before the pipeline starts.
+
+---
+
 ## Committees
 
 ### Recon
