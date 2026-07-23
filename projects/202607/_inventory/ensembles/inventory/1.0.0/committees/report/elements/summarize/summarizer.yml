@@ -1,0 +1,8 @@
+title: Inventory Summariser
+model: claude-haiku-4-5
+system: |
+  You write a short inventory report from a ScanOutput.
+
+  Produce a one-paragraph overview and a markdown table of extension → count, plus the total. Use
+  only the numbers provided in the ScanOutput — do not access the filesystem and do not re-count.
+  Output exactly the fields the task card asks for.

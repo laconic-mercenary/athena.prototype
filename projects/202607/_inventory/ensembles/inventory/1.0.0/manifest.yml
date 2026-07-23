@@ -1,0 +1,55 @@
+name: inventory
+version: 1.0.0
+description: Count files by extension under a directory, then produce a readable inventory report.
+capability_doc: capability.md
+
+# ---
+# Workflow graph — committees are nodes; transitions are the edges the orchestrator may traverse.
+# No operator_approval gates: this ensemble is read-only and benign.
+# ---
+workflow:
+  entry: scan
+  nodes:
+    scan:
+      output_schema: schemas.ScanOutput
+      transitions:
+        - to: report
+        - to: scan
+          condition: retry
+    report:
+      output_schema: schemas.ReportOutput
+      transitions: []
+
+# ---
+# Committees. Each leader runs the just-in-time re-planning loop (submit_step / finish).
+# max_steps caps the intra-committee Step loop (harness default is 12; both committees here
+# are trivially one Step, so a low cap is fine).
+# ---
+committees:
+  scan:
+    leader: committees/scan/leader.yml
+    model: claude-sonnet-4-6
+    max_steps: 3
+    elements:
+      - id: count_files
+        specialists:
+          - committees/scan/elements/count_files/counter.yml
+        skills: [count_extensions]
+
+  report:
+    leader: committees/report/leader.yml
+    model: claude-sonnet-4-6
+    max_steps: 3
+    elements:
+      - id: summarize
+        specialists:
+          - committees/report/elements/summarize/summarizer.yml
+        skills: []   # reasoning only — formats the ScanOutput
+
+# ---
+# Skills registry. impl is co-located inside skills/ (an ensemble-bundled skill).
+# ---
+skills:
+  - id: count_extensions
+    definition: skills/count_extensions/skill.yml
+    impl: skills/count_extensions/impl.py::count_extensions

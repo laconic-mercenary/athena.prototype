@@ -1,8 +1,99 @@
 # Ensembles — Architecture Design
 
-This document captures the agreed design for the Athena ensemble system.
-Reference it before implementing any part of the ensemble layer.
-The example ensemble lives at `202607/_example/ensembles/red-teaming/1.0.0/`.
+This document captures the agreed design for the Athena ensemble system **and is now an
+implementation handoff.** Companion docs: `ENSEMBLE_UI.md` (UI rework), and two example ensembles
+under `202607/`: `_inventory/` (a tiny validated reference) and `_example/…/red-teaming/…` (the demo).
+
+---
+
+## Start Here — For the Implementer
+
+The ensemble **harness does not exist yet.** `src/athena/` is the *previous* ("workspaces") system
+that hardcodes committees in Python. Your job is to build the **manifest-driven ensemble harness**
+described here, reusing what's reusable from `src/athena/`.
+
+**Reading order:** (1) this section + Implementation Plan below; (2) Vocabulary; (3) Committee
+Execution — Iterative Re-Planning [the core loop], Orchestrator Design, Engagement Plan; (4) Operator
+Interaction, Retry Mechanics, Output Contracts, Knowledge Granules; (5) Design Risks — **every `R#`
+is RESOLVED/ACCEPTED/DEFERRED and encodes a binding decision, read them all**; (6) `ENSEMBLE_UI.md`.
+
+**Two example ensembles (your build targets):**
+- **`202607/_inventory/…`** — a tiny, benign, **validated** reference (count files by extension).
+  Build the harness against this **first**: no consensus, no gates, read-only — the simplest possible
+  end-to-end.
+- **`202607/_example/…/red-teaming/…`** — the demo ensemble. **Still in the OLD format** (`mode:`, a
+  two-phase recon `leader.yml`, three-layer docs only on recon). Migrating it to the settled model is
+  a task (see Plan). It exercises consensus (planning), gates, and live findings.
+
+**Reuse from `src/athena/` (don't rebuild):** `model_backend.py` (ModelBackend + Anthropic/Ollama/
+Fake), `agent_loop.py` primitives, the server/SSE layer (`server/`, `bus.py`, the event bridge), and
+`tools.py` (its functions are referenced as skills). **Replace:** the hardcoded `committees/*.py` with
+manifest-driven loading + the iterative leader loop.
+
+**Binding principles (do not drift):** LLM proposes / Python disposes; the LLM only ever *points*
+(candidate ids, manifest-declared transitions) while Python validates and holds the bytes; every loop
+is hard-bounded (step 12 / iterate 30 / global 200 Steps); every gate call logs a rationale.
+
+---
+
+## Implementation Plan (build order)
+
+Build against `_inventory` first, then extend to `_example`. Phases are ordered by dependency.
+
+**Phase 0 — Types + ensemble loader.**
+- Harness Pydantic types in `src/athena/`: `EngagementPlan`, `CommitteeBrief`, `Gate`,
+  `CommitteeStep`, `CommitteeTask` (schemas inline in this doc). There is **no `CommitteePlan`** — the
+  leader streams Steps just-in-time.
+- Ensemble loader: parse `manifest.yml` (workflow graph, committees, elements, skills registry), load
+  `capability.md`, import the `schemas/` classes, load committee docs (`leader.yml`, `playbook.md`,
+  `elements/*/task.md`, specialist ymls), resolve skills (`skill.yml` + `impl`). Validate that every
+  referenced element id / schema name / skill id resolves.
+- **Acceptance:** load `_inventory` and `_example` cleanly; clear error on a broken manifest.
+
+**Phase 1 — Committee execution (the core).**
+- Just-in-time leader loop: build the committee brief (objective + constraints + emphasis + playbook +
+  task cards + upstream digest); `submit_step` / `finish` / `refuse_start`; execute each Step's Tasks
+  **sequentially** (fan-out deferred); append Step outputs (tagged with a UUID `id`) to leader context;
+  enforce `max_steps`; supersession; synthesise + schema-validate the artifact at `finish`; produce the
+  **digest** (leader summary + per-committee adequacy fields).
+- Element execution: **single-instance path** (run specialist with granted skills via skill dispatch).
+- Skill dispatch: call the registry `impl` with validated params.
+- Events: `step.*`, `task.*`, `agent.*` (incl. **incremental** `agent.finding` at synthesis, R9).
+- **Acceptance:** run `_inventory`'s `scan` committee against a real directory → valid `ScanOutput` + digest.
+
+**Phase 2 — Orchestrator + workflow driver.**
+- Orchestrator (harness-level, ensemble-agnostic): briefing (inject `capability.md`; `ask_user`;
+  `submit_plan` → validated `EngagementPlan`; `engagement.plan_ready` → operator Proceed).
+- Workflow driver: traverse the graph; at each boundary invoke the orchestrator with the committee
+  **digest** + gate tools (`advance(next_objective)` / `retry` / `iterate` / `ask_operator`), **log a
+  rationale for every call**; refine the next objective on advance; honor `operator_approval` gates;
+  enforce iterate (30) + global (200) budgets; `incomplete:true` cannot `advance` (R6b); `read_artifact`.
+- **Acceptance:** run `_inventory` end-to-end (scan → report) driven by the orchestrator → `ReportOutput`.
+
+**Phase 3 — Consensus + operator interaction.**
+- Consensus (`instances>1`): run N at configured temperatures; **leader-id-selection judge** (structured
+  `{chosen_candidate_id, reason}`, harness-validated, resolved to verbatim text). `scorer`/`agent` judges
+  → NotImplementedError.
+- Operator interaction: message typing (chat/flow/steering), `reply_operator`, committee `ask_operator`,
+  `halt` (force-finish, operator-only), step-hijack at Task boundaries.
+- **Acceptance:** run `_example` planning with consensus; operator can chat/halt.
+
+**Cross-cutting deliverable — event taxonomy (OPEN).** Phases 1–3 must **define and document** the
+SSE event topics they emit — `step.*`, `task.*`, `element.candidate`/`element.selected`,
+`gate.decision` (+ rationale), `committee.digest`, `committee.ask_operator`, `engagement.halted`, and
+the **incremental** `agent.finding` at synthesis. These names are only *indicative* today (see
+`ENSEMBLE_UI.md` §0 and its Open Issue #1); **the harness is the authority.** Phase 4 / the UI consumes
+them, so treat the finalized taxonomy as a hard deliverable of P1–P3, not an afterthought.
+
+**Phase 4 — UI rework.** Per `ENSEMBLE_UI.md`, once the event taxonomy from Phases 1–3 is fixed.
+
+**Migrate `_example` to the settled model** (do as you need it for Phases 1–3): manifest `mode:` →
+drop / `instances:` + `teams:`; recon `leader.yml` → the just-in-time loop; add `playbook.md` +
+three-layer `task.md` to planning/retrieval/reporting; add `max_steps`.
+
+**Deferred — do NOT build now** (all marked in the doc): knowledge granules; ensemble registry +
+distribution + the R7/R8 trust model; task fan-out (Tasks stay sequential); `scorer`/`agent` judges;
+recursive/autonomous Teams (flat for the demo); OS-detection team selection (Linux hardcoded).
 
 ---
 
@@ -14,23 +105,38 @@ Has three layers: a name/description the LLM uses to decide when to call it, a p
 schema it must conform to, and an implementation the harness executes. Skills do things;
 knowledge knows things.
 
+**Knowledge**
+Read-only reference material a specialist consults — CVE tables, ATT&CK mappings,
+threat-intel corpora. Modeled as a **read-only retrieval skill**: the specialist sees a
+lookup callable, only the retrieved result enters context (not the whole corpus), and every
+retrieval is logged. The backing store (flat file, structured index, or embeddings) is an
+implementation detail behind that skill. Full design in **Knowledge Granules** below.
+
 **Specialist**
 An agent that uses skills. Defined by a YAML system prompt with a model assignment and
 a list of skills it can call. Can have ensemble-level skills (granted via the manifest)
 and agent-level skills (declared in the specialist's own yml, co-located with their impl).
 
-**Element**
-N specialists running the same task. Two modes:
-- `combine` — each specialist covers a different domain; outputs assembled by the leader.
-- `compare` — same specialist run N times at different temperatures; leader selects the best.
+**Element** — *depth*
+The best answer to a **single** task: N specialists running the **same** task, varied by
+temperature, with the committee leader selecting or synthesising the best result. `instances: 1`
+(the default) is a plain single run; reasoning committees like Planning run N=3 for an optimal
+output. The element is a black box to the layer above — it always appears as if one specialist
+produced the output. `instances > 1` (temperature multiplication) is only permitted on
+`reasoning_only` elements — see **Element Consensus** below; tool-using elements run `instances: 1`.
 
-The element is a black box to the layer above — it always appears as if a single specialist
-produced the output, regardless of how many ran internally.
-
-**Team**
-N elements covering different aspects of the same committee task. Outputs combined by the
-committee leader. Teams are implicit — declared by how the leader groups elements, not as
-an explicit manifest construct for now.
+**Team** — *breadth; ideally a sub-committee*
+Coverage of a domain: a group of elements doing different tasks (a *Network Team* =
+{ssh, tcp, http, tls} probing elements). Breadth comes from Teams (different elements), depth
+from Elements (temperature).
+- **Ideal model:** a Team is an autonomous **sub-committee** — it has its own **Team Leader**
+  that, given a high-level brief (e.g. just an IP), forms and sequences the element grouping it
+  judges necessary and returns an aggregated result. This makes **Committee and Team the same
+  recursive primitive** — a leader + a re-planning loop over children (sub-units or leaf
+  elements), nested to any depth. The team leader composes from the ensemble's *fixed* element
+  catalog (constrained composition, not arbitrary spawning).
+- **Demo model:** kept flat — committees hold leaf elements directly, the committee leader
+  sequences and aggregates, no team leaders. Recursion is deferred to real-world use.
 
 **Committee**
 A node in the workflow graph. Has a leader, one or more elements, and typed input/output
@@ -70,7 +176,10 @@ ensembles/
         <skill-id>/
           skill.yml         # name, description, parameter schema (what the LLM sees)
           impl.py           # Python callable (co-located for ensemble-bundled skills)
-      knowledge/            # (not yet implemented — future)
+      knowledge/
+        <knowledge-id>/
+          knowledge.yml     # name, description (access instruction), store type, corpus path
+          <corpus files>    # flat file, SQLite index, or prebuilt embeddings
 ```
 
 Skills can also live at the specialist level. If a specialist has domain-specific tools
@@ -79,42 +188,40 @@ specialist yml and their impl is co-located with the agent definition.
 
 ---
 
-## Compare Mode (Elements)
+## Element Consensus (Temperature)
 
-When `mode: compare`, the harness runs the same specialist N times at configured
-temperatures and returns all outputs to the committee leader for selection.
+An element runs its specialist(s) at N temperatures; the committee leader selects or synthesises
+the best result. `instances: 1` (the default) is a plain single run — the common case.
+`instances > 1` is the consensus case. There is no `mode` field: consensus is simply what an
+element *is*, and domain breadth lives one level up in **Teams**.
 
 ```yaml
-# in manifest.yml
+# in manifest.yml — an element
 - id: network_plan
-  mode: compare
-  judge: leader           # leader selects/synthesises best output
   instances: 3
   temperatures: [0.3, 0.7, 1.0]
-  execution: reasoning_only   # harness enforces: no skills with side effects
+  execution: reasoning_only   # required when instances > 1; harness enforces no side-effect skills
+  judge: leader
   specialists:
     - committees/planning/elements/network_plan/planner.yml
   skills: []
 ```
 
-**Judge types:**
+**Judge types (how the best of N is chosen):**
 - `leader` — committee leader receives all N labeled candidates and selects/synthesises.
-  Preferred: leader already holds full engagement context (brief + prior artifacts).
-  **Implemented.**
-- `scorer` — deterministic Python function scores outputs against `task.md` criteria.
-  **Raises NotImplementedError — not yet implemented.**
-- `agent` — dedicated judge agent receives all N outputs and task.md, returns best.
-  **Raises NotImplementedError — not yet implemented.**
+  Preferred: leader already holds full engagement context (brief + prior artifacts). **Implemented.**
+- `scorer` — deterministic Python scores outputs against `task.md` criteria. **NotImplementedError.**
+- `agent` — dedicated judge agent receives all N outputs and task.md, returns best. **NotImplementedError.**
 
-**Important:** `compare` mode must only be applied to `reasoning_only` elements.
-Elements that make real network or database calls cannot be multiplied — this would
-generate N× the traffic and is a SIEM trigger risk.
+**SIEM safety:** `instances > 1` multiplies execution, so it is only permitted on `reasoning_only`
+elements. Multiplying a tool-using element would multiply real network/DB traffic — a SIEM
+trigger. The harness rejects `instances > 1` on any element granted a side-effecting skill (**R7**).
 
-Safe for compare: planning specialists, reporting specialists, threat analysis.
-Unsafe for compare: network_scan, service_probe, web_crawl, web_retrieval, db_retrieval.
+- Consensus-safe (`instances > 1` OK): planning, reporting, threat_analysis.
+- Single-instance only (`instances: 1`): network_scan, service_probe, web_crawl, web_retrieval, db_retrieval.
 
-The leader must be explicitly instructed (in its system prompt) that when candidates
-are provided, its job is selection or synthesis — not generating a third option from scratch.
+The leader must be instructed that when N candidates are provided its job is selection or
+synthesis — not generating a fresh option from scratch.
 
 ---
 
@@ -159,8 +266,10 @@ system: |
   Do not advance if adequacy criteria are not met. Do not retry more than three times
   on the same committee without asking the operator.
 
-  == EngagementPlan schema ==
-  <placeholder — to be filled when EngagementPlan is formalised as typed schema>
+  == EngagementPlan ==
+  When briefing is complete, emit the EngagementPlan via the submit_plan tool (schema
+  validated by the harness). The recon objective is concrete; downstream committee
+  objectives may be provisional — you refine each at its gate via advance(next_objective).
 ```
 
 ### Context 1 — Briefing (session start)
@@ -184,11 +293,11 @@ the harness appends to the existing conversation:
 ```
 == Gate: <gate_type> — <committee> complete ==
 
-== Committee output ==
-<committee artifact, structured>
+== Committee digest ==
+<leader summary + harness-derived adequacy fields — full artifact via read_artifact(name)>
 
 Evaluate against adequacy criteria for the <committee> committee.
-Use advance(), retry(note), or ask_operator(question).
+Use advance(next_objective), retry(note), iterate(note), or ask_operator(question).
 ```
 
 The orchestrator already has `capability.md` and the EngagementPlan in context from
@@ -202,14 +311,19 @@ Provided by the harness at gate callback time only — not available during brie
 
 | Tool | Signature | Effect |
 |------|-----------|--------|
-| `advance` | `advance()` | Proceed to next committee; close engagement if terminal |
+| `advance` | `advance(next_objective: str \| None = None)` | Proceed to next committee, optionally refining the *next* committee's objective with what this artifact revealed (just-in-time; downstream EngagementPlan objectives are provisional). Close engagement if terminal. **Rejected if the artifact is `incomplete: true`** — must `retry`/`iterate`/`ask_operator`. See R6b. |
 | `retry` | `retry(note: str)` | Failure retry — re-run fresh; note appended to objective list |
 | `iterate` | `iterate(note: str)` | Iteration retry — re-run with prior artifact shown; note appended to objective list |
 | `ask_operator` | `ask_operator(question: str)` | Pause pipeline; surface question via operator chat |
+| `read_artifact` | `read_artifact(name: str)` | Pull a full on-disk artifact when the digest isn't enough to decide (R4). Read-only — not a gate decision. |
 
 The harness switches tool availability between phases: no gate tools during briefing,
 gate tools injected at each callback. This prevents the orchestrator from calling
 `advance()` before any committee has run.
+
+**Every gate call logs a one-line rationale** to the run log — `advance` included, not just
+`retry`/`iterate` — so the full flow trajectory is replayable. This audit trail is the
+deterministic-envelope counterweight to LLM-driven flow (**R2**).
 
 `ask_operator` also handles unscheduled escalation (capability.md "Ask the operator if:"
 conditions) — it is just one of the four gate tools, not a separate mechanism.
@@ -227,6 +341,10 @@ The harness validates the plan before the pipeline starts and uses it to:
 **Key property:** the orchestrator evaluates at every committee boundary (always implicit).
 `operator_approval` gates are the only gate type declared in the plan — they are the
 boundaries where human action is required before the pipeline continues.
+
+The recon objective is concrete; **downstream committee objectives are provisional** — a preview
+for the operator's approval that the orchestrator refines just-in-time at each gate via
+`advance(next_objective)` (workflow-level just-in-time, mirroring the Step level).
 
 ### Typed schema (`src/athena/engagement_plan.py`)
 
@@ -308,7 +426,7 @@ Emphasis: <emphasis>
 == Element task cards ==
 <task.md for each element>
 
-Begin with your CommitteePlan.
+Begin: submit your first Step.
 ```
 
 The orchestrator's per-committee brief (objective/constraints/emphasis) is the engagement-specific
@@ -339,8 +457,8 @@ Each committee has three documents. Each has a distinct audience and scope.
 The leader's **identity and output contract**. Lives in the system prompt — always in
 context, so keep it short (~400–600 tokens).
 
-Contains: who the leader is, what the committee produces, the output format (Phase 1
-plan JSON, Phase 2 artifact), harness-interface tools (`record_observation`, etc.),
+Contains: who the leader is, what the committee produces, its output contract (the artifact
+it synthesises at `finish`), harness-interface tools (`record_observation`, etc.),
 classification guides, operator interrupt handling.
 
 Does NOT contain: element inventory, operating procedure, domain knowledge.
@@ -384,93 +502,101 @@ by the orchestrator.
 
 ## Adequacy criterion
 <what "good enough" looks like — used by the leader when reviewing output;
- in compare mode with judge: leader, this is the explicit evaluation criterion>
+ for a consensus element (instances > 1) with judge: leader, this is the explicit evaluation criterion>
 ```
 
 Serves two purposes:
 1. Leader reads it before planning to know what brief to write for each element.
-2. In `compare` mode with `judge: leader`, the adequacy criterion is the reference
-   the leader uses when selecting among N candidate outputs.
+2. For a consensus element (`instances > 1`) with `judge: leader`, the adequacy criterion is the
+   reference the leader uses when selecting among N candidate outputs.
 
 **Model capability targets:**
 
 | Layer | Model | Reason |
 |-------|-------|--------|
 | Committee leader | claude-sonnet-4-6 | Reads 3+ docs + artifacts, produces plan, judges compare candidates, writes final artifact |
-| Reasoning specialist (compare mode) | claude-haiku-4-5 or smaller | Narrow focused task; running 3× means cost matters |
+| Reasoning specialist (consensus, instances > 1) | claude-haiku-4-5 or smaller | Narrow focused task; running 3× means cost matters |
 | Tool-using specialist | claude-sonnet-4-6 or claude-haiku-4-5 | Needs reliable function calling |
 | Foundation-Sec | foundation-sec-8b via Ollama | Domain-tuned; cannot call tools |
 
 ---
 
-## CommitteePlan
+## Committee Execution — Iterative Re-Planning
 
-The structured work plan the committee leader emits in **Phase 1** before the harness
-executes anything. The harness validates it (Pydantic) before running a single element.
-If invalid, the harness injects the validation error back to the leader for revision.
+Supersedes the earlier one-shot "two-phase" model. A one-shot plan cannot express intra-committee
+data dependencies — `service_probe` needs the ports `network_scan` found (**R1**) — nor adapt to
+surprises the plan never anticipated (an exposed `/.git/`). So the leader plans **just-in-time**:
+it emits the *next* Step, sees its output, then emits the Step after that. There is **no full
+upfront plan** — which is what makes R1's fix *structural*: a dependent Step's brief is always
+written *after* the Step it depends on has run, so it can never be written blind.
+
+The committee's goal *is* its **objective** — the `objective` from the EngagementPlan's
+`CommitteeBrief`. `finish` is judged against it.
+
+The leader never touches an element directly — it declares a Step and the harness executes it.
 
 **Schema** (`src/athena/committees/plan.py` — harness-level, not ensemble-specific):
 
 ```python
 class CommitteeTask(BaseModel):
-    element: str   # must match an element id declared for this committee in the manifest
-    brief:   str   # leader-written assignment; fills [VARIABLES] from the element's task.md
+    element: str   # element id declared for this committee in the manifest
+    brief:   str   # leader-written assignment; written with prior-step results in hand
 
 class CommitteeStep(BaseModel):
-    id:          str
+    id:          str                    # harness-assigned UUID, stamped on submission
     description: str
-    tasks:       list[CommitteeTask]   # parallel; minimum 1
-
-class CommitteeGoal(BaseModel):
-    id:          str
-    description: str
-    steps:       list[CommitteeStep]   # sequential in list order; minimum 1
-
-class CommitteePlan(BaseModel):
-    rationale: str                     # 1-2 sentences: why this structure for this engagement
-    goals:     list[CommitteeGoal]     # sequential in list order; minimum 1
+    tasks:       list[CommitteeTask]    # the parallel unit (executed sequentially for now)
+    supersedes:  list[str] = []         # ids of prior Steps this Step re-runs / replaces
 ```
 
-**Execution model:**
-- Goals execute in list order (sequential)
-- Steps within a goal execute in list order (sequential)
-- Tasks within a step execute in parallel
-- No `depends_on` fields — list order is the dependency
+The leader emits **one Step at a time** — never a whole plan. The harness stamps each submitted
+Step with a UUID `id` and returns it alongside the Step's output, so the leader can name a prior
+Step in a later Step's `supersedes`. Steps are sequential; **Tasks within a Step are the parallel
+unit** (fan-out deferred — Tasks run sequentially for now).
 
-**Two-phase leader conversation:**
+**Leader tools (harness-provided):**
 
-Phase 1 — leader reads playbook + task cards + engagement brief → emits CommitteePlan JSON.
-No element calls. Harness validates and executes the plan.
+| Phase | Tool | Purpose |
+|-------|------|---------|
+| Start | `refuse_start(reason)` | The assigned objective is unclear. The harness surfaces the reason to the operator as a message and the engagement halts — the operator can abort (close the window). No re-briefing loop. |
+| Loop  | `submit_step(step)` | Emit the next Step (`description` + `tasks`, optional `supersedes`). Harness validates (element ids exist), stamps a UUID, executes it, returns its output. Submitting the next Step *is* the re-plan — it is written with all prior results in hand. |
+| Loop  | `ask_operator(question)` | Proactively pause for operator help — surface, wait, inject the reply, continue. *When* to ask is set in the playbook's escalation criteria (see **Operator Interaction**). |
+| Loop  | `reply_operator(message)` | Answer an operator chat message without advancing work. |
+| Loop  | `finish()` | The objective is met → synthesise the committee artifact from all non-superseded Step outputs. |
 
-Phase 2 — harness injects all element results structured by goal/step → leader synthesises
-the final committee artifact.
+There is **no per-element summon tool, and no separate `continue`/`revise`** — submitting the next
+Step is both planning and advancing. The only execution affordance is a whole Step (a batch); the
+playbook instructs the leader to batch genuinely independent work into one Step. This costs **one
+leader call per Step** — accepted, as the price of per-step adaptivity.
 
-Results are returned to the leader in plan order:
+**Loop:**
+1. **Start.** Leader reads playbook + task cards + brief. If the objective is unclear →
+   `refuse_start`. Otherwise → `submit_step` (the first Step). A clear objective is a hard
+   precondition — it is what makes `finish` definable.
+2. **Execute.** Harness runs the Step's Tasks (sequentially for now) and appends the output
+   (tagged with the Step's UUID) to the leader's context.
+3. **Leader turn.** `submit_step` (the next Step, written with results in hand) or `finish`.
+   Operator interrupts (`[OPERATOR INTERRUPT]`) arrive here, between Steps.
+4. Repeat until `finish` or the Step cap.
 
-```
-== Goal 1: <description> ==
+**Supersession (stale-output handling).** When a `submit_step` re-runs earlier work (e.g. a
+re-scan on operator request), it lists the superseded Step ids in `supersedes`; the harness drops
+those Steps' outputs from the synthesis context, so the committee artifact never carries stale,
+superseded data. A Step that only advances the work supersedes nothing. Mirrors the
+committee-level rule (a back-edge retry overwrites the committee artifact) one level down.
 
-  Step <id>: <description>
-    [element_id]
-    <output>
+**Ending the committee.** The leader `finish`es when the **objective** is met, judged against the
+objective + the adequacy criterion in its task cards / playbook. The orchestrator then
+*independently* re-checks adequacy at the committee gate (`advance`/`retry`/`iterate`).
 
-    [element_id]
-    <output>
+**Step cap (intra-committee R3).** Hard ceiling on Steps per committee run. Harness default,
+overridable per committee in the manifest (`max_steps:`). Default: **12**. Reaching the cap
+force-synthesises an artifact marked `incomplete: true` — see **R6b (incomplete artifacts)**.
 
-  Step <id>: <description>
-    [element_id]
-    <output>
-
-== Goal 2: <description> ==
-  ...
-
-All elements complete. Proceed to synthesis.
-```
-
-**Why two phases:** prevents the reactive tool-calling failure mode where the leader
-starts summoning elements greedily before forming a complete plan. The leader has no
-summon tool available in Phase 1 — it can only emit the plan JSON. The affordance
-enforces the separation structurally, not just via prompt instruction.
+**Known trade (challenge #1):** just-in-time softens the *hard* anti-greedy guarantee of one-shot
+into *soft* discipline — a lazy leader could emit one-task Steps, i.e. the reactive spiral in
+disguise. Mitigation, not elimination: no per-element summon tool (only whole Steps), a playbook
+that demands batching, and the hard Step cap.
 
 ---
 
@@ -479,7 +605,7 @@ enforces the separation structurally, not just via prompt instruction.
 See **Committee Document Schema → task.md** above for the full format specification
 and the assignment template standard.
 
-In `compare` mode, the adequacy criterion section doubles as the judge criterion —
+For a consensus element (`instances > 1`), the adequacy criterion section doubles as the judge criterion —
 the leader uses it explicitly when selecting among N candidate outputs.
 
 ---
@@ -511,9 +637,10 @@ Output was adequate, but the orchestrator wants improvement on a specific aspect
 - `objective` list in `CommitteeBrief` gets the note appended as a new entry,
   same as failure retry.
 - Committee leader is told: *"Your output is acceptable. Refine the following aspect."*
-- **Limit: 150 iteration retries per committee.** Intentionally high — this enables
-  autonomous refinement loops where the orchestrator iterates until satisfied.
-  Count is injected into the gate callback for transparency.
+- **Limit: 30 iteration retries per committee** (reduced from 150 while nesting is unbounded).
+  Note this nests with the intra-committee **Step cap (12)** — worst case ≈ 30 × 12 = 360 Steps
+  per committee — so a per-engagement global ceiling that spans the nesting is still the real
+  backstop (**R3**, open). Count is injected into the gate callback for transparency.
 
 ### `CommitteeBrief` objective as a list
 
@@ -551,8 +678,44 @@ Emphasis: ...
 == Element task cards ==
 ...
 
-This is a [retry / refinement]. Begin with a revised CommitteePlan.
+This is a [retry / refinement]. Resume just-in-time — submit your first Step.
 ```
+
+---
+
+## Operator Interaction
+
+Operator messages carry a **type**, so the harness routes them correctly:
+
+- **chat** → the committee leader. Delivered as `[OPERATOR INTERRUPT]` at the leader's next Step
+  boundary; the leader answers via `reply_operator(message)` and continues. (For the demo,
+  acknowledgement at the next Step is fine.)
+- **flow directive** ("halt and proceed", "add a gate before planning") → the orchestrator, since
+  flow is its domain (see Halt and Ad-hoc gates below).
+- **steering hint** ("focus on the database") → the committee leader, folded into its next Step.
+
+**Committee `ask_operator`.** The leader may proactively pause for help via `ask_operator(question)`
+— surface, wait, inject the reply, continue. *When* to ask is authored in the committee's playbook /
+`capability.md` as explicit escalation criteria ("ask the operator if: an action looks destructive;
+the objective is ambiguous; two viable paths and no basis to choose; a critical finding warrants a
+call"). Mirrors the orchestrator's own `ask_operator`, one level down.
+
+**Halt (force-finish).** A single harness primitive forces a running leader to `finish` with what
+it has (→ its gate fires early). It underlies the operator "halt and proceed", the Step-cap
+force-synthesis, and the 200-Step budget halt. **Operator-initiated only for now**; the resulting
+artifact is tagged `operator_directive: advance`, which authorises the gate to `advance` and
+overrides R6b (the operator owns the truncation). Orchestrator-initiated mid-committee halt is the
+same primitive with a wake trigger — deferred.
+
+**Step hijack.** By default the operator is heard at Step boundaries. A *priority* message can be
+honoured between a Step's Tasks (Tasks run sequentially now) — the harness stops before the next
+Task, returns the partial Step + the message to the leader, which re-plans (and may `supersedes`
+the partial Step). Aborting a Task with an in-flight network call is out of scope.
+
+**Ad-hoc gates.** An operator can add an approval gate mid-run via a flow directive ("approve
+before planning"); since the orchestrator evaluates at every boundary, it honours it as an
+`operator_approval` pause there. Requested during briefing, the same gate is a first-class
+`EngagementPlan.gates` entry.
 
 ---
 
@@ -563,6 +726,62 @@ The harness validates committee output against its schema before passing it down
 Type errors surface at the committee boundary, not inside the next committee's processing.
 
 On retry (back-edge): the committee's artifact is **overwritten** by the new run.
+
+**Output directives (e.g. report format).** Per-committee formatting/emphasis — "structure the
+report as MITRE ATT&CK, map each finding to a technique ID + tactic" — is set in the reporting
+`CommitteeBrief` during briefing. The brief *is* the customization surface; no special mechanism.
+The `ReportOutput` schema's freeform `sections` hold a MITRE technique-mapping table for the demo;
+a rigorous version adds optional `technique_mappings: [{finding, technique_id, tactic}]`.
+
+---
+
+## Knowledge Granules
+
+Knowledge is read-only reference material a specialist consults during its task — distinct
+from a skill's world-changing action. It is modeled as a **read-only retrieval skill**: the
+specialist sees a lookup callable, only the retrieved result enters context (not the whole
+corpus), and every retrieval is logged so the audit trail stays intact.
+
+### Choosing a backing store
+
+| Shape of the knowledge | Mechanism |
+|------------------------|-----------|
+| Small + always relevant (playbook-scale) | Read the file into context directly |
+| Structured / keyed (CVE-by-version, ATT&CK-by-id) | Deterministic lookup over a flat file or SQLite index — more precise and auditable than vector search |
+| Large + unstructured + needs semantic match (report libraries, prose corpora) | Embeddings / RAG, behind the same logged retrieval skill |
+
+Prefer files and structured indexes; reserve embeddings for corpora that genuinely cannot
+be injected and are not keyed. Files and SQLite indexes are portable for distribution; a
+vector store adds an embedding-model dependency and a build/ship step.
+
+### Declaration and wiring
+
+Knowledge granules follow the skill model. A granule is declared in a `knowledge:` registry
+in `manifest.yml` and granted to an element the same way skills are — via a `knowledge: [...]`
+list on the element entry. Specialist-specific knowledge may instead be declared inline in
+the specialist's own `.yml`, with its corpus co-located (mirroring agent-level skills). The
+declaration's `description` is the *access instruction* — what the granule knows and when to
+consult it — the same role a skill's description plays for the LLM.
+
+```yaml
+# in manifest.yml
+knowledge:
+  - id: cve_lookup
+    definition: knowledge/cve_lookup/knowledge.yml
+    store: sqlite                       # file | sqlite | embeddings
+    corpus: knowledge/cve_lookup/cve.db
+
+committees:
+  recon:
+    elements:
+      - id: threat_analysis
+        knowledge: [cve_lookup]         # surfaces to the specialist as a read-only lookup skill
+```
+
+### For the red-teaming ensemble
+
+Its knowledge candidates (CVE-by-service/version, ATT&CK technique mappings) are structured
+→ deterministic lookup skills. No embeddings for this ensemble.
 
 ---
 
@@ -634,8 +853,153 @@ boundary before choosing to advance.
 
 ## Not Yet Designed — Ensemble Layer
 
-- **Knowledge granules** — declaration format, injection mechanism, candidates for this ensemble.
 - **Ensemble registry / database** — how the orchestrator discovers and selects ensembles.
-- **Parallel element execution** — elements within a team currently run sequentially.
-  True fan-out/fan-in (Goal 2b) is a prerequisite for realising the full team model.
-- **Ensemble distribution** — how ensembles are packaged, published, and installed from the marketplace.
+  Deferred: while red-teaming is the only ensemble, `latest` = the only version present and
+  the one ensemble is hand-loaded.
+- **Ensemble distribution** — how ensembles are packaged, published, and installed from the
+  marketplace. Deferred with the registry.
+
+## Designed, Not Yet Implemented
+
+- **Knowledge granules** — design captured under **Knowledge Granules** above. No granule is
+  wired into the red-teaming manifest yet (candidates: CVE-by-version, ATT&CK lookups).
+- **Parallel task execution (fan-out/fan-in)** — Tasks are the parallel unit (see **Committee
+  Execution — Iterative Re-Planning**), but fan-out is deferred; the harness runs Tasks
+  sequentially for now. Task-level fan-out is the agreed target.
+
+---
+
+## Demo vs. Real-World Scope
+
+Several design points have a clean real-world answer and a simpler demo answer. The demo
+(Linux Apache → exposed `credentials.json` → Postgres rows) uses the simpler form; the
+real-world form is the target.
+
+| Concern | Real-world (target) | Demo (now) |
+|---|---|---|
+| **Target-type specialization** | Recon fingerprints the OS first, then the leader selects OS-appropriate teams (a Windows Network Team probes SMB/RDP/WinRM/LDAP; a Linux one probes ssh/http/tls). | Linux teams hardcoded; no OS-detection step. |
+| **Team autonomy** | A Team is an autonomous **sub-committee** — its Team Leader dynamically forms and sequences the element grouping it needs from an IP-level brief. Committee and Team are one recursive primitive. | Flat: committees hold leaf elements; the committee leader sequences/aggregates; no team leaders. |
+| **Packaging granularity** | A packaged/swappable unit could be an element, a team, or a committee (per-OS committees, marketplace-installable teams). | Packaging stays at the **committee** level; the red-teaming ensemble is a fixed set of committees. |
+
+Dynamic team formation (a Team Leader composing elements) is *constrained* composition — it
+selects from the ensemble's fixed element catalog, not arbitrary spawning. Still, the ensemble
+direction as a whole is a conscious relaxation of the original "committees hardcoded in Python"
+rule (AGENTS.md rule 2) — the same posture shift as **R2**, to be acknowledged, not drifted into.
+
+---
+
+## Design Risks
+
+Risks inherent to the ensemble design (excluding the deferred features above). Each carries a
+proposed mitigation and a status: **DECISION** (needs a design call) or **PROPOSED** (mitigation
+agreed in principle, to implement).
+
+**R1 — Two-phase leader vs. intra-committee data flow.** _(RESOLVED — model changed)_
+The one-shot two-phase model authored the whole plan before any element ran, so dependent
+steps were written blind (`service_probe` couldn't know the ports `network_scan` would find)
+and, worse, could not adapt to unplanned surprises. Resolved by **just-in-time** step emission —
+see **Committee Execution — Iterative Re-Planning**. The leader emits one Step at a time, so a
+dependent Step's brief is always written *after* the Step it depends on has run. There is no
+full upfront plan to write blind, which makes the fix **structural** — it does not rely on the
+leader choosing to revise. Superseded both the one-shot model and the lighter "thread outputs
+into a fixed plan" patch (which would have fixed data flow but not adaptivity, and left the fix
+soft).
+
+**R2 — Flow control is LLM-driven (posture shift).** _(RESOLVED — posture accepted)_
+advance/retry/iterate/loop-back are orchestrator LLM judgments against prose adequacy criteria,
+inverting the old "orchestrator sequencing is deterministic" principle (AGENTS.md rule 5).
+**Accepted posture:** flow is LLM-driven within a **deterministic envelope** — (1) the LLM may only
+choose among **manifest-declared transitions** (it cannot invent an edge), (2) hard budgets (R3)
+bound every loop, and (3) **every gate call logs a one-line rationale** for a fully auditable
+trajectory. What is *reachable* stays deterministic and author-owned; only *which reachable path*
+is the LLM's call — bounded and logged. A conscious, recorded departure from the old charter.
+
+**R3 — Loops bounded only by soft limits.** _(RESOLVED)_
+`iterate` is 30 and the Step cap is 12, but they nest. The ultimate backstop is a **global
+per-engagement budget of 200 total Steps** across all committees and their retries/iterations —
+when hit, the harness halts the engagement and surfaces it to the operator. Additionally:
+validation re-inject loops are capped (3 → fail), and the `retry` cap of 3 is mechanically
+enforced (`ask_operator` required after). No unbounded loop anywhere.
+
+**R4 — Orchestrator context grows monotonically.** _(RESOLVED)_
+The conversation stays open across the whole engagement; every artifact + retry is injected →
+context-window pressure, lost-in-the-middle, rising per-gate cost. Resolved by keeping the
+trajectory visible but not resident:
+1. **Digest, not artifact.** Each gate injects a compact committee **digest** — the leader's short
+   summary + harness-derived adequacy fields (recon → highest classification + counts; plan →
+   action count + top priority; report → `risk_rating`). The digest must be **accurate and to the
+   point** — it *is* the basis for the adequacy decision. Digest fields are chosen per committee,
+   next to its output schema.
+2. **`read_artifact(name)`** — the orchestrator pulls the full on-disk artifact on demand when the
+   digest isn't enough; nothing is lost, just not resident.
+3. **Drop superseded digests** — on retry/iterate keep only the latest digest + an "attempt N of M"
+   marker, not one per attempt.
+Result: orchestrator context stays roughly flat regardless of engagement length (`capability.md` +
+EngagementPlan + ~4 live digests + the gate-rationale trail), and adequacy judgment sharpens (the
+relevant fields are front-and-centre, not buried in a full artifact dump).
+
+**R5 — Typed at the boundary, untyped in consumption.** _(RESOLVED)_
+Output schemas validate production, not that the next committee correctly *reads* the artifact
+(injected as prose) — a schema change can silently break a downstream consumer. Resolved by:
+1. **Canonical per-schema renderer** (bundled in `schemas/`) — one deterministic rendered shape
+   downstream committees see; versions in lockstep with the schema; also the source of R4's digest.
+2. **Per-committee contract-test fixtures** — each committee ships a representative upstream
+   artifact; a test asserts it still produces valid output, turning a silent consumption break into
+   a build-time failure. (The load-bearing part — the renderer controls format, the fixture catches
+   whether the consumer still works.)
+3. **Version containment** — A's schema + renderer + B's consumption ship together in one ensemble
+   version; the fixtures guard each version.
+
+**R6 — Leader is the only judge, and does double duty.** _(RESOLVED)_
+Consensus quality (`instances > 1`) rested on the leader both selecting among N candidates and
+synthesising, with only a prompt instruction as guard. Resolved by separating *select* from
+*synthesise* and moving enforcement to Python:
+- **Select (leader path):** the leader returns only `{element_id, chosen_candidate_id, reason}` — it
+  *points* at a candidate, never re-writes one. The harness **validates the id is one of the N**
+  (rejects an invented "third option") and resolves it to the candidate's **verbatim** text.
+- **Select (scorer path):** a deterministic Python scorer picks the top candidate against objective
+  `task.md` criteria — no LLM in the selection. Preferred where the criterion is objective.
+- **Synthesise:** the committee artifact is a separate `finish` step, never conflated with selection.
+The LLM only ever *points* (or Python scores); Python owns validation and holds the bytes.
+(`agent` judge still deferred.)
+
+**R6b — "Incomplete" committee artifacts have no enforced handling.** _(RESOLVED)_
+When the Step cap is hit, the harness force-synthesises an artifact marked `incomplete: true`.
+**Rule:** an `incomplete: true` artifact **cannot `advance`** at its gate — the harness rejects
+`advance()` on it, so the orchestrator must choose `retry` / `iterate` / `ask_operator`. This
+makes incompleteness mechanical: a committee that ran out of Steps can never silently pass a
+truncated artifact downstream as if it were done.
+
+**R7 — Element-consensus SIEM-safety is not mechanically enforced.** _(ACCEPTED — author responsibility for now)_
+`instances > 1` multiplies execution and is only safe on non-traffic elements. The harness does not
+verify this; the ensemble **author** configures `instances`/`skills` with the domain knowledge and
+**owns the consequence** — a misconfigured consensus on a tool-using element trips the author's own
+SIEM against their own target. Acceptable while **author = operator** (self-authored ensembles, the
+demo and near term). **Deferred to distribution:** once ensembles are shipped by third parties
+(author ≠ operator), a misconfigured/malicious ensemble would multiply the *operator's* traffic
+without their knowledge — there the harness must enforce it (a per-skill `external: true|false`
+marker; reject `instances > 1` on any `external` skill). Same "author ≠ operator" class as **R8**;
+folds into the deferred distribution/trust work.
+
+**R8 — The manifest is a code-execution surface.** _(ACCEPTED — author-trusted for now)_
+`impl: path::function` loads and runs arbitrary Python at load time. For **self-authored,
+well-vetted** ensembles (demo and near term) this is your own code — not a threat. Same
+"author = operator" reasoning as **R7**. **Deferred to distribution:** running a third party's
+`impl.py` (author ≠ operator) needs a real trust model — signing, sandboxing, review, and
+constraining `impl` resolution to the ensemble dir / an allowlisted root — a hard prerequisite
+before any marketplace install. Folds into the deferred distribution/trust work.
+
+**R9 — Live-findings UX (migration).** _(RESOLVED — migration requirement)_
+The demo's live criticals came from incremental `record_observation` during the leader's synthesis
+loop — the iterative model keeps that synthesis step, so the effect ports over. Requirement:
+(1) Step execution fires `agent.spawned`/`agent.tool_called` so the graph is animated throughout
+recon; (2) synthesis (`finish`) fires `agent.finding` **incrementally** (per finding), not as a
+batch, so criticals stream in as classified; (3) optional interim raw-finding event per Step for
+earlier signal. Not a design change — a harness event-emission checklist item. The broader event
+taxonomy has changed; the UI needs a rework — see **ENSEMBLE_UI.md**.
+
+**R10 — "Team" is vestigial.** _(WITHDRAWN)_
+Superseded by the clarified model: Team is the first-class **breadth** level — N different
+elements the committee leader combines (e.g. a Network Team of ssh/tcp/http elements) — distinct
+from Element's **depth** (temperature consensus over one task). Not vestigial. For now the
+committee leader is the team aggregator (no team-level agent). See **Vocabulary → Team**.
