@@ -163,7 +163,12 @@ ensembles/
     <version>/              # semver; harness defaults to latest
       manifest.yml          # harness reads: graph, schemas, skills, element wiring
       capability.md         # orchestrator reads: what each committee does, adequacy criteria
-      schemas/              # Pydantic output contracts, one per committee
+      schemas/              # Pydantic output contracts, one per committee.
+                            # Must include __init__.py that re-exports every schema class.
+                            # Referenced in manifest.yml as `schemas.<ClassName>`
+                            # (e.g. `output_schema: schemas.ScanOutput`). The harness
+                            # imports the `schemas` package from the ensemble root and
+                            # resolves the class by name.
       committees/
         <name>/
           leader.yml        # manifesto: leader identity + output contract (system prompt)
@@ -246,20 +251,32 @@ system: |
 
   Conduct a dialogue to clarify the engagement objective, scope, and any constraints.
   Ask only what you need — the operator is a practitioner, not a client.
-  When ready, produce an EngagementPlan JSON as your final briefing message.
-  The operator's Proceed gesture is approval.
+  If the capability document contains a `briefing_required` section, work through each
+  listed field with the operator and confirm it before calling submit_plan. This section
+  is optional — not all ensembles declare one.
+  When ready, call submit_plan with the EngagementPlan JSON. The harness validates the schema
+  immediately and returns either a validation error (revise and resubmit in the same
+  conversation) or "Plan accepted." The operator's Proceed gesture is final approval.
+
+  == Phase 1 tools ==
+  submit_plan(plan: JSON)   — submit the EngagementPlan; harness validates immediately;
+                              available during briefing only
+  ask_user(question: str)   — ask the operator a clarifying question during briefing
 
   == Phase 2: Gate decisions ==
-  After each committee completes, the harness injects the committee artifact and
-  invokes you with one of four tools. Use exactly one per gate.
+  After each committee completes, the harness injects the committee digest and invokes you.
+  Use exactly one gate tool per gate. You may call read_artifact first if the digest is not
+  enough to decide.
 
-    advance()               — output meets adequacy criteria; proceed to next committee
-                              (or close the engagement if this is the terminal committee)
-    retry(note: str)        — output failed adequacy criteria; re-run fresh; note appended
-                              to the committee's objective list
-    iterate(note: str)      — output is adequate but improvable; re-run with prior artifact
-                              shown; note appended to the committee's objective list
-    ask_operator(question)  — escalate to operator before deciding; pipeline pauses
+    advance()                — output meets adequacy criteria; proceed to next committee
+                               (or close the engagement if this is the terminal committee)
+    retry(note: str)         — output failed adequacy criteria; re-run fresh; note appended
+                               to the committee's objective list
+    iterate(note: str)       — output is adequate but improvable; re-run with prior artifact
+                               shown; note appended to the committee's objective list
+    ask_operator(question)   — escalate to operator before deciding; pipeline pauses
+    read_artifact(name: str) — pull a full on-disk artifact when the digest is not enough;
+                               read-only, not a gate decision
 
   Evaluate against the adequacy criteria in the capability document (already in your
   context). Reference your EngagementPlan to recall what you expected from this committee.
@@ -381,22 +398,22 @@ and to preserve declaration order. Query: `[g for g in plan.gates if g.after == 
   "operator_instructions": "Assess the internal web app at 10.0.1.5 for credential exposure. Avoid aggressive scanning.",
   "committees": {
     "recon": {
-      "objective": "Map open ports and web paths on 10.0.1.5; flag any version disclosure.",
+      "objective": ["Map open ports and web paths on 10.0.1.5; flag any version disclosure."],
       "constraints": ["timing T2 or slower", "avoid /admin brute-force"],
       "emphasis": ["web application paths", "TLS configuration"]
     },
     "planning": {
-      "objective": "Prioritise actions targeting credential exposure and web misconfigurations.",
+      "objective": ["Prioritise actions targeting credential exposure and web misconfigurations."],
       "constraints": [],
       "emphasis": ["signal_critical observations from recon"]
     },
     "retrieval": {
-      "objective": "Execute approved actions; retrieve credentials or sensitive files if accessible.",
+      "objective": ["Execute approved actions; retrieve credentials or sensitive files if accessible."],
       "constraints": ["read-only database access"],
       "emphasis": []
     },
     "reporting": {
-      "objective": "Produce a formal report suitable for the client's security team.",
+      "objective": ["Produce a formal report suitable for the client's security team."],
       "constraints": [],
       "emphasis": []
     }
@@ -445,6 +462,28 @@ Must contain:
 - When to advance vs. retry vs. ask the operator
 - Model notes (e.g. Foundation-Sec cannot call tools)
 - Engagement constraints (allowlists, read-only enforcement)
+
+**Optional: `briefing_required` block**
+
+A structured checklist of inputs the ensemble cannot run without. When present, the
+orchestrator works through each field with the operator before calling `submit_plan`.
+
+```yaml
+briefing_required:
+  - name: directory
+    type: string
+    example: /home/user/projects
+    description: Absolute path to walk
+  - name: extensions
+    type: array
+    example: [".py", ".md"]
+    description: Extensions to count, each including the dot
+```
+
+Omit this block if all required inputs can be inferred from the operator's initial
+message or are not critical to the ensemble starting correctly. When present, it also
+serves as documentation for the ensemble author — a clear statement of what the ensemble
+cannot run without.
 
 ---
 
@@ -838,10 +877,12 @@ path in `runner.py` already returns `None` from `run_orchestrator` and fires
 
 **8. Terminal committee gate behavior** _(Resolved)_
 
-The manifest encodes terminality via `transitions: []`. The harness checks transitions
-after every `advance()` call:
-- `transitions` non-empty → look up next node, spawn next committee
-- `transitions: []` → close the engagement
+The harness derives terminality from the transitions list: a committee is terminal when
+it has no forward edges (no `to:` pointing at a different committee). Self-loops
+(`condition: retry` / `condition: iterate`) do not make a committee non-terminal.
+After every `advance()` call the harness checks:
+- Forward edge exists → look up next node, spawn next committee
+- No forward edge → close the engagement
 
 `advance()` at the terminal node means "done" rather than "proceed." No new tools or
 special cases — the orchestrator calls the same four gate tools at every boundary.
@@ -1003,3 +1044,44 @@ Superseded by the clarified model: Team is the first-class **breadth** level —
 elements the committee leader combines (e.g. a Network Team of ssh/tcp/http elements) — distinct
 from Element's **depth** (temperature consensus over one task). Not vestigial. For now the
 committee leader is the team aggregator (no team-level agent). See **Vocabulary → Team**.
+
+---
+
+## Open Issues — `_inventory` Reference Ensemble
+
+Small defects remaining in `202607/_inventory/ensembles/inventory/1.0.0/` after the 2026-07-23
+audit. Address before using `_inventory` as the Phase 1 build target.
+
+**I1 — `capability.md` missing `briefing_required` block** _(Open)_
+The `briefing_required` format is now specified in **Capability Document** above. The inventory
+`capability.md` does not yet have one. Add:
+```yaml
+briefing_required:
+  - name: directory
+    type: string
+    example: /home/user/projects
+    description: Absolute path to walk
+  - name: extensions
+    type: array
+    example: [".py", ".md"]
+    description: Extensions to count, each including the dot
+```
+
+**I2 — `capability.md` "Ask the operator if" conflates briefing-time and gate-time** _(Open)_
+The section currently lists "The directory is missing" and "No extensions were provided" — both
+are conditions the orchestrator resolves *during briefing* (covered by `briefing_required`), not
+at a gate callback after a committee has run. Split or rewrite: briefing-time conditions belong
+in `briefing_required`; gate-time escalation criteria (e.g. "zero files counted across all
+extensions despite a valid directory") belong in "Ask the operator if."
+
+**I3 — `report/leader.yml` tool list is parenthetical** _(Open)_
+`scan/leader.yml` has an explicit `== Loop ==` section listing each tool on its own line with its
+effect. `report/leader.yml` lists the tools only as an inline parenthetical
+`(submit_step / finish / refuse_start / ask_operator / reply_operator)`. Bring it into the same
+format as `scan/leader.yml` for consistency.
+
+**I4 — `report/playbook.md` has no escalation criteria** _(Open)_
+The scan playbook says "ask_operator to confirm the path or the extension list" when a zero total
+is returned. The report playbook has no equivalent "When to adapt / ask_operator" guidance.
+For a simple committee this is low risk, but it is asymmetric with the scan playbook. Add at
+minimum: when to call `ask_operator` if the ScanOutput looks malformed or empty.

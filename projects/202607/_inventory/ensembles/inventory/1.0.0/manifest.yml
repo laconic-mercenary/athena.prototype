@@ -16,9 +16,15 @@ workflow:
         - to: report
         - to: scan
           condition: retry
+        - to: scan
+          condition: iterate
     report:
       output_schema: schemas.ReportOutput
-      transitions: []
+      transitions:
+        - to: report
+          condition: retry
+        - to: report
+          condition: iterate
 
 # ---
 # Committees. Each leader runs the just-in-time re-planning loop (submit_step / finish).

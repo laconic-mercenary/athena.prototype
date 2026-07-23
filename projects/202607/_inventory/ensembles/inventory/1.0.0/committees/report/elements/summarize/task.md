@@ -11,6 +11,9 @@ a one-paragraph overview and a table of [EXTENSIONS] → count, with the total.
 - `table_markdown` — a markdown table: `| extension | count |`.
 - `total_files` — the total.
 
+Note: `directory` is required in `ReportOutput` but is not produced by this element — the
+committee leader threads it through verbatim from the ScanOutput's `directory` field.
+
 ## Skills
 None — reasoning only over the ScanOutput.
 

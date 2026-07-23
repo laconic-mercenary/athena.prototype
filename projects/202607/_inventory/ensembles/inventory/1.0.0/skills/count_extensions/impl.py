@@ -44,7 +44,7 @@ def count_extensions(directory: str, extensions: list[str]) -> dict:
 
     return {
         "directory": root,
-        "counts": [{"extension": ext, "count": tally[ext.lower()]} for ext in extensions],
+        "counts": [{"extension": ext.lower(), "count": tally[ext.lower()]} for ext in extensions],
         "total_files": total,
         "skipped": skipped,
     }
