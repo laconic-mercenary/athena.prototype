@@ -182,6 +182,32 @@ priority than the committee graph; ensure it doesn't assume the old flat agent m
 
 ---
 
+## 6. Logging
+
+Three distinct log surfaces. All are developer/debug surfaces — separate from the operator's engagement transcript in the main UI.
+
+### 6a. System log (harness events)
+The persistent, viewable record of the SSE event stream. Every event the harness emits — engagement lifecycle, committee transitions, gate decisions, skill executions, budget ticks, errors — is written to this log with a timestamp and structured payload.
+
+- **What it covers:** all `engagement.*`, `orchestrator.*`, `gate.*`, `committee.*`, `step.*`, `task.*`, `element.*`, `agent.*` events (see ENSEMBLES.md → Event Taxonomy).
+- **UI:** chronological feed, filterable by event type prefix (e.g. show only `gate.*` or `skill.*`). Should be accessible as a tab or panel alongside the main engagement view — not the default view, but reachable without a page change.
+- **Persistence:** survives a page refresh (the harness keeps the log for the engagement lifetime). This is the SSE replay mechanism — reconnecting a client replays the full event log for the active engagement, which also resolves Open Issue #8.
+
+### 6b. Model I/O log (raw LLM interactions)
+Every call to a language model: the exact system prompt + messages array sent, and the raw response (text + tool calls). One entry per model invocation, indexed by agent role (orchestrator, committee leader, element), step ID, and task ID.
+
+- **What it covers:** orchestrator briefing calls, orchestrator gate calls, per-step leader calls, per-task element calls.
+- **UI:** not shown in the main flow. Accessible via drill-down — clicking a step or task event in the system log opens the model I/O for that specific call. Verbose; primarily for debugging prompt and tool-call issues.
+- **Format per entry:** role, model ID, timestamp, token counts (in/out), latency ms, full messages array (collapsible), full response.
+
+### 6c. Operator transcript (distinct from both)
+The operator's conversation with the orchestrator (briefing Q&A, gate interactions, `ask_operator` exchanges) is already visible in the main engagement view. This is the *operator-facing* surface — not a debug log. It is not part of the system log or model I/O log.
+
+### Relationship between the three
+The system log references model calls by a call ID. The model I/O log stores the full payload indexed by that ID. The operator transcript is a filtered projection of the orchestrator's `question`/`answer` events already in the system log, rendered in the main UI.
+
+---
+
 ## Open Issues (unresolved / need a decision)
 
 1. **Event taxonomy** _(RESOLVED)_ — now fully specified in `ENSEMBLES.md` → **Event Taxonomy (SSE)**

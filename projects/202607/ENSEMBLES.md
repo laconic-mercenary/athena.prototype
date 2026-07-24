@@ -1,8 +1,8 @@
 # Ensembles — Architecture Design
 
 This document captures the agreed design for the Athena ensemble system **and is now an
-implementation handoff.** Companion docs: `ENSEMBLE_UI.md` (UI rework), and two example ensembles
-under `202607/`: `_inventory/` (a tiny validated reference) and `_example/…/red-teaming/…` (the demo).
+implementation handoff.** Companion docs: `ENSEMBLE_UI.md` (UI rework) and
+`tests/system/fs-scan/ensemble/` (the validated reference ensemble).
 
 ---
 
@@ -17,13 +17,14 @@ Execution — Iterative Re-Planning [the core loop], Orchestrator Design, Engage
 Interaction, Retry Mechanics, Output Contracts, Knowledge Granules; (5) Design Risks — **every `R#`
 is RESOLVED/ACCEPTED/DEFERRED and encodes a binding decision, read them all**; (6) `ENSEMBLE_UI.md`.
 
-**Two example ensembles (your build targets):**
-- **`202607/_inventory/…`** — a tiny, benign, **validated** reference (count files by extension).
-  Build the harness against this **first**: no consensus, no gates, read-only — the simplest possible
-  end-to-end.
-- **`202607/_example/…/red-teaming/…`** — the demo ensemble. **Still in the OLD format** (`mode:`, a
-  two-phase recon `leader.yml`, three-layer docs only on recon). Migrating it to the settled model is
-  a task (see Plan). It exercises consensus (planning), gates, and live findings.
+**Reference ensemble (your Phase 0–2 build target):**
+- **`tests/system/fs-scan/ensemble/`** — a tiny, benign, **validated** ensemble (count files by
+  extension). Build the harness against this first: no consensus, no gates, read-only — the
+  simplest possible end-to-end. Its test fixture and Docker stack live alongside it in
+  `tests/system/fs-scan/`.
+
+The red-teaming ensemble (consensus, gates, live findings) is built **from scratch** following this
+spec when Phase 3 needs it. Do not use `_example/` — it pre-dates this design and is not a target.
 
 **Reuse from `src/athena/` (don't rebuild):** `model_backend.py` (ModelBackend + Anthropic/Ollama/
 Fake), `agent_loop.py` primitives, the server/SSE layer (`server/`, `bus.py`, the event bridge), and
@@ -38,7 +39,7 @@ is hard-bounded (step 12 / iterate 30 / global 200 Steps); every gate call logs 
 
 ## Implementation Plan (build order)
 
-Build against `_inventory` first, then extend to `_example`. Phases are ordered by dependency.
+Build against `_inventory` first. Phases are ordered by dependency.
 
 **Phase 0 — Types + ensemble loader.**
 - Harness Pydantic types in `src/athena/`: `EngagementPlan`, `CommitteeBrief`, `Gate`,
@@ -48,7 +49,7 @@ Build against `_inventory` first, then extend to `_example`. Phases are ordered 
   `capability.md`, import the `schemas/` classes, load committee docs (`leader.yml`, `playbook.md`,
   `elements/*/task.md`, specialist ymls), resolve skills (`skill.yml` + `impl`). Validate that every
   referenced element id / schema name / skill id resolves.
-- **Acceptance:** load `_inventory` and `_example` cleanly; clear error on a broken manifest.
+- **Acceptance:** load `_inventory` cleanly; clear error on a broken manifest.
 
 **Phase 1 — Committee execution (the core).**
 - Just-in-time leader loop: build the committee brief (objective + constraints + emphasis + playbook +
@@ -76,7 +77,7 @@ Build against `_inventory` first, then extend to `_example`. Phases are ordered 
   → NotImplementedError.
 - Operator interaction: message typing (chat/flow/steering), `reply_operator`, committee `ask_operator`,
   `halt` (force-finish, operator-only), step-hijack at Task boundaries.
-- **Acceptance:** run `_example` planning with consensus; operator can chat/halt.
+- **Acceptance:** run the red-teaming ensemble's planning committee (built from scratch per this spec) with consensus; operator can chat/halt.
 
 **Cross-cutting deliverable — event taxonomy (SPECIFIED).** The full SSE topic set is now defined in
 **Event Taxonomy (SSE)** above — Phases 1–3 emit exactly those topics (the harness is the authority;
@@ -85,9 +86,9 @@ than bolting them on afterward.
 
 **Phase 4 — UI rework.** Per `ENSEMBLE_UI.md`, once the event taxonomy from Phases 1–3 is fixed.
 
-**Migrate `_example` to the settled model** (do as you need it for Phases 1–3): manifest `mode:` →
-drop / `instances:` + `teams:`; recon `leader.yml` → the just-in-time loop; add `playbook.md` +
-three-layer `task.md` to planning/retrieval/reporting; add `max_steps`.
+**Red-teaming ensemble (Phase 3):** build from scratch following this spec — do not migrate
+`_example/`. The spec is sufficient to author it fresh; the old format would require more work
+to unpick than to rebuild.
 
 **Deferred — do NOT build now** (all marked in the doc): knowledge granules; ensemble registry +
 distribution + the R7/R8 trust model; task fan-out (Tasks stay sequential); `scorer`/`agent` judges;
@@ -244,52 +245,34 @@ is injected into the conversation at session start, not baked into the system pr
 title: Chief Orchestrator
 model: claude-sonnet-4-6
 system: |
-  You are the Chief Orchestrator. You are harness-level — you do not belong to any
-  ensemble. You operate in two phases across the same conversation.
+  You are the Chief Orchestrator — harness-level, not part of any ensemble.
+  Two phases, one continuous conversation.
 
   == Phase 1: Briefing ==
-  The loaded ensemble's capability document is provided in your first message.
-  Read it fully before responding to the operator.
+  The capability document arrives in your first message. Read it before responding.
+  Gather objective, scope, and constraints from the operator. Ask only for what is
+  missing — the operator is a practitioner.
+  If the capability doc has a `briefing_required` section, use it as a guide: fill
+  from the operator's message where possible; ask only for genuinely missing fields.
+  When ready, call submit_plan. The harness validates immediately; revise and resubmit
+  on error. Downstream committee objectives may be provisional — refine each at its
+  gate via advance(). The operator's Proceed gesture is final approval.
 
-  Conduct a dialogue to clarify the engagement objective, scope, and any constraints.
-  Ask only what you need — the operator is a practitioner, not a client.
-  If the capability document has a `briefing_required` section, use it as a guide to what the
-  ensemble typically needs: fill each field from the operator's message where you can, and ask
-  only for what is genuinely missing or ambiguous. It is a guide, not a checklist to confirm
-  field by field — use judgement. Not all ensembles declare one.
-  When ready, call submit_plan with the EngagementPlan JSON. The harness validates the schema
-  immediately and returns either a validation error (revise and resubmit in the same
-  conversation) or "Plan accepted." The operator's Proceed gesture is final approval.
-
-  == Phase 1 tools ==
-  submit_plan(plan: JSON)   — submit the EngagementPlan; harness validates immediately;
-                              available during briefing only
-  ask_user(question: str)   — ask the operator a clarifying question during briefing
+  submit_plan(plan)    — submit the EngagementPlan (briefing only)
+  ask_user(question)   — ask the operator a clarifying question
 
   == Phase 2: Gate decisions ==
-  After each committee completes, the harness injects the committee digest and invokes you.
-  Use exactly one gate tool per gate. You may call read_artifact first if the digest is not
-  enough to decide.
+  After each committee, the harness injects its digest. Use one gate tool per gate.
+  Call read_artifact first if the digest is not enough. Evaluate against the adequacy
+  criteria in the capability document.
 
-    advance()                — output meets adequacy criteria; proceed to next committee
-                               (or close the engagement if this is the terminal committee)
-    retry(to: str, note: str)   — re-run committee `to` fresh (a declared retry transition:
-                               self-loop or a back-edge to an earlier committee); note appended
-    iterate(to: str, note: str) — re-run committee `to` with its prior artifact shown
-                               (a declared iterate transition); note appended
-    ask_operator(question)   — escalate to operator before deciding; pipeline pauses
-    read_artifact(name: str) — pull a full on-disk artifact when the digest is not enough;
-                               read-only, not a gate decision
+  advance(next_objective?)   — adequate; proceed (close engagement if terminal)
+  retry(to, note)            — failed; re-run `to` fresh; note → objective list
+  iterate(to, note)          — adequate but improvable; re-run `to` with prior shown
+  ask_operator(question)     — escalate; pipeline pauses
+  read_artifact(name)        — fetch full artifact; read-only; not a gate decision
 
-  Evaluate against the adequacy criteria in the capability document (already in your
-  context). Reference your EngagementPlan to recall what you expected from this committee.
-  Do not advance if adequacy criteria are not met. Do not retry more than three times
-  on the same committee without asking the operator.
-
-  == EngagementPlan ==
-  When briefing is complete, emit the EngagementPlan via the submit_plan tool (schema
-  validated by the harness). The recon objective is concrete; downstream committee
-  objectives may be provisional — you refine each at its gate via advance(next_objective).
+  After 3 retries on the same committee, use ask_operator rather than retrying again.
 ```
 
 ### Context 1 — Briefing (session start)
@@ -607,7 +590,7 @@ unit** (fan-out deferred — Tasks run sequentially for now).
 | Loop  | `submit_step(step)` | Emit the next Step (`description` + `tasks`, optional `supersedes`). Harness validates (element ids exist), stamps a UUID, executes it, returns its output. Submitting the next Step *is* the re-plan — it is written with all prior results in hand. |
 | Loop  | `ask_operator(question)` | Proactively pause for operator help — surface, wait, inject the reply, continue. *When* to ask is set in the playbook's escalation criteria (see **Operator Interaction**). |
 | Loop  | `reply_operator(message)` | Answer an operator chat message without advancing work. |
-| Loop  | `read_artifact(committee)` | Pull the full artifact of an **optional** `consumes` committee whose digest is in the brief (see **Committee Data Inputs**). Read-only. |
+| Loop  | `read_artifact(committee)` | Pull the full artifact of an **optional** `consumes` committee whose digest is in the brief (see **Committee Data Inputs**). Read-only. **Only granted when the committee has `consumes.optional` entries; `committee` must be one of the named optional dependencies — harness rejects any other name.** |
 | Loop  | `finish()` | The objective is met → synthesise the committee artifact from all non-superseded Step outputs. |
 
 There is **no per-element summon tool, and no separate `continue`/`revise`** — submitting the next

@@ -1,0 +1,128 @@
+FS-SCAN SYSTEM INTEGRATION TEST
+================================
+
+Purpose
+-------
+Runs the `inventory` ensemble against a fixed directory tree (testdata/) and verifies
+that the ensemble produces correct per-extension file counts. This is the first
+end-to-end test for the ensemble harness (Phases 0–2).
+
+The ensemble is read-only. It walks a directory, counts files by extension, and
+produces a short markdown inventory report. No files are opened, moved, or modified.
+
+
+Prerequisites
+-------------
+- Docker + Docker Compose
+- A .env file at the project root (../../..) containing at minimum ANTHROPIC_API_KEY
+- Port 8001 free on the host
+
+
+Layout
+------
+tests/system/fs-scan/
+  ensemble/           The inventory ensemble (manifest, schemas, committees, skills).
+                      Mounted read-only at /app/ensemble in both containers.
+  testdata/           Deterministic fixture tree. Mounted read-only at /data/testfiles.
+  docker-compose.yml  Two services: athena_web (always started) + athena_runner (manual).
+  run.sh              Build images, start athena_web, wait for healthy, print URL.
+  stop.sh             Tear down all containers, volumes, and orphans.
+  instructions.txt    This file.
+
+
+Ensemble overview
+-----------------
+Two committees, no operator_approval gates:
+
+  scan  ──► report (terminal)
+   └──► scan  (retry / iterate self-loop)
+
+scan
+  Calls the `count_extensions` skill with the operator-supplied directory and extension
+  list. Produces ScanOutput: per-extension counts, total files, skipped paths.
+
+report
+  Consumes scan (required — full ScanOutput injected). Produces ReportOutput: a
+  one-paragraph summary and a markdown table of extension → count.
+
+Skill
+  skills/count_extensions/impl.py — deterministic Python, no LLM involvement.
+  IMPORTANT: ALLOWED_ROOTS defaults to $HOME. For this test the skill must be
+  configured to allow /data (where testdata/ is mounted). Set ALLOWED_ROOTS via
+  environment variable when implementing the harness skill executor.
+
+
+Starting the test environment
+------------------------------
+  cd tests/system/fs-scan
+  ./run.sh
+
+This builds both images (from the project-root Dockerfile), starts athena_web on
+port 8001, and waits for the health check to pass. Once healthy it prints:
+
+  fs-scan UI ready: http://localhost:8001
+
+Open that URL. The web UI is at the start page — ready to receive an engagement.
+
+
+Running the ensemble
+--------------------
+The athena_runner service is defined in docker-compose.yml but held behind the
+`runner` profile (not started by run.sh). Use the web UI to initiate the engagement,
+or start the runner manually once CLI mode is implemented:
+
+  docker compose --profile runner up athena_runner
+
+Operator brief to supply at the UI:
+  Scan /data/testfiles for .py .md .sh .sql .json .yml .html .css .js .csv .txt .toml
+
+
+GREEN criteria
+--------------
+The test passes (GREEN) when the ensemble produces a ReportOutput whose table
+matches the following counts exactly:
+
+  Extension   Count
+  ---------   -----
+  .py         11
+  .md          4
+  .sh          3
+  .sql         3
+  .json        3
+  .yml         2
+  .html        2
+  .css         2
+  .js          1
+  .csv         1
+  .txt         1
+  .toml        1
+
+Note: Makefile (no extension) is present in testdata/ and must NOT appear in the
+count — the skill only tallies files whose extension matches the requested list.
+
+
+Useful commands during a run
+-----------------------------
+  docker compose logs -f athena_web          # live web server logs
+  docker compose logs -f athena_runner       # runner logs (if started)
+  docker compose ps                          # container status + health
+
+Stopping
+--------
+  ./stop.sh
+
+This runs `docker compose down --volumes --remove-orphans`. Safe to run at any time.
+
+
+Known implementation gaps (not yet wired)
+------------------------------------------
+1. ALLOWED_ROOTS — count_extensions/impl.py currently only allows $HOME. The harness
+   skill executor must expose an env-var override so /data resolves. Until this is
+   wired the skill will raise ValueError on /data/testfiles.
+
+2. athena CLI — `athena --ensemble /app/ensemble --verbose` does not exist yet.
+   The runner container is a placeholder for when Phase 0 CLI is implemented.
+
+3. Harness Phases 0–2 are not implemented. The web container starts and serves the
+   UI, but no ensemble execution happens until the harness is built. This test is
+   the acceptance target for that implementation.

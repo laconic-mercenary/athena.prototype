@@ -1,0 +1,52 @@
+services:
+  athena_web:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    command:
+      - python
+      - server.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    volumes:
+      - ../../../artifacts:/app/artifacts
+      - ./testdata:/data/testfiles:ro
+      - ./ensemble:/app/ensemble:ro
+    env_file: ../../../.env
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - fscan-net
+
+  athena_runner:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    command:
+      - athena
+      - --ensemble
+      - /app/ensemble
+      - --verbose
+    volumes:
+      - ../../../artifacts:/app/artifacts
+      - ./testdata:/data/testfiles:ro
+      - ./ensemble:/app/ensemble:ro
+    env_file: ../../../.env
+    depends_on:
+      athena_web:
+        condition: service_healthy
+    networks:
+      - fscan-net
+    profiles:
+      - runner   # not started by default; operator triggers via UI or: docker compose --profile runner up
+
+networks:
+  fscan-net:
+    driver: bridge
