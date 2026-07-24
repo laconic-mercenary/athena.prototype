@@ -36,6 +36,7 @@ committees:
     leader: committees/scan/leader.yml
     model: claude-sonnet-4-6
     max_steps: 3
+    # entry committee — consumes nothing upstream
     elements:
       - id: count_files
         specialists:
@@ -46,6 +47,9 @@ committees:
     leader: committees/report/leader.yml
     model: claude-sonnet-4-6
     max_steps: 3
+    consumes:
+      required: [scan]     # full ScanOutput injected — the report cannot format without it
+      optional: []
     elements:
       - id: summarize
         specialists:

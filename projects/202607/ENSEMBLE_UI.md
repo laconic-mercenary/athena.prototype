@@ -17,8 +17,9 @@ taxonomy those phases define. Open Issue #1 (event taxonomy not finalised) is th
 ## 0. Event taxonomy — old vs. new (the foundation)
 
 Everything downstream depends on the events the harness emits over SSE. The current set no longer
-matches the model. The harness work is out of scope here, but the UI consumes these, so the target
-set is listed to anchor the page specs. (Exact topic names TBD with the harness.)
+matches the model. **The authoritative taxonomy is now `ENSEMBLES.md` → Event Taxonomy (SSE)** —
+full topic list + payloads. The table below is the *UI-consumption view* (which surface reads which);
+consult ENSEMBLES.md for exact payloads.
 
 **Emitted today** (`grep pub.sendMessage`): `engagement.started/completed/rejected/awaiting_approval/approved`,
 `committee.started/completed/artifact_emitted`, `agent.spawned/spun_down/tool_called/finding/operator_reply`,
@@ -26,7 +27,7 @@ set is listed to anchor the page specs. (Exact topic names TBD with the harness.
 
 **Needed for the ensemble model:**
 
-| Area | Event (indicative) | Purpose in UI |
+| Area | Event (see ENSEMBLES.md → Event Taxonomy) | Purpose in UI |
 |------|--------------------|---------------|
 | Briefing | `orchestrator.question` / `.answer` | briefing chat (keep) |
 | Briefing | `engagement.plan_ready` | EngagementPlan submitted & validated → activate **Proceed** (replaces text-scan) |
@@ -39,7 +40,7 @@ set is listed to anchor the page specs. (Exact topic names TBD with the harness.
 | Findings | `agent.finding` | criticals/warns; now fired **incrementally at synthesis** (keep mechanism; see R9) |
 | Gates | `gate.decision` | **NEW** — orchestrator `advance/retry/iterate/ask_operator` + **rationale** (R2 auditability) |
 | Gates | `gate.awaiting_approval` | generalises `awaiting_approval` to *any* `operator_approval` gate |
-| Committee digest | `committee.digest` | **NEW** — the summary + adequacy fields shown at each gate (R4) |
+| Committee digest | `committee.completed` (carries `digest`, `incomplete`) | **NEW** — `render_digest()` + `incomplete` flag at each gate / the digest panel (R4) |
 | Operator | `committee.ask_operator` | **NEW** — a leader-initiated question needing an operator reply |
 | Operator | `agent.operator_reply` | leader's reply to operator chat (keep; two-way) |
 | Halt/budget | `engagement.halted` | **NEW** — halt (operator/budget) fired; artifact `incomplete` |
@@ -124,8 +125,8 @@ alert. Requirement is on the harness (fire `agent.finding` incrementally at synt
 activity during Steps). UI keeps the current finding-card + header-alert treatment.
 
 ### 3e. Digest & artifact panel (`ArtifactTable`)
-- Primary view becomes the committee **digest** (`committee.digest`: leader summary + adequacy
-  fields), not raw JSON. The full artifact is available on demand (existing markdown/JSON view).
+- Primary view becomes the committee **digest** (from `committee.completed`'s `digest` field —
+  `render_digest()`), not raw JSON. The full artifact is available on demand (existing markdown/JSON view).
 - **Mark `incomplete: true` artifacts** distinctly (Step cap / halt hit) — an incomplete committee is
   meaningful state (it could not `advance` without operator action, R6b).
 - Sort/criticality can key off the digest's adequacy fields (e.g. `risk_rating`, highest
@@ -183,10 +184,9 @@ priority than the committee graph; ensure it doesn't assume the old flat agent m
 
 ## Open Issues (unresolved / need a decision)
 
-1. **Event taxonomy is not finalised.** The `step.*`, `task.*`, `element.candidate/selected`,
-   `gate.decision`, `committee.digest`, `committee.ask_operator`, `engagement.halted` topics are
-   indicative. They must be defined with the harness before the UI can consume them. This is the
-   single biggest blocker.
+1. **Event taxonomy** _(RESOLVED)_ — now fully specified in `ENSEMBLES.md` → **Event Taxonomy (SSE)**
+   (all topics + payloads; the harness is the authority). The former "single biggest blocker" is
+   closed; the UI builds against that list.
 2. **Step-loop visualisation.** Timeline rail vs. animating the graph vs. a hybrid. A long/iterating
    committee could produce many Steps — how to keep it legible? Undecided.
 3. **Consensus display depth.** Show all N candidates (transparent, but noisy), or just the selected +

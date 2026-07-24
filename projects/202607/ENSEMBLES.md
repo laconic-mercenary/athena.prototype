@@ -78,12 +78,10 @@ Build against `_inventory` first, then extend to `_example`. Phases are ordered 
   `halt` (force-finish, operator-only), step-hijack at Task boundaries.
 - **Acceptance:** run `_example` planning with consensus; operator can chat/halt.
 
-**Cross-cutting deliverable — event taxonomy (OPEN).** Phases 1–3 must **define and document** the
-SSE event topics they emit — `step.*`, `task.*`, `element.candidate`/`element.selected`,
-`gate.decision` (+ rationale), `committee.digest`, `committee.ask_operator`, `engagement.halted`, and
-the **incremental** `agent.finding` at synthesis. These names are only *indicative* today (see
-`ENSEMBLE_UI.md` §0 and its Open Issue #1); **the harness is the authority.** Phase 4 / the UI consumes
-them, so treat the finalized taxonomy as a hard deliverable of P1–P3, not an afterthought.
+**Cross-cutting deliverable — event taxonomy (SPECIFIED).** The full SSE topic set is now defined in
+**Event Taxonomy (SSE)** above — Phases 1–3 emit exactly those topics (the harness is the authority;
+Phase 4 / the UI consumes them). Wire each event as its phase builds the thing that fires it, rather
+than bolting them on afterward.
 
 **Phase 4 — UI rework.** Per `ENSEMBLE_UI.md`, once the event taxonomy from Phases 1–3 is fixed.
 
@@ -144,9 +142,13 @@ contracts (Pydantic schemas). The leader decomposes the committee's brief into e
 assignments, runs them, and assembles the final committee artifact.
 
 **Workflow**
-The directed graph of committees. Defines valid transitions between nodes including
-back-edges (retry). Entry node, terminal nodes, and gate conditions are all declared
-in the manifest.
+The directed graph of committees. Transitions are declared **per node** with a `condition`:
+forward (default), `operator_approved` (approval gate), `retry`, and `iterate`. **`retry` and
+`iterate` are graph edges, not current-committee-only actions** — a *self-loop* re-runs the same
+committee; a *back-edge* (e.g. `planning → recon`) re-runs an **earlier** committee and the graph
+proceeds forward from there. **All loops are declared** — a committee can only be retried/iterated
+to a target the manifest declares (decided 2026-07-23). Entry node, terminal nodes (no forward
+edge — self-loops don't count), and gate conditions are all in the manifest.
 
 **Orchestrator**
 Controls workflow flow. Does not belong to any ensemble — it is harness-level.
@@ -251,9 +253,10 @@ system: |
 
   Conduct a dialogue to clarify the engagement objective, scope, and any constraints.
   Ask only what you need — the operator is a practitioner, not a client.
-  If the capability document contains a `briefing_required` section, work through each
-  listed field with the operator and confirm it before calling submit_plan. This section
-  is optional — not all ensembles declare one.
+  If the capability document has a `briefing_required` section, use it as a guide to what the
+  ensemble typically needs: fill each field from the operator's message where you can, and ask
+  only for what is genuinely missing or ambiguous. It is a guide, not a checklist to confirm
+  field by field — use judgement. Not all ensembles declare one.
   When ready, call submit_plan with the EngagementPlan JSON. The harness validates the schema
   immediately and returns either a validation error (revise and resubmit in the same
   conversation) or "Plan accepted." The operator's Proceed gesture is final approval.
@@ -270,10 +273,10 @@ system: |
 
     advance()                — output meets adequacy criteria; proceed to next committee
                                (or close the engagement if this is the terminal committee)
-    retry(note: str)         — output failed adequacy criteria; re-run fresh; note appended
-                               to the committee's objective list
-    iterate(note: str)       — output is adequate but improvable; re-run with prior artifact
-                               shown; note appended to the committee's objective list
+    retry(to: str, note: str)   — re-run committee `to` fresh (a declared retry transition:
+                               self-loop or a back-edge to an earlier committee); note appended
+    iterate(to: str, note: str) — re-run committee `to` with its prior artifact shown
+                               (a declared iterate transition); note appended
     ask_operator(question)   — escalate to operator before deciding; pipeline pauses
     read_artifact(name: str) — pull a full on-disk artifact when the digest is not enough;
                                read-only, not a gate decision
@@ -314,7 +317,7 @@ the harness appends to the existing conversation:
 <leader summary + harness-derived adequacy fields — full artifact via read_artifact(name)>
 
 Evaluate against adequacy criteria for the <committee> committee.
-Use advance(next_objective), retry(note), iterate(note), or ask_operator(question).
+Use advance(next_objective), retry(to, note), iterate(to, note), or ask_operator(question).
 ```
 
 The orchestrator already has `capability.md` and the EngagementPlan in context from
@@ -329,8 +332,8 @@ Provided by the harness at gate callback time only — not available during brie
 | Tool | Signature | Effect |
 |------|-----------|--------|
 | `advance` | `advance(next_objective: str \| None = None)` | Proceed to next committee, optionally refining the *next* committee's objective with what this artifact revealed (just-in-time; downstream EngagementPlan objectives are provisional). Close engagement if terminal. **Rejected if the artifact is `incomplete: true`** — must `retry`/`iterate`/`ask_operator`. See R6b. |
-| `retry` | `retry(note: str)` | Failure retry — re-run fresh; note appended to objective list |
-| `iterate` | `iterate(note: str)` | Iteration retry — re-run with prior artifact shown; note appended to objective list |
+| `retry` | `retry(to: str, note: str)` | Traverse a declared `retry` transition — re-run committee `to` **fresh** (a self-loop, or a back-edge to an earlier committee). `to` must be a `retry` target the current node declares (defaults to the self-loop when it is the only one). Note appended to `to`'s objective list. |
+| `iterate` | `iterate(to: str, note: str)` | Traverse a declared `iterate` transition — re-run committee `to` **with its prior artifact shown**. Same declaration/target rules as `retry`. |
 | `ask_operator` | `ask_operator(question: str)` | Pause pipeline; surface question via operator chat |
 | `read_artifact` | `read_artifact(name: str)` | Pull a full on-disk artifact when the digest isn't enough to decide (R4). Read-only — not a gate decision. |
 
@@ -435,7 +438,8 @@ Constraints: <constraints>
 Emphasis: <emphasis>
 
 == Prior committee outputs ==
-<upstream artifacts>
+<consumes.required — full rendered artifacts>
+<consumes.optional — digests only; read_artifact(committee) for the full one>
 
 == Your playbook ==
 <playbook.md content>
@@ -465,8 +469,10 @@ Must contain:
 
 **Optional: `briefing_required` block**
 
-A structured checklist of inputs the ensemble cannot run without. When present, the
-orchestrator works through each field with the operator before calling `submit_plan`.
+A structured list of the inputs the ensemble typically needs. When present, the orchestrator
+**uses it as a guide** during briefing — filling each field from the operator's message where it
+can and asking only for what is genuinely missing. It is a guide the orchestrator applies with
+judgement, **not** a hard checklist it must confirm field by field before `submit_plan`.
 
 ```yaml
 briefing_required:
@@ -601,6 +607,7 @@ unit** (fan-out deferred — Tasks run sequentially for now).
 | Loop  | `submit_step(step)` | Emit the next Step (`description` + `tasks`, optional `supersedes`). Harness validates (element ids exist), stamps a UUID, executes it, returns its output. Submitting the next Step *is* the re-plan — it is written with all prior results in hand. |
 | Loop  | `ask_operator(question)` | Proactively pause for operator help — surface, wait, inject the reply, continue. *When* to ask is set in the playbook's escalation criteria (see **Operator Interaction**). |
 | Loop  | `reply_operator(message)` | Answer an operator chat message without advancing work. |
+| Loop  | `read_artifact(committee)` | Pull the full artifact of an **optional** `consumes` committee whose digest is in the brief (see **Committee Data Inputs**). Read-only. |
 | Loop  | `finish()` | The objective is met → synthesise the committee artifact from all non-superseded Step outputs. |
 
 There is **no per-element summon tool, and no separate `continue`/`revise`** — submitting the next
@@ -651,9 +658,17 @@ the leader uses it explicitly when selecting among N candidate outputs.
 
 ## Retry Mechanics
 
-Two semantically distinct retry types with different harness behaviour.
+`retry` and `iterate` are **workflow-graph transitions** (declared per node), not
+current-committee-only actions. Each re-runs a **target** committee `to`: a self-loop
+(`to` = the current committee) or a declared **back-edge** to an earlier committee (e.g.
+`planning → recon`). When `to` is an earlier committee, the harness re-runs it and then
+**proceeds forward** through the graph from `to`, re-running the intervening committees; each
+re-run **overwrites** that committee's artifact (downstream artifacts are thereby superseded).
+The global 200-Step budget (**R3**) bounds the total work across all such loops.
 
-### `retry(note: str)` — Failure retry
+Two semantically distinct types (below, "the committee" means the target `to`):
+
+### `retry(to, note)` — Failure retry
 
 Output did not meet adequacy criteria. Something went wrong.
 
@@ -668,7 +683,7 @@ Output did not meet adequacy criteria. Something went wrong.
   is informational, not mechanically enforced; the orchestrator can override by calling
   `ask_operator` instead.
 
-### `iterate(note: str)` — Iteration retry
+### `iterate(to, note)` — Iteration retry
 
 Output was adequate, but the orchestrator wants improvement on a specific aspect.
 
@@ -709,7 +724,7 @@ Emphasis: ...
 <prior committee artifact>]
 
 == Prior committee outputs ==
-<upstream artifacts from earlier committees>
+<consumes.required — full rendered artifacts; consumes.optional — digests + read_artifact>
 
 == Your playbook ==
 ...
@@ -758,6 +773,71 @@ before planning"); since the orchestrator evaluates at every boundary, it honour
 
 ---
 
+## Event Taxonomy (SSE)
+
+The authoritative list of SSE topics the harness emits. Phases 1–3 **own** this; the UI consumes it
+(`ENSEMBLE_UI.md`). Every event carries `run_id` (the SSE stream is per-engagement) — only the extra
+payload is shown. Topics are dot-namespaced. Operator → server actions (chat, approve/reject, halt,
+plan Proceed) go via **POST**, not SSE.
+
+### `engagement.*` — lifecycle
+| Topic | Payload | When / UI use |
+|-------|---------|---------------|
+| `engagement.started` | `ensemble, version` | run created; briefing begins |
+| `engagement.plan_ready` | `plan` (EngagementPlan) | plan submitted + validated → activate **Proceed** |
+| `engagement.approved` | — | operator approved; pipeline begins |
+| `engagement.completed` | — | terminal committee advanced; done |
+| `engagement.rejected` | `reason` | `reject_run`, plan rejected, or operator reject at a gate |
+| `engagement.halted` | `reason, by: operator\|budget` | halt fired; in-flight committee finishes `incomplete` |
+
+### `orchestrator.*` — briefing + operator questions
+| Topic | Payload | When / UI use |
+|-------|---------|---------------|
+| `orchestrator.question` | `question` | orchestrator asks the operator (briefing `ask_user` **or** gate `ask_operator`); blocks |
+| `orchestrator.answer` | `answer` | operator's reply (echo) |
+
+### `gate.*` — workflow flow control
+| Topic | Payload | When / UI use |
+|-------|---------|---------------|
+| `gate.awaiting_approval` | `committee` | an `operator_approval` gate blocks; operator must approve/reject |
+| `gate.decision` | `committee, decision: advance\|retry\|iterate, to?, next_objective?, rationale, attempt?` | the orchestrator's boundary decision — **R2 auditability**. `to` on retry/iterate, `next_objective` on advance, `attempt` = "N of 3/30" |
+
+### `committee.*`
+| Topic | Payload | When / UI use |
+|-------|---------|---------------|
+| `committee.started` | `committee, objective` | committee spawned; leader begins its loop |
+| `committee.completed` | `committee, digest, incomplete: bool, artifact` | synthesised — carries `render_digest()` + the `incomplete` flag + artifact ref (feeds the gate and the digest panel) |
+| `committee.ask_operator` | `committee, question` | a committee **leader** asks the operator (blocks); reply routes to the leader, not the orchestrator |
+
+### `step.*` / `task.*` — the iterative loop
+| Topic | Payload | When / UI use |
+|-------|---------|---------------|
+| `step.started` | `committee, step_id, description, tasks: [{task_id, element, brief}]` | leader submitted a Step |
+| `step.completed` | `committee, step_id` | all Tasks done; leader's turn |
+| `step.superseded` | `committee, step_id` | a re-run superseded this Step (its output dropped from synthesis) |
+| `task.started` | `committee, step_id, task_id, element, brief` | a Task (element invocation) begins |
+| `task.completed` | `committee, step_id, task_id, summary` | a Task finished |
+
+### `element.*` — consensus (only when `instances > 1`)
+| Topic | Payload | When / UI use |
+|-------|---------|---------------|
+| `element.candidate` | `committee, element, task_id, candidate_id, temperature` | a temperature candidate produced |
+| `element.selected` | `committee, element, task_id, chosen_candidate_id, reason` | the judge's pick |
+
+### `agent.*` — specialist activity + findings
+| Topic | Payload | When / UI use |
+|-------|---------|---------------|
+| `agent.spawned` | `committee, agent_id, title, role: leader\|specialist` | an agent started |
+| `agent.tool_called` | `committee, agent_id, tool, input_summary` | a specialist called a skill |
+| `agent.spun_down` | `committee, agent_id` | an agent finished |
+| `agent.finding` | `committee, agent_id, classification, summary` | a classified finding — fired **incrementally at synthesis** (R9) |
+| `agent.operator_reply` | `committee, agent_id, text` | a leader's reply to an operator chat message (two-way) |
+
+**Cross-cutting:** every event drives UI reducer state, so the "no SSE replay on reconnect" gap is
+now near-required — a per-engagement in-memory event log replayed on connect (ENSEMBLE_UI §5).
+
+---
+
 ## Output Contracts
 
 Pydantic schemas in `schemas/`. One per committee, declared in the manifest.
@@ -771,6 +851,98 @@ report as MITRE ATT&CK, map each finding to a technique ID + tactic" — is set 
 `CommitteeBrief` during briefing. The brief *is* the customization surface; no special mechanism.
 The `ReportOutput` schema's freeform `sections` hold a MITRE technique-mapping table for the demo;
 a rigorous version adds optional `technique_mappings: [{finding, technique_id, tactic}]`.
+
+---
+
+## Digest & Rendering
+
+Every committee artifact has two textual views — the **full render** (for a consuming committee)
+and the **digest** (a compact view for the orchestrator gate and `consumes.optional`). Both are
+produced by the **output schema itself**, so they version with it (R5's version containment). Each
+output schema (a Pydantic model in `schemas/`) implements two methods:
+
+```python
+class ScanOutput(BaseModel):
+    ...
+    def render_full(self) -> str:
+        """The canonical consumption format — the whole artifact rendered for a downstream
+        committee's context (R5). This is the ONE consumption shape; downstream committees
+        never see raw JSON, only this."""
+
+    def render_digest(self) -> str:
+        """A compact view — a short summary plus the fields relevant to the adequacy decision
+        (R4). What it includes IS the committee's 'adequacy fields' — there is no separate
+        declaration. Keep it small: it is what the orchestrator reads at a gate and what
+        `consumes.optional` injects."""
+```
+
+Who gets which (all are **strings** — the LLM reads them):
+
+| Reader | Gets |
+|--------|------|
+| Consuming committee, `consumes.required` | each upstream artifact's `render_full()` |
+| Consuming committee, `consumes.optional` | each upstream artifact's `render_digest()`; `read_artifact(committee)` returns its `render_full()` |
+| Orchestrator at a gate | the committee's `render_digest()` (R4); `read_artifact(name)` returns `render_full()` |
+
+For a small artifact (`ScanOutput`) `render_full` and `render_digest` may be nearly identical. For a
+large one (a recon artifact with many observations) `render_full` lists everything while
+`render_digest` is "summary + highest classification + counts."
+
+**Contract-test fixture (R5):** each committee ships a representative upstream artifact; a test
+asserts the committee produces valid output from that artifact's `render_full()` — turning a silent
+consumption break into a build-time failure when a schema evolves.
+
+---
+
+## Model Resolution
+
+A model reference has a **name** and a **provider**, both resolved most-specific-first:
+**specialist yml → element `model_override` → committee `model` → global default** (provider the
+same, defaulting to the global provider).
+
+Provider **connection details are not in the ensemble** — they live in the harness config / env, so
+ensembles stay portable across deployments:
+- `anthropic` — `ANTHROPIC_API_KEY` from env.
+- `ollama` (any OpenAI-compatible endpoint — e.g. **Foundation-Sec on Modal/vLLM**) — the base URL
+  (the Modal deployment URL) and bearer token come from the harness config, **not** the manifest.
+  The manifest only names the model + `provider: ollama`.
+
+So Foundation-Sec is referenced as `{model: foundation-sec-8b, provider: ollama}` in the ensemble;
+the harness supplies the Modal URL. Swapping the deployment URL never touches an ensemble.
+
+---
+
+## Committee Data Inputs (`consumes`)
+
+`transitions` (Workflow) is the **control-flow** graph — execution order + retry/iterate/gates.
+Which upstream outputs a committee *reads* is a **separate data-flow graph**, declared per committee
+as `consumes`. Control flow is often a line (`recon → planning → retrieval → reporting`) while data
+flow fans in — reporting reads recon *and* planning *and* retrieval, not just its predecessor.
+
+`consumes` is an explicit object of two lists (no shorthand):
+
+```yaml
+committees:
+  reporting:
+    consumes:
+      required: [retrieval]          # full rendered artifact injected into the brief
+      optional: [recon, planning]    # digest injected; read_artifact(committee) pulls the full one
+    transitions: [...]
+```
+
+- **`required`** — the committee cannot do its job without these; the harness injects each one's
+  **full rendered artifact** (R5) into `== Prior committee outputs ==`. Deterministic, always present.
+- **`optional`** — available if the committee decides it needs them; the harness injects only each
+  one's **digest** (R4 — summary + adequacy fields) and grants the leader `read_artifact(committee)`
+  to pull the full artifact on demand. The leader decides *from the digest* — informed, not blind.
+  Conserves context; the fetch is an LLM judgement on the optional slice only (`required` stays
+  deterministic).
+- **"Latest" artifact:** `consumes` always resolves to a committee's *current* artifact — after any
+  back-edge re-run overwrote it (consistent with the overwrite rule).
+- **Validation (load time):** every `required`/`optional` target must be **upstream** of this
+  committee in the control graph (guaranteed to have run before it). Trivial in a linear graph;
+  enforced once branches exist.
+- The **entry committee** consumes nothing — omit `consumes` (or use empty lists).
 
 ---
 
@@ -833,62 +1005,26 @@ For now: `latest` = the only version present in the `ensembles/` directory.
 
 ---
 
-## Open Design Gaps — Orchestrator Layer
+## Open Design Gaps — Orchestrator Layer (all Resolved)
 
-**1. Orchestrator manifesto and context design** _(Resolved)_
-See **Orchestrator Design** section above.
+Decision trace — the orchestrator gaps resolved during design. Full detail lives in the main
+sections referenced; this is kept only as a record of what was decided and why.
 
-**2. EngagementPlan has no typed schema** _(Resolved)_
-See **Engagement Plan → Typed schema** above. Location: `src/athena/engagement_plan.py`.
-`orchestrator_review` removed as a gate type — orchestrator evaluates at every boundary
-implicitly; only `operator_approval` needs to be declared in the plan.
-
-**3. Gate callback — what the orchestrator receives** _(Resolved)_
-See **Orchestrator Design → Context 2** above. Conversation continuity means
-`capability.md` and the EngagementPlan are already in context; the harness injects
-only the new artifact and gate prompt.
-
-**4. Retry brief mechanics** _(Resolved)_
-See **Retry Mechanics** section above.
-
-**5. Unscheduled operator escalation from a gate** _(Resolved)_
-`ask_operator(question)` is one of the four gate tools. No separate mechanism needed.
-See **Orchestrator Design → Gate tools** above.
-
-**6. EngagementPlan submission mechanism** _(Resolved)_
-
-The orchestrator submits the plan via a `submit_plan` tool available during briefing only
-(not at gate time). The harness tool dispatch validates immediately against the Pydantic
-schema and returns either a validation error (orchestrator revises and resubmits in the
-same conversation) or `"Plan accepted. Awaiting operator Proceed."` The Proceed button
-activates on a clean `pub.sendMessage("engagement.plan_ready")` triggered by the tool
-dispatch — not by text scanning at click time.
-
-This replaces the current fragile pattern in `orchestrator.py` where the harness calls
-`extract_json` on the orchestrator's final message and recovers from prose with
-`_MAX_BRIEFING_ATTEMPTS` restarts. The `submit_plan` tool gives the orchestrator
-immediate structured feedback and keeps the entire briefing in one continuous conversation.
-
-**7. Operator rejection at `operator_approval` gate** _(Resolved — no change)_
-
-Rejection means the engagement starts over. The existing `resolve_approval(approved=False)`
-path in `runner.py` already returns `None` from `run_orchestrator` and fires
-`engagement.rejected`. No new mechanism needed.
-
-**8. Terminal committee gate behavior** _(Resolved)_
-
-The harness derives terminality from the transitions list: a committee is terminal when
-it has no forward edges (no `to:` pointing at a different committee). Self-loops
-(`condition: retry` / `condition: iterate`) do not make a committee non-terminal.
-After every `advance()` call the harness checks:
-- Forward edge exists → look up next node, spawn next committee
-- No forward edge → close the engagement
-
-`advance()` at the terminal node means "done" rather than "proceed." No new tools or
-special cases — the orchestrator calls the same four gate tools at every boundary.
-The harness determines the outcome of `advance()` from the graph position.
-The orchestrator may still call `iterate(note)` or `ask_operator` at the terminal
-boundary before choosing to advance.
+1. **Orchestrator manifesto + context** → **Orchestrator Design**.
+2. **EngagementPlan typed schema** → **Engagement Plan** (`src/athena/engagement_plan.py`).
+   `orchestrator_review` was dropped as a gate type — the orchestrator evaluates *every* boundary
+   implicitly, so only `operator_approval` is declared in the plan.
+3. **Gate-callback content** → **Orchestrator Design → Context 2** (the digest + gate prompt are
+   injected; `capability.md` + EngagementPlan are already in context).
+4. **Retry brief mechanics** → **Retry Mechanics**.
+5. **Unscheduled operator escalation** → `ask_operator` is a gate tool; no separate mechanism.
+6. **Plan submission** → a briefing-only `submit_plan` tool validates immediately and fires
+   `engagement.plan_ready` (activates Proceed) — replacing the fragile `extract_json` /
+   `_MAX_BRIEFING_ATTEMPTS` prose-recovery in the old `orchestrator.py`.
+7. **Operator rejection at a gate** → existing `resolve_approval(False)` → `None` +
+   `engagement.rejected`; no change.
+8. **Terminality** → derived from the graph: a committee is terminal iff it has **no forward edge**
+   (self-loops `retry`/`iterate` don't count). `advance()` at a terminal node closes the engagement.
 
 ---
 
@@ -1049,39 +1185,21 @@ committee leader is the team aggregator (no team-level agent). See **Vocabulary 
 
 ## Open Issues — `_inventory` Reference Ensemble
 
-Small defects remaining in `202607/_inventory/ensembles/inventory/1.0.0/` after the 2026-07-23
-audit. Address before using `_inventory` as the Phase 1 build target.
+Defects found in the 2026-07-23 audit of `202607/_inventory/ensembles/inventory/1.0.0/` — all
+now resolved. `_inventory` is a clean Phase-1 build target.
 
-**I1 — `capability.md` missing `briefing_required` block** _(Open)_
-The `briefing_required` format is now specified in **Capability Document** above. The inventory
-`capability.md` does not yet have one. Add:
-```yaml
-briefing_required:
-  - name: directory
-    type: string
-    example: /home/user/projects
-    description: Absolute path to walk
-  - name: extensions
-    type: array
-    example: [".py", ".md"]
-    description: Extensions to count, each including the dot
-```
+**I1 — `capability.md` missing `briefing_required` block** _(Resolved)_
+Added a `briefing_required` block declaring `directory` + `extensions` (as a briefing *guide*, per
+the softened semantics — not a mandated checklist).
 
-**I2 — `capability.md` "Ask the operator if" conflates briefing-time and gate-time** _(Open)_
-The section currently lists "The directory is missing" and "No extensions were provided" — both
-are conditions the orchestrator resolves *during briefing* (covered by `briefing_required`), not
-at a gate callback after a committee has run. Split or rewrite: briefing-time conditions belong
-in `briefing_required`; gate-time escalation criteria (e.g. "zero files counted across all
-extensions despite a valid directory") belong in "Ask the operator if."
+**I2 — `capability.md` "Ask the operator if" conflated briefing-time and gate-time** _(Resolved)_
+Split: briefing-time inputs live in `briefing_required`; "Ask the operator if" now lists only
+*gate-time* escalation (e.g. zero files across all extensions despite a valid directory, or a
+malformed `ScanOutput`).
 
-**I3 — `report/leader.yml` tool list is parenthetical** _(Open)_
-`scan/leader.yml` has an explicit `== Loop ==` section listing each tool on its own line with its
-effect. `report/leader.yml` lists the tools only as an inline parenthetical
-`(submit_step / finish / refuse_start / ask_operator / reply_operator)`. Bring it into the same
-format as `scan/leader.yml` for consistency.
+**I3 — `report/leader.yml` tool list was parenthetical** _(Resolved)_
+Rewritten with an explicit `== Loop ==` section, matching `scan/leader.yml`.
 
-**I4 — `report/playbook.md` has no escalation criteria** _(Open)_
-The scan playbook says "ask_operator to confirm the path or the extension list" when a zero total
-is returned. The report playbook has no equivalent "When to adapt / ask_operator" guidance.
-For a simple committee this is low risk, but it is asymmetric with the scan playbook. Add at
-minimum: when to call `ask_operator` if the ScanOutput looks malformed or empty.
+**I4 — `report/playbook.md` had no escalation criteria** _(Resolved)_
+Added a "When to adapt" entry: `ask_operator` if the `ScanOutput` is missing/malformed or its
+total does not match the per-extension counts.

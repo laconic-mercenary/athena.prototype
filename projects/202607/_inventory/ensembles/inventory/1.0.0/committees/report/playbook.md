@@ -11,6 +11,8 @@ ReportOutput.
 
 ## When to adapt
 - **Zero files counted** — still produce the report; state plainly that nothing matched.
+- **ScanOutput missing, malformed, or its `total_files` does not match the per-extension counts** —
+  do not fabricate a report. `ask_operator` to confirm before proceeding.
 
 ## What the leader does not do
 The leader does not re-count or touch the filesystem. It formats the counts the Scan committee

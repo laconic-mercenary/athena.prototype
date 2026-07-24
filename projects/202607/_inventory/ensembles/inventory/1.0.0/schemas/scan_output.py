@@ -15,3 +15,19 @@ class ScanOutput(BaseModel):
     counts: list[ExtensionCount]       # one entry per requested extension
     total_files: int                   # total files matching any requested extension
     skipped: list[str] = []            # paths that could not be read
+
+    def render_full(self) -> str:
+        """Full consumption view for a downstream committee (R5)."""
+        lines = [f"Directory: {self.directory}", f"Total files: {self.total_files}", "Counts:"]
+        lines += [f"  {c.extension}: {c.count}" for c in self.counts]
+        if self.skipped:
+            lines.append(f"Skipped ({len(self.skipped)}): " + ", ".join(self.skipped))
+        return "\n".join(lines)
+
+    def render_digest(self) -> str:
+        """Compact view for the gate / consumes.optional (R4) — summary + adequacy fields."""
+        counts = ", ".join(f"{c.extension}:{c.count}" for c in self.counts)
+        return (
+            f"Scanned {self.directory}: {self.total_files} files ({counts}); "
+            f"{len(self.skipped)} skipped"
+        )
