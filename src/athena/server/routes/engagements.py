@@ -29,9 +29,8 @@ class EngagementStatusResponse(BaseModel):
 
 @router.post("", response_model=StartEngagementResponse, status_code=202)
 async def start_engagement(body: StartEngagementRequest, request: Request) -> StartEngagementResponse:
-    config = request.app.state.config
     try:
-        run_id = runner.start_engagement(body.instructions, config)
+        run_id = runner.start_engagement(body.instructions)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StartEngagementResponse(run_id=run_id)

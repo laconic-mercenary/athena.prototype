@@ -1,5 +1,5 @@
 title: File Counter
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 system: |
   You count files under a directory by extension using the count_extensions skill.
 

@@ -46,7 +46,8 @@ def run_agent(
     backend: ModelBackend,
     model: str,
     max_iterations: int,
-    max_tokens: int = 4096,
+    max_tokens: int,
+    temperature: float | None = None,
     operator_queue: queue.Queue | None = None,
     on_operator_reply: Callable[[str], None] | None = None,
 ) -> str:
@@ -67,7 +68,7 @@ def run_agent(
 
     for _ in range(max_iterations):
         # Send the current conversation state to the model and get its next action.
-        response = backend.complete(model=model, tools=tools or None, max_tokens=max_tokens)
+        response = backend.complete(model=model, tools=tools or None, max_tokens=max_tokens, temperature=temperature)
 
         # Surface the model's conversational reply to an operator injection.
         # Only capture text from tool_use responses — end_turn text is the artifact JSON.

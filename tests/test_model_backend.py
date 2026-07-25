@@ -4,6 +4,8 @@ import pytest
 
 from athena.model_backend import FakeBackend, ModelResponse, ToolCall, ToolDefinition
 
+_TEST_MAX_TOKENS = 4_096
+
 
 def _end(text: str) -> ModelResponse:
     return ModelResponse(stop_reason="end_turn", text=text)
@@ -20,8 +22,8 @@ def _tool(name: str, input: dict, tc_id: str = "tc1") -> ModelResponse:
 def test_fake_backend_returns_responses_in_order() -> None:
     backend = FakeBackend([_end("first"), _end("second")])
     backend.begin(system="s", initial_message="go")
-    r1 = backend.complete(model="m")
-    r2 = backend.complete(model="m")
+    r1 = backend.complete(model="m", max_tokens=_TEST_MAX_TOKENS)
+    r2 = backend.complete(model="m", max_tokens=_TEST_MAX_TOKENS)
     assert r1.text == "first"
     assert r2.text == "second"
 
@@ -36,24 +38,38 @@ def test_fake_backend_records_begin() -> None:
 def test_fake_backend_records_calls() -> None:
     backend = FakeBackend([_end("ok")])
     backend.begin(system="s", initial_message="go")
-    backend.complete(model="claude-haiku-4-5")
+    backend.complete(model="claude-haiku-4-5", max_tokens=_TEST_MAX_TOKENS)
     assert len(backend.calls) == 1
     assert backend.calls[0]["model"] == "claude-haiku-4-5"
+
+
+def test_fake_backend_records_temperature_when_set() -> None:
+    backend = FakeBackend([_end("ok")])
+    backend.begin(system="s", initial_message="go")
+    backend.complete(model="m", max_tokens=_TEST_MAX_TOKENS, temperature=0.7)
+    assert backend.calls[0]["temperature"] == 0.7
+
+
+def test_fake_backend_records_temperature_none_by_default() -> None:
+    backend = FakeBackend([_end("ok")])
+    backend.begin(system="s", initial_message="go")
+    backend.complete(model="m", max_tokens=_TEST_MAX_TOKENS)
+    assert backend.calls[0]["temperature"] is None
 
 
 def test_fake_backend_raises_when_exhausted() -> None:
     backend = FakeBackend([_end("only one")])
     backend.begin(system="s", initial_message="go")
-    backend.complete(model="m")
+    backend.complete(model="m", max_tokens=_TEST_MAX_TOKENS)
     with pytest.raises(RuntimeError, match="no more responses"):
-        backend.complete(model="m")
+        backend.complete(model="m", max_tokens=_TEST_MAX_TOKENS)
 
 
 def test_fake_backend_records_tool_results() -> None:
     resp = _tool("nmap_scan", {"host": "target"})
     backend = FakeBackend([resp, _end("done")])
     backend.begin(system="s", initial_message="go")
-    r = backend.complete(model="m")
+    r = backend.complete(model="m", max_tokens=_TEST_MAX_TOKENS)
     backend.record_tool_results(r, ["2 ports open"])
     assert len(backend.recorded) == 1
     assert backend.recorded[0][1] == ["2 ports open"]
@@ -62,7 +78,7 @@ def test_fake_backend_records_tool_results() -> None:
 def test_fake_backend_tool_response_shape() -> None:
     backend = FakeBackend([_tool("nmap_scan", {"host": "target"})])
     backend.begin(system="s", initial_message="go")
-    resp = backend.complete(model="m", tools=[])
+    resp = backend.complete(model="m", max_tokens=_TEST_MAX_TOKENS, tools=[])
     assert resp.stop_reason == "tool_use"
     assert resp.text is None
     assert len(resp.tool_calls) == 1

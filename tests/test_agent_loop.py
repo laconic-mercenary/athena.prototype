@@ -5,6 +5,8 @@ import pytest
 from athena.agent_loop import MaxIterationsExceeded, run_agent
 from athena.model_backend import FakeBackend, ModelResponse, ToolCall, ToolDefinition
 
+_TEST_MAX_TOKENS = 4_096
+
 
 def _end(text: str) -> ModelResponse:
     return ModelResponse(stop_reason="end_turn", text=text)
@@ -28,6 +30,7 @@ def _run(backend: FakeBackend, tool_dispatch=None, max_iterations: int = 5, agen
         backend=backend,
         model="claude-haiku-4-5",
         max_iterations=max_iterations,
+        max_tokens=_TEST_MAX_TOKENS,
     )
 
 
@@ -48,6 +51,7 @@ def test_begin_is_called_with_system_and_message() -> None:
         backend=backend,
         model="m",
         max_iterations=5,
+        max_tokens=_TEST_MAX_TOKENS,
     )
     assert backend.system == "the system prompt"
     assert backend.initial_message == "the first message"
@@ -120,6 +124,29 @@ def test_debug_output_via_logging(caplog: pytest.LogCaptureFixture) -> None:
     assert "end_turn:" in caplog.text
 
 
+def test_temperature_passed_through_to_backend() -> None:
+    backend = FakeBackend([_end("done")])
+    run_agent(
+        agent_id="test:agent",
+        system="sys",
+        initial_message="go",
+        tools=[],
+        tool_dispatch=lambda n, i: "ok",
+        backend=backend,
+        model="m",
+        max_iterations=5,
+        max_tokens=_TEST_MAX_TOKENS,
+        temperature=0.4,
+    )
+    assert backend.calls[0]["temperature"] == 0.4
+
+
+def test_temperature_defaults_to_none() -> None:
+    backend = FakeBackend([_end("done")])
+    _run(backend)
+    assert backend.calls[0]["temperature"] is None
+
+
 def test_tools_passed_through_to_backend() -> None:
     td = ToolDefinition(
         name="nmap_scan",
@@ -136,5 +163,6 @@ def test_tools_passed_through_to_backend() -> None:
         backend=backend,
         model="m",
         max_iterations=5,
+        max_tokens=_TEST_MAX_TOKENS,
     )
     assert backend.calls[0]["tools"] == [td]

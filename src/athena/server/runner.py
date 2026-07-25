@@ -1,67 +1,52 @@
-"""Pipeline thread management and engagement lifecycle.
+"""Pipeline thread management and engagement lifecycle — ensemble harness edition.
 
 One engagement at a time. The pipeline runs in a ThreadPoolExecutor so it
-does not block the FastAPI event loop. EngagementContext holds all the
-state needed for the server to interact with a running pipeline:
-
-  - reply_event / pending_question / pending_answer: for the orchestrator's
-    ask_user blocking mechanism (Option B from WORKSPACE_ARCH.md).
-  - agent_queues: per-leader queue.Queues for mid-run operator chat.
-
-This module is a pure service layer — no FastAPI imports.
+does not block the FastAPI event loop. EngagementContext holds all state
+the server needs to interact with a running pipeline.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 
 from pubsub import pub
 
-from athena.config import AthenaConfig
+from athena.ensemble.loader import load_ensemble
+from athena.ensemble.types import LoadedEnsemble
+from athena.harness.orchestrator import OrchestratorHarness
+from athena.harness.workflow import GLOBAL_STEP_BUDGET, run_workflow
 from athena.model_backend import make_backend
-from athena.orchestrator import run_orchestrator
 from athena.utils import new_id
 
 _log = logging.getLogger("athena.server.runner")
 
-# Agent IDs for committee leaders — pre-created queues so operators can
-# send messages before or during a leader's run.
-_LEADER_AGENT_IDS = [
-    "athena.recon.leader",
-    "athena.planning.leader",
-    "athena.retrieval.leader",
-    "athena.reporting.leader",
-]
-
-# Orchestrator's virtual agent_id for POST /chat routing.
+ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "claude-sonnet-4-6")
 ORCHESTRATOR_AGENT_ID = "athena.orchestrator"
 
-# One worker: enforces the "one engagement at a time" constraint.
 _executor = ThreadPoolExecutor(max_workers=1)
-
 _active: dict[str, "EngagementContext"] = {}
 
 
 @dataclass
 class EngagementContext:
     run_id: str
-    status: str  # "running" | "completed" | "rejected" | "failed"
-    # Orchestrator ask_user gate — pipeline thread blocks here.
-    reply_event: threading.Event = field(default_factory=threading.Event)
+    status: str   # "running" | "completed" | "rejected" | "failed"
+
+    reply_event: threading.Event
+    plan_decision_event: threading.Event
+    awaiting_approval: bool
+    leader_queues: dict[str, queue.Queue]
+    # Optional state (None-defaulted fields must follow required fields)
     pending_question: str | None = None
     pending_answer: str | None = None
-    # Per-leader queues for mid-run operator injection.
-    agent_queues: dict[str, queue.Queue] = field(default_factory=dict)
-    # Plan-review approval gate — blocks pipeline between planning and retrieval.
-    approval_event: threading.Event = field(default_factory=threading.Event)
-    approval_rejected: bool = False
-    awaiting_approval: bool = False
-    plan_review_history: list = field(default_factory=list)   # [{"q": str, "a": str}]
-    report_chat_history: list = field(default_factory=list)   # [{"q": str, "a": str}]
+    plan_decision_type: str | None = None
+    revision_message: str | None = None
 
 
 def get_context(run_id: str) -> EngagementContext | None:
@@ -72,15 +57,32 @@ def is_busy() -> bool:
     return any(ctx.status == "running" for ctx in _active.values())
 
 
-def start_engagement(instructions: str, config: AthenaConfig) -> str:
-    """Start a new engagement in the background. Returns the pre-generated run_id."""
+def _resolve_ensemble_path() -> Path:
+    env = os.environ.get("ENSEMBLE_PATH")
+    if env:
+        return Path(env)
+    raise RuntimeError(
+        "No ensemble configured. Set the ENSEMBLE_PATH environment variable."
+    )
+
+
+def start_engagement(instructions: str) -> str:
+    """Start a new engagement. Returns the pre-generated run_id."""
     if is_busy():
         raise RuntimeError("An engagement is already in progress")
 
+    ensemble_path = _resolve_ensemble_path()
+    ensemble = load_ensemble(ensemble_path)
+
     run_id = new_id()
-    ctx = EngagementContext(run_id=run_id, status="running")
-    for leader_id in _LEADER_AGENT_IDS:
-        ctx.agent_queues[leader_id] = queue.Queue()
+    ctx = EngagementContext(
+        run_id=run_id,
+        status="running",
+        reply_event=threading.Event(),
+        plan_decision_event=threading.Event(),
+        awaiting_approval=False,
+        leader_queues={},
+    )
     _active[run_id] = ctx
 
     def _ask_user_handler(question: str) -> str:
@@ -90,43 +92,111 @@ def start_engagement(instructions: str, config: AthenaConfig) -> str:
         answered = ctx.reply_event.wait(timeout=300)
         ctx.pending_question = None
         if not answered:
-            # Timed out — unblock the pipeline with a neutral response.
             return "No operator response within timeout; proceed with best judgement."
         answer = ctx.pending_answer or ""
         ctx.pending_answer = None
         return answer
 
-    def _approval_gate_handler() -> bool:
+    def _approval_handler() -> bool:
         ctx.awaiting_approval = True
-        ctx.approval_rejected = False
-        ctx.approval_event.clear()
-        pub.sendMessage("engagement.awaiting_approval", run_id=run_id)
-        ctx.approval_event.wait()
+        ctx.plan_decision_type = None
+        ctx.plan_decision_event.clear()
+        pub.sendMessage("gate.awaiting_approval", run_id=run_id, committee="")
+        ctx.plan_decision_event.wait()
         ctx.awaiting_approval = False
-        return not ctx.approval_rejected
+        return ctx.plan_decision_type == "approve"
+
+    def _read_artifact_fn(name: str) -> str:
+        artifacts_dir = Path("artifacts") / run_id
+        path = artifacts_dir / f"{name}.json"
+        if not path.exists():
+            return f"No artifact found for '{name}'"
+        return path.read_text()
 
     def _run() -> None:
         try:
-            result = run_orchestrator(
-                instructions=instructions,
-                config=config,
-                _backend_factory=make_backend,
-                ask_user_handler=_ask_user_handler,
+            pub.sendMessage(
+                "engagement.started",
                 run_id=run_id,
-                leader_queues=ctx.agent_queues,
-                approval_gate_handler=_approval_gate_handler,
+                ensemble=ensemble.name,
+                version=ensemble.version,
             )
-            ctx.status = "completed" if result is not None else "rejected"
+
+            orch_backend = make_backend("anthropic", None)
+            orchestrator = OrchestratorHarness(
+                backend=orch_backend,
+                model=ORCHESTRATOR_MODEL,
+                run_id=run_id,
+                ask_user_handler=_ask_user_handler,
+                read_artifact_fn=_read_artifact_fn,
+            )
+
+            orchestrator.start_briefing(
+                ensemble_name=ensemble.name,
+                version=ensemble.version,
+                capability=ensemble.capability,
+                operator_message=instructions,
+            )
+
+            # Briefing + revision loop: operator may request changes before approving.
+            while True:
+                plan = orchestrator.run_briefing()
+
+                for committee_name in ensemble.committees:
+                    ctx.leader_queues.setdefault(committee_name, queue.Queue())
+
+                ctx.awaiting_approval = True
+                ctx.plan_decision_type = None
+                ctx.revision_message = None
+                ctx.plan_decision_event.clear()
+                ctx.plan_decision_event.wait()
+                ctx.awaiting_approval = False
+
+                if ctx.plan_decision_type == "revise":
+                    orchestrator.inject_revision(ctx.revision_message or "Please revise.")
+                    pub.sendMessage("engagement.plan_revision", run_id=run_id)
+                    continue
+
+                if ctx.plan_decision_type != "approve":
+                    pub.sendMessage(
+                        "engagement.rejected", run_id=run_id, reason="Operator rejected the plan"
+                    )
+                    ctx.status = "rejected"
+                    return
+
+                break
+
+            pub.sendMessage("engagement.approved", run_id=run_id)
+
+            run_workflow(
+                ensemble=ensemble,
+                plan=plan,
+                orchestrator=orchestrator,
+                make_backend=make_backend,
+                artifacts_dir=Path("artifacts") / run_id,
+                run_id=run_id,
+                ask_operator_handler=_ask_user_handler,
+                approval_handler=_approval_handler,
+                leader_queues=ctx.leader_queues,
+                global_step_budget=GLOBAL_STEP_BUDGET,
+            )
+
+            ctx.status = "completed"
+
         except Exception:
             _log.exception("engagement %s failed", run_id)
+            pub.sendMessage("engagement.rejected", run_id=run_id, reason="Internal error")
             ctx.status = "failed"
 
     _executor.submit(_run)
     return run_id
 
 
+# ---------------------------------------------------------------------------
+# Server → pipeline interaction
+# ---------------------------------------------------------------------------
+
 def reply_to_orchestrator(run_id: str, answer: str) -> None:
-    """Unblock the orchestrator's ask_user wait with the operator's answer."""
     ctx = _active.get(run_id)
     if ctx is None:
         raise KeyError(f"No engagement: {run_id!r}")
@@ -135,57 +205,28 @@ def reply_to_orchestrator(run_id: str, answer: str) -> None:
     pub.sendMessage("orchestrator.answer", run_id=run_id, answer=answer)
 
 
-def send_to_agent(run_id: str, agent_id: str, message: str) -> None:
-    """Put a message into a committee leader's queue for mid-run injection."""
-    ctx = _active.get(run_id)
-    if ctx is None:
-        raise KeyError(f"No engagement: {run_id!r}")
-    q = ctx.agent_queues.get(agent_id)
-    if q is None:
-        raise KeyError(f"No queue for agent: {agent_id!r}")
-    q.put_nowait(message)
-
-
 def resolve_approval(run_id: str, *, approved: bool) -> None:
-    """Unblock the plan-review approval gate. approved=True continues retrieval, False cancels."""
     ctx = _active.get(run_id)
     if ctx is None:
         raise KeyError(f"No engagement: {run_id!r}")
-    if not ctx.awaiting_approval:
-        raise ValueError("Engagement is not currently awaiting approval")
-    ctx.approval_rejected = not approved
-    ctx.approval_event.set()
-    if approved:
-        pub.sendMessage("engagement.approved", run_id=run_id)
+    ctx.plan_decision_type = "approve" if approved else "reject"
+    ctx.plan_decision_event.set()
 
 
-def get_plan_review_history(run_id: str) -> list:
-    """Return the running Q&A history for the plan review session."""
+def request_revision(run_id: str, message: str) -> None:
     ctx = _active.get(run_id)
     if ctx is None:
         raise KeyError(f"No engagement: {run_id!r}")
-    return ctx.plan_review_history
+    ctx.revision_message = message
+    ctx.plan_decision_type = "revise"
+    ctx.plan_decision_event.set()
 
 
-def add_plan_review_exchange(run_id: str, question: str, answer: str) -> None:
-    """Append a Q&A exchange to the plan review history."""
+def send_to_leader(run_id: str, committee_name: str, message: str) -> None:
     ctx = _active.get(run_id)
     if ctx is None:
         raise KeyError(f"No engagement: {run_id!r}")
-    ctx.plan_review_history.append({"q": question, "a": answer})
-
-
-def get_report_chat_history(run_id: str) -> list:
-    """Return the running Q&A history for the report debrief session."""
-    ctx = _active.get(run_id)
-    if ctx is None:
-        raise KeyError(f"No engagement: {run_id!r}")
-    return ctx.report_chat_history
-
-
-def add_report_chat_exchange(run_id: str, question: str, answer: str) -> None:
-    """Append a Q&A exchange to the report chat history."""
-    ctx = _active.get(run_id)
-    if ctx is None:
-        raise KeyError(f"No engagement: {run_id!r}")
-    ctx.report_chat_history.append({"q": question, "a": answer})
+    q = ctx.leader_queues.get(committee_name)
+    if q is None:
+        raise KeyError(f"No leader queue for committee: {committee_name!r}")
+    q.put_nowait(message)

@@ -33,18 +33,18 @@ workflow:
 # ---
 committees:
   scan:
-    leader: committees/scan/leader.yml
+    leader: scan/leader.yml
     model: claude-sonnet-4-6
     max_steps: 3
     # entry committee — consumes nothing upstream
     elements:
       - id: count_files
         specialists:
-          - committees/scan/elements/count_files/counter.yml
+          - elements/count_files/counter.yml
         skills: [count_extensions]
 
   report:
-    leader: committees/report/leader.yml
+    leader: report/leader.yml
     model: claude-sonnet-4-6
     max_steps: 3
     consumes:
@@ -53,7 +53,7 @@ committees:
     elements:
       - id: summarize
         specialists:
-          - committees/report/elements/summarize/summarizer.yml
+          - elements/summarize/summarizer.yml
         skills: []   # reasoning only — formats the ScanOutput
 
 # ---

@@ -21,7 +21,7 @@ UTC_FORMATTER = logging.Formatter(
 UTC_FORMATTER.converter = time.gmtime  # force UTC regardless of system timezone
 
 
-def configure_logging(verbose: bool = False) -> None:
+def configure_logging(verbose: bool) -> None:
     """Configure the athena logger. Call once at process startup."""
     # Suppress noisy third-party loggers.
     logging.getLogger().setLevel(logging.WARNING)

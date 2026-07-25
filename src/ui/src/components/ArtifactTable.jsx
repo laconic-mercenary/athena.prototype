@@ -4,13 +4,7 @@ import { listArtifacts, getArtifact } from '../api'
 const CLASSIFICATION_ORDER = ['signal_critical', 'signal_warn', 'signal_info', 'noise', 'unknown']
 
 function classificationLabel(cls) {
-  const map = {
-    signal_critical: 'CRITICAL',
-    signal_warn:     'WARN',
-    signal_info:     'INFO',
-    noise:           'NOISE',
-    unknown:         '?',
-  }
+  const map = { signal_critical: 'CRITICAL', signal_warn: 'WARN', signal_info: 'INFO', noise: 'NOISE', unknown: '?' }
   return map[cls] || cls
 }
 
@@ -23,9 +17,9 @@ function classificationColor(cls) {
 
 export function ArtifactTable({ runId, committees }) {
   const [artifacts, setArtifacts] = useState([])
-  const [selected, setSelected] = useState(null)
-  const [content, setContent] = useState(null)
-  const [loading, setLoading] = useState(false)
+  const [selected, setSelected]   = useState(null)
+  const [content, setContent]     = useState(null)
+  const [loading, setLoading]     = useState(false)
 
   useEffect(() => {
     if (!runId) return
@@ -37,7 +31,12 @@ export function ArtifactTable({ runId, committees }) {
     setSelected(name)
     setLoading(true)
     try {
-      setContent(await getArtifact(runId, name))
+      const text = await getArtifact(runId, name)
+      try {
+        setContent(JSON.stringify(JSON.parse(text), null, 2))
+      } catch {
+        setContent(text)
+      }
     } catch {
       setContent('(failed to load)')
     } finally {
@@ -45,7 +44,6 @@ export function ArtifactTable({ runId, committees }) {
     }
   }
 
-  // Flatten all findings from all committees sorted by severity
   const allFindings = Object.entries(committees).flatMap(([committee, data]) =>
     (data.findings || []).map(f => ({ ...f, committee }))
   ).sort((a, b) =>
@@ -75,22 +73,35 @@ export function ArtifactTable({ runId, committees }) {
         <section className="artifacts-section">
           <h3 className="panel-heading">Artifacts</h3>
           <div className="artifact-list">
-            {artifacts.map(a => (
-              <div key={a.name}>
-                <button
-                  className={`artifact-row ${selected === a.name ? 'artifact-row--active' : ''}`}
-                  onClick={() => openArtifact(a.name)}
-                >
-                  <span className="artifact-name">{a.name}</span>
-                  <span className="artifact-size">{(a.size / 1024).toFixed(1)} KB</span>
-                </button>
-                {selected === a.name && (
-                  <pre className="artifact-content">
-                    {loading ? 'Loading…' : content}
-                  </pre>
-                )}
-              </div>
-            ))}
+            {artifacts.map(a => {
+              const committee = committees[a.name]
+              const incomplete = committee?.incomplete
+              return (
+                <div key={a.name}>
+                  <button
+                    className={`artifact-row ${selected === a.name ? 'artifact-row--active' : ''}`}
+                    onClick={() => openArtifact(a.name)}
+                  >
+                    <span className="artifact-name">{a.name}</span>
+                    {incomplete && (
+                      <span style={{
+                        fontSize: 8, color: '#f97316',
+                        background: '#1a0e00', borderRadius: 2,
+                        padding: '1px 4px', marginLeft: 4,
+                      }}>
+                        INCOMPLETE
+                      </span>
+                    )}
+                    <span className="artifact-size">{(a.size / 1024).toFixed(1)} KB</span>
+                  </button>
+                  {selected === a.name && (
+                    <pre className="artifact-content">
+                      {loading ? 'Loading…' : content}
+                    </pre>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </section>
       )}

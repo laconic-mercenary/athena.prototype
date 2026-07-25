@@ -13,7 +13,7 @@ wait_for_healthy() {
         && [ "${status}" = "healthy" ]; do
         sleep 2
     done
-}
+} 
 
 echo "Building images..."
 docker compose build

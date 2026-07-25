@@ -20,8 +20,8 @@ export async function getEngagement(runId) {
   return _json(await fetch(`${BASE}/engagements/${runId}`))
 }
 
-export async function sendChat(runId, agentId, message) {
-  const resp = await fetch(`${BASE}/engagements/${runId}/chat/${agentId}`, {
+export async function sendChat(runId, target, message) {
+  const resp = await fetch(`${BASE}/engagements/${runId}/chat/${target}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message }),
@@ -39,17 +39,11 @@ export async function getArtifact(runId, name) {
   return resp.text()
 }
 
-export async function getArtifactMarkdown(runId, name) {
-  const resp = await fetch(`${BASE}/engagements/${runId}/artifacts/${name}/markdown`)
-  if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
-  return resp.text()
-}
-
-export async function planReviewChat(runId, message) {
+export async function planReview(runId, action) {
   return _json(await fetch(`${BASE}/engagements/${runId}/plan-review`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ action }),
   }))
 }
 

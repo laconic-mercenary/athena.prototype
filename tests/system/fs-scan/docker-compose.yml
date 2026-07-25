@@ -15,13 +15,16 @@ services:
       - ./testdata:/data/testfiles:ro
       - ./ensemble:/app/ensemble:ro
     env_file: ../../../.env
+    environment:
+      - SKILL_ALLOWED_ROOTS=/data
+      - ENSEMBLE_PATH=/app/ensemble
     ports:
       - "8001:8001"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8001"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001', timeout=2)"]
       interval: 5s
-      timeout: 3s
-      retries: 10
+      timeout: 5s
+      retries: 12
     networks:
       - fscan-net
 
@@ -39,6 +42,9 @@ services:
       - ./testdata:/data/testfiles:ro
       - ./ensemble:/app/ensemble:ro
     env_file: ../../../.env
+    environment:
+      - SKILL_ALLOWED_ROOTS=/data
+      - ENSEMBLE_PATH=/app/ensemble
     depends_on:
       athena_web:
         condition: service_healthy

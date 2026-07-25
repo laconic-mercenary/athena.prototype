@@ -63,7 +63,8 @@ class ModelBackend(ABC):
         *,
         model: str,
         tools: list[ToolDefinition] | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int,
+        temperature: float | None = None,
     ) -> ModelResponse:
         """Call the model with the current conversation state and return its response."""
         ...
@@ -87,6 +88,16 @@ class ModelBackend(ABC):
 
         Called between agent loop iterations to inject operator input so the
         model sees it on its next complete() call.
+        """
+        ...
+
+    @abstractmethod
+    def append_harness_message(self, text: str) -> None:
+        """Append a harness-generated user turn (not an operator message).
+
+        Used for gate callbacks injected into the orchestrator conversation.
+        Handles provider alternation constraints the same way inject_user_message
+        does, but without the [Operator]: prefix.
         """
         ...
 
@@ -114,7 +125,8 @@ class AnthropicBackend(ModelBackend):
         *,
         model: str,
         tools: list[ToolDefinition] | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int,
+        temperature: float | None = None,
     ) -> ModelResponse:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -122,6 +134,8 @@ class AnthropicBackend(ModelBackend):
             "messages": self._messages,
             "max_tokens": max_tokens,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if tools:
             # Anthropic uses "input_schema" where OpenAI-compatible APIs use "parameters".
             kwargs["tools"] = [
@@ -184,6 +198,20 @@ class AnthropicBackend(ModelBackend):
         else:
             self._messages.append({"role": "user", "content": formatted})
 
+    def append_harness_message(self, text: str) -> None:
+        # Same merge logic as inject_user_message but without the operator prefix.
+        if self._messages and self._messages[-1]["role"] == "user":
+            content = self._messages[-1]["content"]
+            if isinstance(content, list):
+                content.append({"type": "text", "text": text})
+            else:
+                self._messages[-1]["content"] = [
+                    {"type": "text", "text": str(content)},
+                    {"type": "text", "text": text},
+                ]
+        else:
+            self._messages.append({"role": "user", "content": text})
+
 
 # ---------------------------------------------------------------------------
 # Ollama (OpenAI-compatible endpoint)
@@ -221,7 +249,8 @@ class OllamaBackend(ModelBackend):
         *,
         model: str,
         tools: list[ToolDefinition] | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int,
+        temperature: float | None = None,
     ) -> ModelResponse:
         payload: dict[str, Any] = {
             "model": model,
@@ -229,6 +258,8 @@ class OllamaBackend(ModelBackend):
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
         if tools:
             # OpenAI tool format wraps each definition in a {"type": "function", ...} envelope.
             payload["tools"] = [
@@ -311,6 +342,9 @@ class OllamaBackend(ModelBackend):
         # without the alternation constraint Anthropic imposes.
         self._messages.append({"role": "user", "content": f"[Operator]: {text}"})
 
+    def append_harness_message(self, text: str) -> None:
+        self._messages.append({"role": "user", "content": text})
+
 
 # ---------------------------------------------------------------------------
 # Fake (tests)
@@ -337,9 +371,10 @@ class FakeBackend(ModelBackend):
         *,
         model: str,
         tools: list[ToolDefinition] | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int,
+        temperature: float | None = None,
     ) -> ModelResponse:
-        self.calls.append({"model": model, "tools": tools, "max_tokens": max_tokens})
+        self.calls.append({"model": model, "tools": tools, "max_tokens": max_tokens, "temperature": temperature})
         if not self._queue:
             raise RuntimeError("FakeBackend has no more responses queued")
         return self._queue.pop(0)
@@ -352,6 +387,9 @@ class FakeBackend(ModelBackend):
         self.recorded.append((assistant_response, results))
 
     def inject_user_message(self, text: str) -> None:
+        self.injected.append(text)
+
+    def append_harness_message(self, text: str) -> None:
         self.injected.append(text)
 
 

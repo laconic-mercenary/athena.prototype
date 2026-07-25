@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import os
 
-# Read-only scope. The directory must resolve inside one of these roots. Defaults to the user's
-# home; adjust for the environment the ensemble runs in.
-ALLOWED_ROOTS: tuple[str, ...] = (os.path.realpath(os.path.expanduser("~")),)
+def _get_allowed_roots() -> tuple[str, ...]:
+    # SKILL_ALLOWED_ROOTS overrides the default at call time so the SIT can
+    # allow /data without modifying this file (set in docker-compose env).
+    env = os.environ.get("SKILL_ALLOWED_ROOTS")
+    if env:
+        return tuple(os.path.realpath(p) for p in env.split(":") if p)
+    return (os.path.realpath(os.path.expanduser("~")),)
 
 
 def _validate_directory(directory: str) -> str:
@@ -19,7 +23,8 @@ def _validate_directory(directory: str) -> str:
     real = os.path.realpath(directory)
     if not os.path.isdir(real):
         raise ValueError(f"Not a directory: {directory!r}")
-    if not any(real == root or real.startswith(root + os.sep) for root in ALLOWED_ROOTS):
+    allowed = _get_allowed_roots()
+    if not any(real == root or real.startswith(root + os.sep) for root in allowed):
         raise ValueError(f"Directory {directory!r} is outside the allowed roots")
     return real
 

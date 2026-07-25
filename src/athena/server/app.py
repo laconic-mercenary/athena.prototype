@@ -18,7 +18,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from athena.config import AthenaConfig
 from athena.server import bus
 from athena.server.routes import artifacts, chat, engagements, events, plan_review, report_chat
 
@@ -32,10 +31,8 @@ async def _lifespan(app: FastAPI):
     yield
 
 
-def create_app(config: AthenaConfig) -> FastAPI:
+def create_app() -> FastAPI:
     app = FastAPI(title="Athena", lifespan=_lifespan)
-
-    app.state.config = config
 
     # Allow the Vite dev server to call the API without CORS errors.
     # In production this origin is not served, so the header is harmless.

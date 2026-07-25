@@ -40,6 +40,12 @@
     thematic reusable logic) live in dedicated helper modules, not inlined repeatedly.
 11. **Don't reach for a library for a simple problem.** If it's simple, write it yourself.
     When unsure whether something crosses the "simple" threshold, ASK.
+12. **No non-None default parameter values.** Every parameter must be explicitly passed by
+    the caller. The only permitted default is `= None` for genuinely optional parameters
+    (typed as `T | None`). This applies to both `def` function signatures and dataclass
+    field defaults. (Framework exception: library-required defaults such as Pydantic
+    `Field(...)` and PyPubSub `topicObj=pub.AUTO_TOPIC` are permitted; document with a
+    comment.)
 
 ## B. Architecture (language-agnostic)
 

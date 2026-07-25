@@ -242,7 +242,7 @@ def http_head(url: str) -> HttpHeadResult:
     return HttpHeadResult(url=url, status_code=status_code, headers=headers, summary=summary)
 
 
-def ssh_banner(host: str, port: int = 22) -> SshBannerResult:
+def ssh_banner(host: str, port: int) -> SshBannerResult:
     """Read the SSH identification banner (the line the server sends immediately on connect)."""
     _validate_host(host)
     try:
