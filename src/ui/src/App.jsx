@@ -49,6 +49,7 @@ const GATE_COLORS = { advance: '#22c55e', retry: '#ef4444', iterate: '#f97316' }
 const GATE_ICONS  = { advance: '→', retry: '↩', iterate: '↻' }
 
 const EVENT_LOG_MAX = 500
+const MESSAGE_LOG_MAX = 200
 
 function appendLog(state, entry) {
   return [...(state.eventLog || []).slice(-(EVENT_LOG_MAX - 1)), entry]
@@ -250,7 +251,7 @@ function reducer(state, action) {
       ...state,
       agents: {
         ...state.agents,
-        [agent_id]: { id: agent_id, committee, title, role: role || 'specialist', status: 'active', findings: [], classification: null, lastTool: null, toolHistory: [] },
+        [agent_id]: { id: agent_id, committee, title, role: role || 'specialist', status: 'active', findings: [], classification: null, lastTool: null, toolHistory: [], messageLog: [] },
       },
       latestEvent: ev,
       eventLog: appendLog(state, ev),
@@ -269,7 +270,7 @@ function reducer(state, action) {
   if (type === 'AGENT_TOOL_CALLED') {
     const { agent_id, tool, input_summary } = payload
     if (!state.agents[agent_id]) return state
-    const entry = { tool, input_summary, ts: Date.now() }
+    const entry = { kind: 'tool', tool, input_summary, ts: Date.now() }
     const prev = state.agents[agent_id]
     const agentTitle = prev.title || agent_id.split('.').pop()
     const callStr = formatToolSummary(tool, input_summary)
@@ -282,10 +283,28 @@ function reducer(state, action) {
           ...prev,
           lastTool: entry,
           toolHistory: [...(prev.toolHistory || []), entry].slice(-20),
+          messageLog: [...(prev.messageLog || []).slice(-(MESSAGE_LOG_MAX - 1)), entry],
         },
       },
       latestEvent: ev,
       eventLog: appendLog(state, ev),
+    }
+  }
+
+  if (type === 'AGENT_MODEL_TEXT') {
+    const { agent_id, text, stop_reason } = payload
+    if (!state.agents[agent_id]) return state
+    const entry = { kind: 'text', text, stop_reason, ts: Date.now() }
+    const prev = state.agents[agent_id]
+    return {
+      ...state,
+      agents: {
+        ...state.agents,
+        [agent_id]: {
+          ...prev,
+          messageLog: [...(prev.messageLog || []).slice(-(MESSAGE_LOG_MAX - 1)), entry],
+        },
+      },
     }
   }
 
@@ -417,6 +436,7 @@ export default function App() {
     if (topic === 'agent.spawned')           dispatch({ type: 'AGENT_SPAWNED', payload })
     if (topic === 'agent.spun_down')         dispatch({ type: 'AGENT_SPUN_DOWN', payload })
     if (topic === 'agent.tool_called')       dispatch({ type: 'AGENT_TOOL_CALLED', payload })
+    if (topic === 'agent.model_text')        dispatch({ type: 'AGENT_MODEL_TEXT', payload })
     if (topic === 'agent.finding')           dispatch({ type: 'AGENT_FINDING', payload })
     if (topic === 'agent.operator_reply')    dispatch({ type: 'AGENT_OPERATOR_REPLY', payload })
     if (topic === 'orchestrator.question')    dispatch({ type: 'ORCHESTRATOR_QUESTION', payload })

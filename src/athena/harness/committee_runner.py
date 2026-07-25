@@ -42,6 +42,7 @@ LEADER_MAX_ITERATIONS = 500
 # SSE payload truncation — keeps the event stream lean without losing actionable info.
 TOOL_INPUT_SUMMARY_MAX_LEN = 500
 TASK_OUTPUT_SUMMARY_MAX_LEN = 300
+AGENT_TEXT_EVENT_MAX_LEN = 2_000
 
 
 class RefuseStartError(Exception):
@@ -263,6 +264,16 @@ def _run_one_specialist(
         except Exception as exc:
             return json.dumps({"error": str(exc)})
 
+    def _on_model_response(text: str, stop_reason: str) -> None:
+        pub.sendMessage(
+            "agent.model_text",
+            run_id=run_id,
+            committee=committee_name,
+            agent_id=agent_id,
+            text=text[:AGENT_TEXT_EVENT_MAX_LEN],
+            stop_reason=stop_reason,
+        )
+
     backend = make_backend(specialist.provider, None)
     result = run_agent(
         agent_id=agent_id,
@@ -275,6 +286,7 @@ def _run_one_specialist(
         max_iterations=SPECIALIST_MAX_ITERATIONS,
         max_tokens=SPECIALIST_MAX_TOKENS,
         temperature=specialist.temperature,
+        on_model_response=_on_model_response,
     )
 
     pub.sendMessage(
@@ -555,6 +567,16 @@ def run_committee_with_ensemble(
         role="leader",
     )
 
+    def _on_leader_response(text: str, stop_reason: str) -> None:
+        pub.sendMessage(
+            "agent.model_text",
+            run_id=run_id,
+            committee=committee.name,
+            agent_id=leader_id,
+            text=text[:AGENT_TEXT_EVENT_MAX_LEN],
+            stop_reason=stop_reason,
+        )
+
     backend = make_backend(committee.provider, None)
     artifact_text = run_agent(
         agent_id=leader_id,
@@ -567,6 +589,7 @@ def run_committee_with_ensemble(
         max_iterations=LEADER_MAX_ITERATIONS,
         max_tokens=SYNTHESIS_MAX_TOKENS,
         operator_queue=operator_queue,
+        on_model_response=_on_leader_response,
     )
 
     pub.sendMessage(

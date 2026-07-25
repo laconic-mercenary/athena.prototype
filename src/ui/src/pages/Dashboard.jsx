@@ -45,6 +45,8 @@ function SystemLogPanel({ eventLog }) {
   )
 }
 
+const TEXT_PREVIEW_MAX = 400
+
 function AgentLogPanel({ agents }) {
   const agentList = Object.values(agents)
   return (
@@ -53,9 +55,9 @@ function AgentLogPanel({ agents }) {
         <div style={{ fontSize: 11, color: '#1e3050' }}>No agents yet</div>
       )}
       {agentList.map(agent => {
-        const history = agent.toolHistory || []
+        const log = agent.messageLog || []
         return (
-          <div key={agent.id} style={{ marginBottom: 18 }}>
+          <div key={agent.id} style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
               <span style={{
                 fontSize: 8, letterSpacing: 1.5, textTransform: 'uppercase',
@@ -71,17 +73,33 @@ function AgentLogPanel({ agents }) {
                 {agent.status}
               </span>
             </div>
-            {history.length === 0 ? (
-              <div style={{ fontSize: 10, color: '#1e3050', paddingLeft: 8 }}>no tool calls</div>
-            ) : history.map((entry, i) => (
-              <div key={i} style={{ display: 'flex', gap: 10, fontSize: 10, alignItems: 'baseline', paddingLeft: 8, marginBottom: 2 }}>
-                <span style={{ color: '#2d4060', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-                  {fmtTime(entry.ts)}
-                </span>
-                <span style={{ color: '#475569' }}>
-                  {formatToolSummary(entry.tool, entry.input_summary)}
-                </span>
-              </div>
+            {log.length === 0 ? (
+              <div style={{ fontSize: 10, color: '#1e3050', paddingLeft: 8 }}>no messages</div>
+            ) : log.map((entry, i) => (
+              entry.kind === 'tool' ? (
+                <div key={i} style={{ display: 'flex', gap: 10, fontSize: 10, alignItems: 'baseline', paddingLeft: 8, marginBottom: 2 }}>
+                  <span style={{ color: '#2d4060', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtTime(entry.ts)}
+                  </span>
+                  <span style={{ color: '#64748b' }}>
+                    ⚙ {formatToolSummary(entry.tool, entry.input_summary)}
+                  </span>
+                </div>
+              ) : (
+                <div key={i} style={{ display: 'flex', gap: 10, fontSize: 10, alignItems: 'flex-start', paddingLeft: 8, marginBottom: 4 }}>
+                  <span style={{ color: '#2d4060', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtTime(entry.ts)}
+                  </span>
+                  <span style={{
+                    color: entry.stop_reason === 'end_turn' ? '#94a3b8' : '#475569',
+                    fontStyle: 'italic', lineHeight: 1.5,
+                  }}>
+                    {entry.text.length > TEXT_PREVIEW_MAX
+                      ? entry.text.slice(0, TEXT_PREVIEW_MAX) + '…'
+                      : entry.text}
+                  </span>
+                </div>
+              )
             ))}
           </div>
         )
