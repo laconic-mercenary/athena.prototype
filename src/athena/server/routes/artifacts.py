@@ -1,10 +1,12 @@
-"""GET /engagements/{run_id}/artifacts      — list artifact files.
-GET /engagements/{run_id}/artifacts/{name} — serve artifact content.
+"""GET /engagements/{run_id}/artifacts          — list artifact files.
+GET /engagements/{run_id}/artifacts/{name}    — serve artifact content.
+POST /engagements/{run_id}/artifacts/{name}/reveal — reveal in OS file browser.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -47,3 +49,19 @@ async def get_artifact(run_id: str, name: str) -> str:
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Artifact not found")
     return path.read_text()
+
+
+@router.post("/{run_id}/artifacts/{name}/reveal", status_code=204)
+async def reveal_artifact(run_id: str, name: str) -> None:
+    """Open the artifact in the OS file browser (macOS: reveals in Finder)."""
+    if not _SAFE_NAME.match(name):
+        raise HTTPException(status_code=400, detail="Invalid artifact name")
+    if runner.get_context(run_id) is None:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    path = (_ARTIFACTS_ROOT / run_id / f"{name}.json").resolve()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    try:
+        subprocess.Popen(["open", "-R", str(path)])
+    except FileNotFoundError:
+        raise HTTPException(status_code=501, detail="File browser not supported on this platform")

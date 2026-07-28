@@ -4,15 +4,19 @@ Manages a single persistent conversation with the Chief Orchestrator agent
 across the full engagement lifecycle:
 
   Phase 1 (briefing): loops until submit_plan() is called → EngagementPlan
-  Phase 2 (gates):    injects digest + gate context, gets one gate decision
+  Phase 2 (gates):    persistent loop thread; workflow submits gate events via
+                      run_gate() and blocks until the orchestrator decides
 
 The orchestrator conversation is never reset — the agent sees the full
-engagement trajectory at every gate.
+engagement trajectory at every gate. Operator messages arrive in near-real
+time via inject_operator_message(); they are processed between gate events on
+the loop thread so only one backend.complete() call runs at a time.
 """
 
 from __future__ import annotations
 
 import logging
+import queue
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -65,7 +69,11 @@ iterate(to, note, rationale)          — adequate but improvable; re-run `to` w
 ask_operator(question)                — escalate; pipeline pauses
 read_artifact(name)                   — fetch full artifact; read-only; not a gate decision
 
-After 3 retries on the same committee, use ask_operator rather than retrying again.\
+After 3 retries on the same committee, use ask_operator rather than retrying again.
+
+== Operator messages ==
+The operator may message you at any time — between committees or during gate evaluation.
+Respond briefly in plain prose. Gate decisions still require the gate tools above.\
 """
 
 # ---------------------------------------------------------------------------
@@ -189,7 +197,14 @@ _READ_ARTIFACT_TOOL = ToolDefinition(
 )
 
 _BRIEFING_TOOLS = [_SUBMIT_PLAN_TOOL, _ASK_USER_TOOL]
-_GATE_TOOLS = [_ADVANCE_TOOL, _RETRY_TOOL, _ITERATE_TOOL, _GATE_ASK_OPERATOR_TOOL, _READ_ARTIFACT_TOOL]
+_GATE_TOOLS     = [_ADVANCE_TOOL, _RETRY_TOOL, _ITERATE_TOOL, _GATE_ASK_OPERATOR_TOOL, _READ_ARTIFACT_TOOL]
+# Chat tools: read_artifact only — gate decision tools must never fire during operator chat.
+_CHAT_TOOLS     = [_READ_ARTIFACT_TOOL]
+
+# Hard cap for the operator-chat tool loop: one read_artifact call per committee is the
+# realistic maximum, plus one turn to produce the answer. 20 committees would be an
+# unusually large ensemble; anything beyond that is a runaway loop.
+_CHAT_MAX_TOOL_ITERATIONS = 20
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +221,48 @@ class GateDecision:
 
 
 # ---------------------------------------------------------------------------
+# Internal event types for the persistent loop inbox
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _GateRequest:
+    committee_name: str
+    digest: str
+    gate_type: str
+    retry_count: int
+    iterate_count: int
+
+
+@dataclass
+class _OperatorMessage:
+    text: str
+
+
+@dataclass
+class _HarnessUpdate:
+    """Inject a harness-level status note into the backend without a model call."""
+    text: str
+
+
+class _Stop:
+    """Sentinel: instructs run_loop() to exit cleanly."""
+
+
+# ---------------------------------------------------------------------------
 # OrchestratorHarness
 # ---------------------------------------------------------------------------
 
 class OrchestratorHarness:
-    """Stateful orchestrator — one instance per engagement."""
+    """Stateful orchestrator — one instance per engagement.
+
+    Threading model:
+      - Briefing (run_briefing) runs on the caller's thread.
+      - After briefing, the caller starts run_loop() on a dedicated thread.
+      - Workflow calls run_gate() from its thread; run_gate() submits to the
+        inbox and blocks on the outbox until the loop thread evaluates.
+      - Operator messages arrive via inject_operator_message() from any thread
+        and are processed between gate evaluations on the loop thread.
+    """
 
     def __init__(
         self,
@@ -226,6 +278,14 @@ class OrchestratorHarness:
         self._ask_user_handler = ask_user_handler
         self._read_artifact_fn = read_artifact_fn
         self._plan: EngagementPlan | None = None
+        # Inbox carries _GateRequest | _OperatorMessage | _Stop.
+        # Outbox carries GateDecision | BaseException (exception box for propagation).
+        self._inbox: queue.Queue = queue.Queue()
+        self._outbox: queue.Queue = queue.Queue()
+
+    # ------------------------------------------------------------------
+    # Phase 1: Briefing (runs on caller thread — no loop involved)
+    # ------------------------------------------------------------------
 
     def start_briefing(
         self, ensemble_name: str, version: str, capability: str, operator_message: str
@@ -256,7 +316,6 @@ class OrchestratorHarness:
                 )
 
             if response.stop_reason == "end_turn":
-                # Orchestrator produced text without using a tool — nudge it.
                 self._backend.inject_user_message(
                     "Please use the available tools. Call submit_plan when ready."
                 )
@@ -268,9 +327,9 @@ class OrchestratorHarness:
             for tc in response.tool_calls:
                 if tc.name == "ask_user":
                     question = tc.input.get("question", "")
-                    pub.sendMessage(
-                        "orchestrator.question", run_id=self._run_id, question=question
-                    )
+                    # ask_user_handler is responsible for publishing orchestrator.question
+                    # (runner._ask_user_handler does this before blocking). Publishing here
+                    # too causes every question to appear twice in the UI.
                     answer = self._ask_user_handler(question)
                     pub.sendMessage(
                         "orchestrator.answer", run_id=self._run_id, answer=answer
@@ -310,6 +369,56 @@ class OrchestratorHarness:
             "Please revise the plan based on this feedback and call submit_plan again."
         )
 
+    # ------------------------------------------------------------------
+    # Phase 2: Persistent loop (runs on dedicated loop thread)
+    # ------------------------------------------------------------------
+
+    def run_loop(self) -> None:
+        """Process gate and operator events until stop() is called.
+
+        Terminated by a _Stop sentinel — always sent by runner.py after
+        run_workflow() returns (normal or exceptional), so this loop is bounded
+        by the engagement lifetime.
+        """
+        while True:
+            event = self._inbox.get()
+
+            if isinstance(event, _Stop):
+                break
+            elif isinstance(event, _HarnessUpdate):
+                self._backend.append_harness_message(event.text)
+            elif isinstance(event, _OperatorMessage):
+                self._handle_operator_message(event.text)
+            elif isinstance(event, _GateRequest):
+                try:
+                    decision = self._evaluate_gate(event)
+                    self._outbox.put(decision)
+                except Exception as exc:
+                    # Box the exception so run_gate() can re-raise on the workflow thread.
+                    self._outbox.put(exc)
+
+    def inject_operator_message(self, text: str) -> None:
+        """Enqueue an operator message for near-real-time delivery. Thread-safe."""
+        self._inbox.put(_OperatorMessage(text=text))
+
+    def inject_harness_update(self, text: str) -> None:
+        """Inject a status note into the orchestrator's context without a model call.
+
+        Use this to keep the orchestrator's backend state accurate when something
+        significant happens on the workflow thread (e.g. an operator-approval gate
+        pause) that the orchestrator model wouldn't otherwise know about.
+        Thread-safe.
+        """
+        self._inbox.put(_HarnessUpdate(text=text))
+
+    def stop(self) -> None:
+        """Signal the loop to exit after finishing any current event. Thread-safe."""
+        self._inbox.put(_Stop())
+
+    # ------------------------------------------------------------------
+    # Gate submission (called from workflow thread)
+    # ------------------------------------------------------------------
+
     def run_gate(
         self,
         committee_name: str,
@@ -318,22 +427,76 @@ class OrchestratorHarness:
         retry_count: int,
         iterate_count: int,
     ) -> GateDecision:
-        """Inject gate context and get a gate decision. Loops until a gate tool is called."""
+        """Submit a gate request to the loop thread and block until decided."""
+        self._inbox.put(_GateRequest(
+            committee_name=committee_name,
+            digest=digest,
+            gate_type=gate_type,
+            retry_count=retry_count,
+            iterate_count=iterate_count,
+        ))
+        result = self._outbox.get()
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    # ------------------------------------------------------------------
+    # Private: operator chat between gates
+    # ------------------------------------------------------------------
+
+    def _handle_operator_message(self, text: str) -> None:
+        self._backend.inject_user_message(f"[OPERATOR]: {text}")
+        # Loop so the orchestrator can call read_artifact before answering.
+        # Gate decision tools (advance/retry/iterate) are deliberately excluded.
+        for _ in range(_CHAT_MAX_TOOL_ITERATIONS):
+            response = self._backend.complete(
+                model=self._model,
+                tools=_CHAT_TOOLS,
+                max_tokens=ORCHESTRATOR_MAX_TOKENS,
+            )
+            if response.text:
+                pub.sendMessage(
+                    "orchestrator.message", run_id=self._run_id, text=response.text
+                )
+            if response.stop_reason == "end_turn":
+                return
+            results: list[str] = []
+            for tc in response.tool_calls:
+                if tc.name == "read_artifact":
+                    name = tc.input.get("name", "")
+                    try:
+                        results.append(self._read_artifact_fn(name))
+                    except Exception as exc:
+                        results.append(f"Error reading artifact '{name}': {exc}")
+                else:
+                    results.append(f"Tool '{tc.name}' is not available during operator chat.")
+            self._backend.record_tool_results(response, results)
+
+    # ------------------------------------------------------------------
+    # Private: gate evaluation (runs on loop thread)
+    # ------------------------------------------------------------------
+
+    def _evaluate_gate(self, req: _GateRequest) -> GateDecision:
+        """Inject gate context and loop until the orchestrator calls a gate tool."""
         context = (
-            f"== Gate: {gate_type} — {committee_name} complete ==\n\n"
-            f"== Committee digest ==\n{digest}\n\n"
-            f"Evaluate against adequacy criteria for the {committee_name!r} committee.\n"
+            f"== Gate: {req.gate_type} — {req.committee_name} complete ==\n\n"
+            f"== Committee digest ==\n{req.digest}\n\n"
+            f"Evaluate against adequacy criteria for the {req.committee_name!r} committee.\n"
             "Use advance(rationale), retry(to, note, rationale), iterate(to, note, rationale), "
             "or ask_operator(question)."
         )
-        if retry_count > 0:
-            context += f"\n\n(Retry attempt {retry_count} of 3)"
-        if iterate_count > 0:
-            context += f"\n\n(Iteration {iterate_count} of 30)"
+        if req.retry_count > 0:
+            context += f"\n\n(Retry attempt {req.retry_count} of 3)"
+        if req.iterate_count > 0:
+            context += f"\n\n(Iteration {req.iterate_count} of 30)"
 
         self._backend.append_harness_message(context)
 
         while True:
+            # Drain any operator messages that arrived while we were waiting for
+            # the gate event, so they appear in context before the model decides.
+            self._drain_operator_messages()
+
             response = self._backend.complete(
                 model=self._model,
                 tools=_GATE_TOOLS,
@@ -404,15 +567,41 @@ class OrchestratorHarness:
                 pub.sendMessage(
                     "gate.decision",
                     run_id=self._run_id,
-                    committee=committee_name,
+                    committee=req.committee_name,
                     decision=decision.decision,
                     rationale=decision.rationale,
                     to=decision.to,
                     next_objective=decision.next_objective,
                     attempt=(
-                        f"{retry_count} of 3" if retry_count
-                        else f"{iterate_count} of 30" if iterate_count
+                        f"{req.retry_count} of 3" if req.retry_count
+                        else f"{req.iterate_count} of 30" if req.iterate_count
                         else None
                     ),
                 )
+                # Narrate the gate decision in the operator chat thread so the
+                # operator can see what was decided and why without having to ask.
+                narrative = f"[{req.committee_name}] Gate: {decision.decision.upper()}"
+                if decision.rationale:
+                    narrative += f" — {decision.rationale}"
+                pub.sendMessage("orchestrator.message", run_id=self._run_id, text=narrative)
                 return decision
+
+    def _drain_operator_messages(self) -> None:
+        """Non-blocking drain of any operator messages queued in the inbox.
+
+        Called at the top of each gate evaluation iteration so that messages
+        sent during committee execution land in context before the model decides.
+        """
+        while True:
+            try:
+                event = self._inbox.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(event, _OperatorMessage):
+                self._backend.inject_user_message(f"[OPERATOR]: {event.text}")
+            else:
+                # Non-message event (gate or stop) — put it back and stop draining.
+                # This should not occur in practice since drain is only called from
+                # within _evaluate_gate(), but guard against ordering surprises.
+                self._inbox.put(event)
+                break

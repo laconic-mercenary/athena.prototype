@@ -43,6 +43,8 @@ class EngagementContext:
     awaiting_approval: bool
     leader_queues: dict[str, queue.Queue]
     # Optional state (None-defaulted fields must follow required fields)
+    # Set once the orchestrator loop thread starts (after plan approval).
+    orchestrator: OrchestratorHarness | None = None
     pending_question: str | None = None
     pending_answer: str | None = None
     plan_decision_type: str | None = None
@@ -98,10 +100,11 @@ def start_engagement(instructions: str) -> str:
         return answer
 
     def _approval_handler() -> bool:
+        # workflow.py already publishes gate.awaiting_approval with the correct
+        # committee name before calling this function — don't duplicate it here.
         ctx.awaiting_approval = True
         ctx.plan_decision_type = None
         ctx.plan_decision_event.clear()
-        pub.sendMessage("gate.awaiting_approval", run_id=run_id, committee="")
         ctx.plan_decision_event.wait()
         ctx.awaiting_approval = False
         return ctx.plan_decision_type == "approve"
@@ -168,18 +171,30 @@ def start_engagement(instructions: str) -> str:
 
             pub.sendMessage("engagement.approved", run_id=run_id)
 
-            run_workflow(
-                ensemble=ensemble,
-                plan=plan,
-                orchestrator=orchestrator,
-                make_backend=make_backend,
-                artifacts_dir=Path("artifacts") / run_id,
-                run_id=run_id,
-                ask_operator_handler=_ask_user_handler,
-                approval_handler=_approval_handler,
-                leader_queues=ctx.leader_queues,
-                global_step_budget=GLOBAL_STEP_BUDGET,
+            ctx.orchestrator = orchestrator
+            orch_thread = threading.Thread(
+                target=orchestrator.run_loop,
+                name=f"orch-{run_id}",
+                daemon=True,
             )
+            orch_thread.start()
+
+            try:
+                run_workflow(
+                    ensemble=ensemble,
+                    plan=plan,
+                    orchestrator=orchestrator,
+                    make_backend=make_backend,
+                    artifacts_dir=Path("artifacts") / run_id,
+                    run_id=run_id,
+                    ask_operator_handler=_ask_user_handler,
+                    approval_handler=_approval_handler,
+                    leader_queues=ctx.leader_queues,
+                    global_step_budget=GLOBAL_STEP_BUDGET,
+                )
+            finally:
+                orchestrator.stop()
+                orch_thread.join(timeout=30)
 
             ctx.status = "completed"
 
@@ -230,3 +245,16 @@ def send_to_leader(run_id: str, committee_name: str, message: str) -> None:
     if q is None:
         raise KeyError(f"No leader queue for committee: {committee_name!r}")
     q.put_nowait(message)
+
+
+def send_to_orchestrator(run_id: str, message: str) -> None:
+    """Inject an operator message into the orchestrator's near-real-time inbox.
+
+    Only available after plan approval — raises ValueError during briefing.
+    """
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    if ctx.orchestrator is None:
+        raise ValueError("Orchestrator chat is not available during briefing")
+    ctx.orchestrator.inject_operator_message(message)

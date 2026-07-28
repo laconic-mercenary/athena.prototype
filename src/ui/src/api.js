@@ -54,3 +54,10 @@ export async function reportChat(runId, message) {
     body: JSON.stringify({ message }),
   }))
 }
+
+export async function revealArtifact(runId, name) {
+  const resp = await fetch(`${BASE}/engagements/${runId}/artifacts/${name}/reveal`, {
+    method: 'POST',
+  })
+  if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
+}

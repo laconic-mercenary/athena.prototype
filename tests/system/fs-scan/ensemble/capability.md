@@ -1,9 +1,13 @@
 # Capability — inventory
 
 ## What this ensemble does
-Counts files by extension under a target directory and produces a short, readable inventory
-report. **Read-only:** it walks the directory and counts file extensions; it never opens file
-contents, moves, or modifies anything.
+Counts files by extension under a target directory, **split by visibility (regular vs hidden)**,
+and produces a short, readable inventory report. **Read-only:** it walks the directory and counts
+file extensions; it never opens file contents, moves, or modifies anything.
+
+Hidden files are those whose filename starts with a dot (e.g. `.env`, `.gitignore`, `.debug.py`).
+The scan runs two elements in parallel — `count_regular_files` for non-hidden files and
+`count_hidden_files` for hidden files — and reports both counts separately alongside a combined total.
 
 ## briefing_required
 Inputs the orchestrator collects during briefing (a guide — fill from the operator's message
@@ -25,21 +29,21 @@ briefing_required:
 
 ### scan
 - **Input:** the directory + extension list (from the engagement brief).
-- **Output:** `ScanOutput` — per-extension counts, total files matched, the resolved directory,
-  and any paths skipped (unreadable).
-- **Adequate when:** the directory was walked and a count is present for every requested extension.
-- **Retry if:** the directory was unreadable, or no extensions were counted at all.
+- **Output:** `ScanOutput` — per-extension counts (regular + hidden combined), total files matched,
+  hidden file count, regular file count, the resolved directory, and any paths skipped.
+- **Adequate when:** both elements completed their walk and a count is present for every
+  requested extension.
+- **Retry if:** the directory was unreadable, or both elements returned zero across all extensions.
 
 ### report
 - **Consumes:** `scan` (required — the full `ScanOutput`).
 - **Output:** `ReportOutput` — a one-paragraph summary and a markdown table of extension → count,
-  with the total.
+  with the total and a note on the regular/hidden split.
 - **Adequate when:** the table lists every counted extension and the total matches the ScanOutput.
 
 ## Constraints
 - Read-only filesystem access — counting only, never reading file contents, never writing.
-- The directory must resolve inside the allowed roots (harness-enforced by the `count_extensions`
-  skill).
+- The directory must resolve inside the allowed roots (harness-enforced by the element skills).
 
 ## Ask the operator if
 Gate-time escalation only. (Briefing-time inputs are covered by `briefing_required` above — they

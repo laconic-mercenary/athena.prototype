@@ -11,6 +11,12 @@ parameters:
     type: array
     description: Extensions to count, each including the dot (e.g. [".py", ".md"]). Case-insensitive.
     required: true
+  hidden_only:
+    type: boolean
+    description: >
+      Filter by visibility. true = count only hidden files (name starts with '.').
+      false = count only non-hidden (regular) files.
+    required: true
 returns: >
   Object with `directory` (resolved path), `counts` (list of {extension, count}), `total_files`,
   and `skipped` (paths that could not be read).

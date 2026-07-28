@@ -42,7 +42,7 @@ def _params_to_json_schema(params: dict) -> dict:
         if raw_type == "array" and "items" not in p:
             prop["items"] = {"type": "string"}
         properties[name] = prop
-        if p.get("required", False):
+        if p.get("required", True):
             required.append(name)
     schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
@@ -132,6 +132,7 @@ def _load_specialist(
     committee_provider: str,
     global_default_model: str,
     global_provider: str,
+    element_skill_ids: list[str],
 ) -> LoadedSpecialist:
     if not yml_path.exists():
         raise ValueError(f"Specialist yml not found: {yml_path}")
@@ -141,12 +142,17 @@ def _load_specialist(
     provider = raw.get("provider") or element_provider or committee_provider or global_provider
     temperature_raw = raw.get("temperature")
     temperature = float(temperature_raw) if temperature_raw is not None else None
+    # Specialist-level skills override the element's list; element list is the fallback.
+    skill_ids = raw.get("skills", element_skill_ids)
+    stem = yml_path.stem
     return LoadedSpecialist(
-        id=yml_path.stem,
+        id=stem,
+        title=raw.get("title") or stem,
         system=raw.get("system", ""),
         model=model,
         provider=provider,
         temperature=temperature,
+        skill_ids=skill_ids,
     )
 
 
@@ -159,9 +165,9 @@ def _load_element(
     global_provider: str,
 ) -> LoadedElement:
     element_id = element_raw["id"]
+    label = element_raw.get("label", element_id)
     instances = element_raw.get("instances", 1)
     skill_ids = element_raw.get("skills", [])
-    mode = element_raw.get("mode", "combine")
     # Element-level model/provider override slots between committee and specialist in the cascade.
     element_model: str | None = element_raw.get("model") or None
     element_provider: str | None = element_raw.get("provider") or None
@@ -174,6 +180,7 @@ def _load_element(
             committee_provider,
             global_default_model,
             global_provider,
+            element_skill_ids=skill_ids,
         )
         for spec_path in element_raw.get("specialists", [])
     ]
@@ -181,10 +188,10 @@ def _load_element(
         raise ValueError(f"Element {element_id!r} has no specialists")
     return LoadedElement(
         id=element_id,
+        label=label,
         instances=instances,
         specialists=specialists,
         skill_ids=skill_ids,
-        mode=mode,
     )
 
 
@@ -328,7 +335,7 @@ def load_ensemble(path: Path) -> LoadedEnsemble:
         if node_name not in committees:
             raise ValueError(f"Workflow node {node_name!r} has no matching committee definition")
 
-    # Validate: every skill_id referenced by elements exists
+    # Validate: every skill_id referenced by elements or specialists exists
     for committee in committees.values():
         for element in committee.elements:
             for sid in element.skill_ids:
@@ -337,6 +344,13 @@ def load_ensemble(path: Path) -> LoadedEnsemble:
                         f"Element {element.id!r} in committee {committee.name!r} "
                         f"references unknown skill {sid!r}"
                     )
+            for specialist in element.specialists:
+                for sid in specialist.skill_ids:
+                    if sid not in skills:
+                        raise ValueError(
+                            f"Specialist {specialist.id!r} in element {element.id!r} "
+                            f"references unknown skill {sid!r}"
+                        )
 
     return LoadedEnsemble(
         name=name,

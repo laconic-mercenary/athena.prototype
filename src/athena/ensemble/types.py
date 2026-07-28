@@ -26,19 +26,21 @@ class LoadedSkill:
 @dataclass
 class LoadedSpecialist:
     id:          str              # yml filename stem (e.g. "counter")
+    title:       str              # display name; falls back to id if not set in yml
     system:      str
     model:       str
     provider:    str              # "anthropic" | "ollama"
     temperature: float | None     # None → provider default; set for sampling diversity
+    skill_ids:   list[str]        # effective skills for this specialist; overrides element-level list
 
 
 @dataclass
 class LoadedElement:
     id:          str
+    label:       str              # human-friendly display name; defaults to id
     instances:   int
     specialists: list[LoadedSpecialist]
     skill_ids:   list[str]        # references into LoadedEnsemble.skills
-    mode:        str              # "combine" (single) | "compare" (best-of-N)
 
 
 @dataclass

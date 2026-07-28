@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
@@ -6,6 +6,18 @@ import {
   Position,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+
+const ORCHESTRATOR_AGENT_ID = 'athena.orchestrator'
+
+function formatTs(ts) {
+  const d = new Date(ts)
+  return (
+    String(d.getHours()).padStart(2, '0') + ':' +
+    String(d.getMinutes()).padStart(2, '0') + ':' +
+    String(d.getSeconds()).padStart(2, '0') + '.' +
+    String(d.getMilliseconds()).padStart(3, '0')
+  )
+}
 
 // Palette assigned by committee index for dynamic ensembles.
 const COMMITTEE_PALETTE = ['#f97316', '#22c55e', '#ef4444', '#eab308', '#3b82f6', '#a855f7', '#06b6d4']
@@ -18,6 +30,315 @@ function committeeColor(name, index) {
 const FINDING_BORDER = { signal_critical: '#ef4444', signal_warn: '#f97316' }
 const FINDING_LABEL  = { signal_critical: 'CRIT', signal_warn: 'WARN', signal_info: 'INFO' }
 const GATE_COLORS    = { advance: '#22c55e', retry: '#ef4444', iterate: '#f97316' }
+
+// ── Tool result modal ─────────────────────────────────────────────────────────
+function ToolResultModal({ tool, inputSummary, result, ts, color, onClose, onDiscuss }) {
+  let displayResult = result || '(pending…)'
+  try { displayResult = JSON.stringify(JSON.parse(result), null, 2) } catch { /* raw */ }
+
+  let displayInput = ''
+  try { displayInput = JSON.stringify(JSON.parse(inputSummary), null, 2) } catch { displayInput = inputSummary || '' }
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        background: 'rgba(0,0,0,0.65)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: '#0f172a', border: `1px solid ${color}44`,
+          borderRadius: 8, padding: '20px 24px',
+          maxWidth: 640, width: '90vw', maxHeight: '72vh',
+          display: 'flex', flexDirection: 'column', gap: 12,
+          boxShadow: `0 0 40px rgba(0,0,0,0.8)`,
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: `${color}cc`, fontFamily: 'monospace' }}>{tool}</span>
+          <span style={{ fontSize: 9, color: '#475569', fontVariantNumeric: 'tabular-nums' }}>{formatTs(ts)}</span>
+        </div>
+
+        {displayInput && (
+          <div>
+            <div style={{ fontSize: 8, letterSpacing: 1.5, color: '#475569', marginBottom: 4 }}>INPUT</div>
+            <pre style={{
+              margin: 0, fontSize: 10, color: '#64748b', fontFamily: 'monospace',
+              background: '#07101f', borderRadius: 4, padding: '8px 10px',
+              overflow: 'auto', maxHeight: 100, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+            }}>{displayInput}</pre>
+          </div>
+        )}
+
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 8, letterSpacing: 1.5, color: '#475569' }}>RESULT</div>
+          <pre style={{
+            margin: 0, flex: 1, overflow: 'auto',
+            fontSize: 10, color: '#94a3b8', fontFamily: 'monospace',
+            background: '#07101f', borderRadius: 4, padding: '8px 10px',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+          }}>{displayResult}</pre>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {onDiscuss && (
+            <button onClick={onDiscuss} style={{
+              background: 'none', border: `1px solid ${color}55`, borderRadius: 4,
+              color: `${color}aa`, fontSize: 10, padding: '4px 14px', cursor: 'pointer',
+            }}>Discuss</button>
+          )}
+          <button onClick={onClose} style={{
+            background: 'none', border: '1px solid #334155', borderRadius: 4,
+            color: '#64748b', fontSize: 10, padding: '4px 14px', cursor: 'pointer',
+          }}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Result modal (compare-mode element selection) ─────────────────────────────
+function ResultModal({ elementId, winnerId, winnerTitle, rationale, variants, color, onClose }) {
+  const [activeIdx, setActiveIdx] = useState(0)
+  const [canLeft, setCanLeft]   = useState(false)
+  const [canRight, setCanRight] = useState(false)
+  const tabBarRef = useRef(null)
+
+  // Winner first, then losers in original order.
+  const winnerVar = variants.find(v => v.label === winnerId) || variants[0]
+  const loserVars = variants.filter(v => v.label !== winnerId)
+  const ordered   = winnerVar ? [winnerVar, ...loserVars] : [...loserVars]
+
+  const checkScroll = () => {
+    const el = tabBarRef.current
+    if (!el) return
+    setCanLeft(el.scrollLeft > 1)
+    setCanRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1)
+  }
+
+  useEffect(() => {
+    checkScroll()
+    const el = tabBarRef.current
+    if (!el) return
+    el.addEventListener('scroll', checkScroll)
+    const ro = new ResizeObserver(checkScroll)
+    ro.observe(el)
+    return () => { el.removeEventListener('scroll', checkScroll); ro.disconnect() }
+  }, [variants])
+
+  const nudge = (dir) => tabBarRef.current?.scrollBy({ left: dir * 130, behavior: 'smooth' })
+
+  const active  = ordered[activeIdx] || ordered[0]
+  const isWin   = active?.label === winnerId
+
+  let displayOutput = active?.output || '(none)'
+  try { displayOutput = JSON.stringify(JSON.parse(active?.output), null, 2) } catch { /* raw */ }
+
+  const ARROW = {
+    background: 'none', border: '1px solid #1e293b', borderRadius: 3,
+    color: '#475569', fontSize: 13, width: 22, height: 22,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    cursor: 'pointer', flexShrink: 0, lineHeight: 1,
+  }
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: '#0f172a', border: `1px solid ${color}44`, borderRadius: 8, padding: '20px 24px', maxWidth: 640, width: '90vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column', gap: 12, boxShadow: '0 0 40px rgba(0,0,0,0.8)' }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: `${color}cc`, fontFamily: 'monospace' }}>{elementId}</span>
+          <span style={{ fontSize: 9, color: '#475569', letterSpacing: 1 }}>RESULT</span>
+        </div>
+
+        {/* Tab strip */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, borderBottom: `1px solid #1e293b`, paddingBottom: 8 }}>
+          {canLeft && (
+            <button style={ARROW} onClick={() => nudge(-1)}>‹</button>
+          )}
+          <div
+            ref={tabBarRef}
+            style={{ display: 'flex', gap: 2, overflow: 'hidden', flex: 1 }}
+          >
+            {ordered.map((v, i) => {
+              const win      = v.label === winnerId
+              const tabColor = win ? '#22c55e' : '#f97316'
+              const isActive = i === activeIdx
+              const label    = win ? `★ ${winnerTitle || v.title || v.label}` : (v.title || v.label)
+              return (
+                <button
+                  key={v.label}
+                  onClick={() => setActiveIdx(i)}
+                  style={{
+                    flexShrink: 0, whiteSpace: 'nowrap',
+                    fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+                    padding: '3px 12px', cursor: 'pointer', border: 'none',
+                    borderRadius: '3px 3px 0 0',
+                    background: isActive ? `${tabColor}18` : 'none',
+                    color: isActive ? tabColor : `${tabColor}55`,
+                    borderBottom: isActive ? `2px solid ${tabColor}` : '2px solid transparent',
+                    transition: 'color 0.15s, border-color 0.15s',
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+          {canRight && (
+            <button style={ARROW} onClick={() => nudge(1)}>›</button>
+          )}
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }}>
+          <pre style={{
+            margin: 0, flex: 1, overflow: 'auto', minHeight: 0,
+            fontSize: 10, color: '#94a3b8', fontFamily: 'monospace',
+            background: '#07101f', borderRadius: 4, padding: '8px 10px',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+          }}>{displayOutput}</pre>
+
+          {isWin && rationale && (
+            <div style={{ flexShrink: 0 }}>
+              <div style={{ fontSize: 8, letterSpacing: 1.5, color: '#475569', marginBottom: 4 }}>WHY THIS WON</div>
+              <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.7, background: '#07101f', borderRadius: 4, padding: '10px 12px' }}>
+                {rationale}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', flexShrink: 0 }}>
+          <button onClick={onClose} style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: '#64748b', fontSize: 10, padding: '4px 14px', cursor: 'pointer' }}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Specialist sub-card (inside ElementNode) ──────────────────────────────────
+function SpecialistCard({ agent, color, onToolClick, isWinner }) {
+  const recentTools = (agent.toolHistory || []).slice(-3).reverse()
+  const isActive = agent.status === 'active'
+  const winnerColor = '#22c55e'
+
+  return (
+    <div style={{
+      background: '#07101f',
+      border: isWinner ? `1px solid ${winnerColor}88` : `1px solid ${color}22`,
+      borderRadius: 4, padding: '6px 9px', position: 'relative',
+      overflow: 'hidden',
+      boxShadow: isWinner ? `0 0 8px ${winnerColor}33` : 'none',
+    }}>
+      {isWinner && (
+        <div style={{
+          position: 'absolute', top: -1, right: 8,
+          background: winnerColor, color: '#000',
+          fontSize: 7, fontWeight: 800, letterSpacing: 1.5,
+          padding: '1px 6px', borderRadius: '0 0 3px 3px',
+          textTransform: 'uppercase',
+        }}>winner</div>
+      )}
+      <div style={{ fontWeight: 700, fontSize: 10, color: isWinner ? `${winnerColor}cc` : `${color}aa`, marginBottom: recentTools.length ? 4 : 0 }}>
+        {agent.title}
+      </div>
+
+      {recentTools.map((t, i) => {
+        const hasResult = t.result !== undefined
+        return (
+          <div
+            key={i}
+            className="nopan nodrag"
+            onPointerDown={e => e.stopPropagation()}
+            onClick={hasResult && onToolClick ? (e => { e.stopPropagation(); onToolClick(t) }) : undefined}
+            title={hasResult ? 'Click to view result' : undefined}
+            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, color: i === 0 ? `${color}88` : `${color}33`, lineHeight: 1.5, cursor: hasResult ? 'pointer' : 'default' }}
+          >
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
+              › {t.tool}
+            </span>
+            <span style={{ flexShrink: 0, fontSize: 8, opacity: 0.6, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', fontFamily: 'monospace' }}>
+              {formatTs(t.ts)}
+            </span>
+          </div>
+        )
+      })}
+
+      {isActive && (
+        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 2, borderRadius: '0 0 4px 4px', overflow: 'hidden', background: `${color}18` }}>
+          <div style={{ width: '38%', height: '100%', background: `linear-gradient(90deg, transparent, ${color}, transparent)`, animation: 'slide-bar 1.4s linear infinite' }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Element node ──────────────────────────────────────────────────────────────
+function ElementNode({ data }) {
+  const { elementId, elementLabel, color, agents, elementResult, onToolClick, onResult } = data
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        background: '#080e1a', border: `1px solid ${color}33`,
+        borderRadius: 6, padding: '7px 9px', minWidth: 210,
+        display: 'flex', flexDirection: 'column', gap: 5,
+        userSelect: 'none',
+      }}
+    >
+      <Handle type="target" position={Position.Top} style={{ visibility: 'hidden' }} />
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 8, fontWeight: 800, letterSpacing: 2, color: `${color}55`, textTransform: 'uppercase', paddingBottom: 4, borderBottom: `1px solid ${color}18` }}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill={`${color}66`} style={{ flexShrink: 0 }}>
+          <rect x="4" y="2" width="16" height="7" rx="1.5"/>
+          <rect x="9" y="9" width="6" height="13" rx="1.5"/>
+        </svg>
+        {elementLabel || elementId}
+      </div>
+
+      {agents.map(agent => (
+        <SpecialistCard
+          key={agent.id}
+          agent={agent}
+          color={color}
+          onToolClick={onToolClick}
+          isWinner={!!elementResult && agent.variant_label === elementResult.winnerId}
+        />
+      ))}
+
+      {elementResult && (
+        <div className="nopan nodrag" onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onResult() }}
+          style={{ marginTop: 2, textAlign: 'center', cursor: 'pointer' }}
+        >
+          <span style={{
+            fontSize: 8, fontWeight: 700, letterSpacing: 1.5,
+            color: hovered ? `${color}cc` : `${color}77`,
+            border: `1px solid ${hovered ? color + '88' : color + '44'}`,
+            borderRadius: 3, padding: '2px 10px', display: 'inline-block',
+            transition: 'color 0.15s, border-color 0.15s',
+          }}>RESULT</span>
+        </div>
+      )}
+
+      <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
+    </div>
+  )
+}
 
 // ── Step rail ────────────────────────────────────────────────────────────────
 function StepRail({ steps, color }) {
@@ -55,11 +376,6 @@ function StepRail({ steps, color }) {
           />
         )
       })}
-      {steps.length > 0 && (
-        <span style={{ fontSize: 8, color: `${color}55`, marginLeft: 2 }}>
-          {steps.filter(s => s.status === 'done').length}/{steps.length}
-        </span>
-      )}
     </div>
   )
 }
@@ -106,16 +422,60 @@ function FindingNode({ data }) {
   )
 }
 
+// ── Committee label node (visual-only header above leader) ───────────────────
+function CommitteeLabelNode({ data }) {
+  const { label, color, status } = data
+  const isActive = status === 'active'
+  const isDone   = status === 'completed'
+
+  return (
+    <div style={{
+      background: '#07101f',
+      border: `1px solid ${color}33`,
+      borderRadius: 5,
+      padding: '4px 14px',
+      color: `${color}99`,
+      fontWeight: 800,
+      fontSize: 9,
+      letterSpacing: 2,
+      textTransform: 'uppercase',
+      textAlign: 'center',
+      minWidth: 90,
+      opacity: isDone ? 0.55 : 1,
+      userSelect: 'none',
+      cursor: 'default',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+    }}>
+      <Handle type="target" position={Position.Top}    style={{ visibility: 'hidden' }} />
+      {label}
+      {isActive && (
+        <span style={{
+          display: 'inline-block', width: 5, height: 5, borderRadius: '50%',
+          background: color, boxShadow: `0 0 5px ${color}`,
+          animation: 'node-pulse 1.8s ease-in-out infinite', flexShrink: 0,
+        }} />
+      )}
+      <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
+    </div>
+  )
+}
+
 // ── Committee node ────────────────────────────────────────────────────────────
 function CommitteeNode({ data }) {
-  const { label, color, status, classification, badgeCount, steps, onClick } = data
+  const { label, color, status, classification, badgeCount, steps, onClick, onChat, onResults, pendingQuestion } = data
   const alertColor = FINDING_BORDER[classification]
   const isActive   = status === 'active'
   const isDone     = status === 'completed'
+  const [hovered, setHovered] = useState(false)
 
   return (
     <div
       onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         background: '#0f172a',
         border: `2px solid ${alertColor || color}`,
@@ -158,6 +518,20 @@ function CommitteeNode({ data }) {
 
       <StepRail steps={steps} color={color} />
 
+      {isDone && onResults && (
+        <div className="nopan nodrag" onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onResults() }}
+          style={{ marginTop: 9, textAlign: 'center', cursor: 'pointer' }}
+        >
+          <span style={{
+            fontSize: 8, fontWeight: 700, letterSpacing: 1.5,
+            color: `${color}99`,
+            border: `1px solid ${color}88`, borderRadius: 3,
+            padding: '2px 10px', display: 'inline-block',
+          }}>RESULTS</span>
+        </div>
+      )}
+
       {badgeCount > 0 && (
         <div style={{
           position: 'absolute', top: -9, right: -9,
@@ -171,6 +545,38 @@ function CommitteeNode({ data }) {
         </div>
       )}
 
+      {pendingQuestion && onChat && (
+        <div className="nopan nodrag" onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onChat() }}
+          style={{
+            position: 'absolute', top: -26, left: '50%', transform: 'translateX(-50%)',
+            background: '#ef4444', color: '#fff',
+            borderRadius: 3, padding: '2px 8px',
+            fontSize: 8, fontWeight: 800, letterSpacing: 1.5,
+            cursor: 'pointer', whiteSpace: 'nowrap',
+            boxShadow: '0 0 8px #ef444488', zIndex: 10,
+          }}
+        >QUESTION</div>
+      )}
+
+      {hovered && onChat && !pendingQuestion && (
+        <div className="nopan nodrag" onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onChat() }}
+          style={{ marginTop: 10, display: 'flex', justifyContent: 'center', cursor: 'pointer' }}
+        >
+          <div style={{
+            width: 30, height: 30, borderRadius: '50%',
+            background: '#0a1628', border: '1px solid #3b82f6',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#3b82f6', boxShadow: '0 0 8px #3b82f622',
+          }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+        </div>
+      )}
+
       <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
     </div>
   )
@@ -178,22 +584,76 @@ function CommitteeNode({ data }) {
 
 // ── Agent node ────────────────────────────────────────────────────────────────
 function AgentNode({ data }) {
-  const { title, color, status, classification, toolHistory, isLeader, onChat, onFinding } = data
+  const { title, color, status, classification, toolHistory, onChat, onFinding, onToolClick, pendingQuestion, onResults } = data
   const alertColor = FINDING_BORDER[classification]
   const isActive   = status === 'active'
   const hasAlert   = !!alertColor
+  const [hovered, setHovered] = useState(false)
+  const hideTimer  = useRef(null)
+
+  const handleEnter = () => {
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    setHovered(true)
+  }
+  const handleLeave = () => {
+    hideTimer.current = setTimeout(() => setHovered(false), 1000)
+  }
 
   const recentTools = (toolHistory || []).slice(-3).reverse()
 
   return (
-    <div style={{
-      background: '#080e1a',
-      border: `1px solid ${alertColor ? alertColor + '88' : color + '44'}`,
-      borderRadius: 6, padding: '8px 12px', minWidth: 155,
-      position: 'relative',
-      boxShadow: isActive ? `0 0 10px 2px ${color}2a` : 'none',
-      transition: 'box-shadow 0.4s', userSelect: 'none',
-    }}>
+    <div
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+      style={{
+        background: '#080e1a',
+        border: `1px solid ${alertColor ? alertColor + '88' : color + '44'}`,
+        borderRadius: 6, padding: '8px 12px', minWidth: 200,
+        position: 'relative', overflow: 'visible',
+        boxShadow: isActive ? `0 0 10px 2px ${color}2a` : 'none',
+        transition: 'box-shadow 0.4s', userSelect: 'none',
+      }}
+    >
+      {/* Hover action menu — slides out to the left */}
+      <div
+        className="nopan nodrag"
+        onMouseEnter={handleEnter}
+        onMouseLeave={handleLeave}
+        style={{
+          position: 'absolute',
+          right: 'calc(100% + 10px)',
+          top: '50%',
+          transform: 'translateY(-50%)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+          pointerEvents: hovered ? 'auto' : 'none',
+          zIndex: 20,
+        }}
+      >
+        {onChat && status !== 'spun_down' && (
+          <div
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onChat() }}
+            title="Chat with this agent"
+            style={{
+              width: 30, height: 30, borderRadius: '50%',
+              background: '#0a1628',
+              border: '1px solid #3b82f6',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', color: '#3b82f6',
+              opacity: hovered ? 1 : 0,
+              transform: hovered ? 'translateX(0)' : 'translateX(8px)',
+              transition: 'opacity 0.15s ease, transform 0.15s ease',
+              boxShadow: '0 0 8px #3b82f622',
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+        )}
+      </div>
       <Handle type="target" position={Position.Top}    style={{ visibility: 'hidden' }} />
 
       {hasAlert && (
@@ -210,33 +670,68 @@ function AgentNode({ data }) {
         >!</div>
       )}
 
-      {isActive && isLeader && (
-        <div className="nopan nodrag" title="Chat with lead" onPointerDown={e => e.stopPropagation()}
+      {pendingQuestion && onChat && (
+        <div className="nopan nodrag" onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); onChat() }}
           style={{
-            position: 'absolute', top: -8, right: -8,
-            width: 17, height: 17, borderRadius: '50%',
-            background: '#0f172a', border: `1px solid ${color}88`,
-            color, fontSize: 10, fontWeight: 700,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', zIndex: 10, lineHeight: 1,
+            position: 'absolute', top: -22, left: '50%', transform: 'translateX(-50%)',
+            background: '#ef4444', color: '#fff',
+            borderRadius: 3, padding: '2px 6px',
+            fontSize: 7, fontWeight: 800, letterSpacing: 1.5,
+            cursor: 'pointer', whiteSpace: 'nowrap',
+            boxShadow: '0 0 6px #ef444488', zIndex: 10,
           }}
-        >?</div>
+        >QUESTION</div>
       )}
 
-      <div style={{ fontWeight: 700, fontSize: 11, color: `${color}cc`, marginBottom: recentTools.length ? 5 : 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontWeight: 700, fontSize: 11, color: `${color}cc`, marginBottom: recentTools.length ? 5 : 0 }}>
+        <svg width="10" height="10" viewBox="0 0 24 22" fill={`${color}55`} style={{ flexShrink: 0 }}>
+          <path d="M2,20 L22,20 L22,17 L20,9 L16,14 L12,5 L8,14 L4,9 L2,17 Z"/>
+        </svg>
         {title}
       </div>
 
-      {recentTools.map((t, i) => (
-        <div key={i} style={{
-          fontSize: 9, color: i === 0 ? `${color}88` : `${color}33`,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-          maxWidth: 160, lineHeight: 1.5,
-        }}>
-          › {t.tool}
+      {recentTools.map((t, i) => {
+        const hasResult = t.result !== undefined
+        return (
+          <div
+            key={i}
+            className="nopan nodrag"
+            onPointerDown={e => e.stopPropagation()}
+            onClick={hasResult && onToolClick ? (e => { e.stopPropagation(); onToolClick(t) }) : undefined}
+            title={hasResult ? 'Click to view result' : undefined}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              fontSize: 9, color: i === 0 ? `${color}88` : `${color}33`,
+              lineHeight: 1.5, cursor: hasResult ? 'pointer' : 'default',
+            }}
+          >
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
+              › {t.tool}
+            </span>
+            <span style={{
+              flexShrink: 0, fontSize: 8, opacity: 0.6,
+              fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+              fontFamily: 'monospace',
+            }}>
+              {formatTs(t.ts)}
+            </span>
+          </div>
+        )
+      })}
+
+      {onResults && (
+        <div className="nopan nodrag" onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onResults() }}
+          style={{ marginTop: 7, paddingTop: 5, borderTop: `1px solid ${color}1a`, textAlign: 'center', cursor: 'pointer' }}
+        >
+          <span style={{
+            fontSize: 8, fontWeight: 700, letterSpacing: 1.5,
+            color: `${color}99`, border: `1px solid ${color}88`, borderRadius: 3,
+            padding: '2px 10px', display: 'inline-block',
+          }}>RESULTS</span>
         </div>
-      ))}
+      )}
 
       {isActive && (
         <div style={{
@@ -257,11 +752,12 @@ function AgentNode({ data }) {
   )
 }
 
-const nodeTypes = { committee: CommitteeNode, agent: AgentNode, finding: FindingNode }
+const nodeTypes = { committee: CommitteeNode, committeeLabel: CommitteeLabelNode, agent: AgentNode, element: ElementNode, finding: FindingNode }
 
 const ORCH_POS  = { x: 0, y: 0 }
-const COMM_Y    = 210
+const COMM_Y    = 110
 const COMM_GAP  = 230
+const COMM_LABEL_HEIGHT = 45
 const AGENT_OFFSET_Y = 130
 const AGENT_ROW_GAP  = 85
 const FINDING_GAP    = 88
@@ -278,11 +774,13 @@ function computeCommitteePositions(committeeNames) {
   return positions
 }
 
-export function CommitteeGraph({ state, dispatch }) {
-  const { committees, agents, steps, engagement, gateDecisions, plan } = state
+export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
+  const { committees, agents, steps, engagement, gateDecisions, plan, pendingLeaderQuestions, pendingOrchestratorQuestion } = state
+  const [selectedResult, setSelectedResult] = useState(null)
 
   const committeeNames = useMemo(() => Object.keys(committees), [committees])
   const positions      = useMemo(() => computeCommitteePositions(committeeNames), [committeeNames])
+  const [selectedTool, setSelectedTool] = useState(null)
 
   const findingX = useMemo(() => {
     if (committeeNames.length === 0) return 600
@@ -307,9 +805,19 @@ export function CommitteeGraph({ state, dispatch }) {
         badgeCount: 0,
         steps: [],
         onClick: () => {},
+        pendingQuestion: pendingOrchestratorQuestion,
+        onChat: () => dispatch({
+          type: 'OPEN_CHAT',
+          payload: {
+            agentId: ORCHESTRATOR_AGENT_ID,
+            committeeId: null,
+            agentTitle: 'Orchestrator',
+            findings: [],
+          },
+        }),
       },
     }
-  }, [positions, engagement.status])
+  }, [positions, engagement.status, pendingOrchestratorQuestion, dispatch])
 
   // ── Committee nodes ───────────────────────────────────────────────────────
   const committeeNodes = useMemo(() =>
@@ -319,82 +827,108 @@ export function CommitteeGraph({ state, dispatch }) {
       const color = committeeColor(name, i)
       return {
         id: `committee-${name}`,
-        type: 'committee',
+        type: 'committeeLabel',
         position: pos,
-        data: {
-          label: name,
-          color,
-          status: data.status || 'inactive',
-          classification: data.classification || null,
-          badgeCount: data.badgeCount || 0,
-          steps: steps[name] || [],
-          onClick: () => data.badgeCount > 0 && dispatch({ type: 'DISMISS_BADGE', payload: { committee: name } }),
-        },
+        data: { label: name, color, status: data.status || 'inactive' },
       }
     }),
-    [committeeNames, committees, positions, steps, dispatch]
+    [committeeNames, committees, positions]
   )
 
-  // ── Agent nodes ───────────────────────────────────────────────────────────
-  const agentNodes = useMemo(() => {
+  // ── Agent nodes (leaders only) + Element nodes (specialist groups) ────────
+  const { leaderNodes, elementNodes: elementAgentNodes } = useMemo(() => {
     const byCommittee = {}
     Object.values(agents).forEach(a => {
       if (!byCommittee[a.committee]) byCommittee[a.committee] = []
       byCommittee[a.committee].push(a)
     })
-    const nodes = []
+
+    const leaders = []
+    const elements = []
+
     Object.entries(byCommittee).forEach(([committee, list]) => {
       const committeeIndex = committeeNames.indexOf(committee)
       const parentPos = positions[committee] || { x: committeeIndex * COMM_GAP, y: COMM_Y }
       const color = committeeColor(committee, committeeIndex)
-      list.forEach((agent, i) => {
-        nodes.push({
+      const leaderId = Object.keys(agents).find(
+        id => agents[id].committee === committee && agents[id].role === 'leader'
+      )
+      const chatAgentId    = leaderId || ''
+      const chatAgentTitle = (leaderId && agents[leaderId]?.title) || `${committee} lead`
+      const chatFindings   = (leaderId && agents[leaderId]?.findings) || []
+
+      const leaderList   = list.filter(a => a.role === 'leader')
+      const specialistList = list.filter(a => a.role !== 'leader')
+
+      // Leader nodes — positioned where CommitteeNode was; carry RESULTS capability
+      const isCompleted = (committees[committee] || {}).status === 'completed'
+      leaderList.forEach((agent, i) => {
+        leaders.push({
           id: `agent-${agent.id}`,
           type: 'agent',
-          position: { x: parentPos.x + 8, y: parentPos.y + AGENT_OFFSET_Y + i * AGENT_ROW_GAP },
+          position: { x: parentPos.x + 8, y: parentPos.y + COMM_LABEL_HEIGHT + i * AGENT_ROW_GAP },
           data: {
             title: agent.title || agent.id.split('.').pop(),
             color,
             status: agent.status,
             classification: agent.classification || null,
             toolHistory: agent.toolHistory || [],
-            isLeader: agent.id.endsWith('.leader'),
-            onChat: () => dispatch({
-              type: 'OPEN_CHAT',
-              payload: {
-                agentId: agent.id,
-                committeeId: agent.committee,
-                agentTitle: agent.title || agent.id,
-                findings: agent.findings || [],
-              },
-            }),
-            onFinding: () => {
-              const leaderId = Object.keys(agents).find(
-                id => agents[id].committee === committee && id.endsWith('.leader')
-              ) || agent.id
-              dispatch({
-                type: 'OPEN_CHAT',
-                payload: {
-                  agentId: leaderId,
-                  committeeId: committee,
-                  agentTitle: agents[leaderId]?.title || `${committee} lead`,
-                  findings: agent.findings || [],
-                  focusFindings: true,
-                },
-              })
-            },
+            pendingQuestion: pendingLeaderQuestions[committee]?.question || null,
+            onResults: (isCompleted && onCommitteeResults) ? () => onCommitteeResults(committee) : undefined,
+            onChat: () => dispatch({ type: 'OPEN_CHAT', payload: { agentId: agent.id, committeeId: committee, agentTitle: agent.title || agent.id, findings: agent.findings || [] } }),
+            onFinding: () => dispatch({ type: 'OPEN_CHAT', payload: { agentId: agent.id, committeeId: committee, agentTitle: agent.title || agent.id, findings: agent.findings || [], focusFindings: true } }),
+            onToolClick: (entry) => setSelectedTool({ ...entry, color, chatAgentId: agent.id, committeeId: committee, chatAgentTitle: agent.title || agent.id, chatFindings: agent.findings || [] }),
+          },
+        })
+      })
+
+      // Group specialists by element_id
+      const byElement = {}
+      specialistList.forEach(a => {
+        const eid = a.element_id || a.id
+        if (!byElement[eid]) byElement[eid] = []
+        byElement[eid].push(a)
+      })
+
+      const elementEntries = Object.entries(byElement)
+      elementEntries.forEach(([eid, elementAgents], ei) => {
+        const elementResult = committees[committee]?.elementResults?.[eid] || null
+        const nodeId = `element-${committee}-${eid}`
+        const elementLabel = elementAgents[0]?.element_label || eid
+        elements.push({
+          id: nodeId,
+          type: 'element',
+          position: {
+            x: parentPos.x + 8,
+            y: parentPos.y + COMM_LABEL_HEIGHT + AGENT_OFFSET_Y + ei * AGENT_ROW_GAP,
+          },
+          data: {
+            elementId: eid,
+            elementLabel,
+            color,
+            agents: elementAgents,
+            elementResult,
+            onToolClick: (entry) => setSelectedTool({ ...entry, color, chatAgentId, committeeId: committee, chatAgentTitle, chatFindings }),
+            onResult: () => setSelectedResult({ ...elementResult, elementId: elementLabel, color, variants: elementResult?.variants || [] }),
           },
         })
       })
     })
-    return nodes
-  }, [agents, committeeNames, positions, dispatch])
+
+    return { leaderNodes: leaders, elementNodes: elements }
+  }, [agents, committeeNames, positions, committees, pendingLeaderQuestions, onCommitteeResults, dispatch])
 
   // ── Edges ─────────────────────────────────────────────────────────────────
   const edges = useMemo(() => {
     const result = []
 
-    // Orchestrator → each committee
+    // Build leader-id lookup so committee-level edges can target leader agents directly
+    const leaderIdByCommittee = {}
+    Object.values(agents).forEach(a => {
+      if (a.role === 'leader') leaderIdByCommittee[a.committee] = a.id
+    })
+
+    // Orchestrator → committee label node
     committeeNames.forEach((name, i) => {
       const color = committeeColor(name, i)
       const active = committees[name]?.status === 'active'
@@ -408,18 +942,37 @@ export function CommitteeGraph({ state, dispatch }) {
       })
     })
 
-    // Forward committee → committee (in plan order)
+    // Committee label → leader agent
+    committeeNames.forEach((name, i) => {
+      const leaderId = leaderIdByCommittee[name]
+      if (!leaderId) return
+      const color = committeeColor(name, i)
+      const active = committees[name]?.status === 'active'
+      result.push({
+        id: `e-comm-leader-${name}`,
+        source: `committee-${name}`,
+        target: `agent-${leaderId}`,
+        type: 'smoothstep',
+        animated: active,
+        style: { stroke: active ? `${color}55` : '#1a2540' },
+      })
+    })
+
+    // Forward leader → next leader (in plan order)
     committeeNames.forEach((name, i) => {
       if (i < committeeNames.length - 1) {
-        const nextName = committeeNames[i + 1]
-        const color    = committeeColor(nextName, i + 1)
+        const nextName   = committeeNames[i + 1]
+        const leaderId   = leaderIdByCommittee[name]
+        const nextLeaderId = leaderIdByCommittee[nextName]
+        if (!leaderId || !nextLeaderId) return
+        const color = committeeColor(nextName, i + 1)
         const advancing = gateDecisions.some(
           g => g.committee === name && g.decision === 'advance' && (!g.to || g.to === nextName)
         )
         result.push({
           id: `e-fwd-${name}-${nextName}`,
-          source: `committee-${name}`,
-          target: `committee-${nextName}`,
+          source: `agent-${leaderId}`,
+          target: `agent-${nextLeaderId}`,
           type: 'smoothstep',
           animated: advancing,
           style: { stroke: advancing ? `${color}88` : '#1a2540' },
@@ -430,11 +983,14 @@ export function CommitteeGraph({ state, dispatch }) {
     // Back-edges from gate decisions (retry / iterate)
     gateDecisions.forEach((g, idx) => {
       if ((g.decision === 'retry' || g.decision === 'iterate') && g.to) {
+        const sourceId = leaderIdByCommittee[g.committee]
+        const targetId = leaderIdByCommittee[g.to]
+        if (!sourceId || !targetId) return
         const edgeColor = GATE_COLORS[g.decision]
         result.push({
           id: `e-back-${idx}`,
-          source: `committee-${g.committee}`,
-          target: `committee-${g.to}`,
+          source: `agent-${sourceId}`,
+          target: `agent-${targetId}`,
           type: 'smoothstep',
           style: {
             stroke: `${edgeColor}88`,
@@ -448,18 +1004,26 @@ export function CommitteeGraph({ state, dispatch }) {
       }
     })
 
-    // Committee → agent edges
+    // Leader → element nodes
+    const seenElements = new Set()
     Object.values(agents).forEach(agent => {
+      if (agent.role === 'leader') return
+      const eid = agent.element_id || agent.id
+      const nodeId = `element-${agent.committee}-${eid}`
+      if (seenElements.has(nodeId)) return
+      seenElements.add(nodeId)
+      const leaderId = leaderIdByCommittee[agent.committee]
+      if (!leaderId) return  // element floats until leader spawns (transient)
       const committeeIndex = committeeNames.indexOf(agent.committee)
       const color = committeeColor(agent.committee, committeeIndex)
       const active = agent.status === 'active'
       result.push({
-        id: `e-comm-${agent.id}`,
-        source: `committee-${agent.committee}`,
-        target: `agent-${agent.id}`,
+        id: `e-elem-${nodeId}`,
+        source: `agent-${leaderId}`,
+        target: nodeId,
         type: 'smoothstep',
         animated: active,
-        style: { stroke: active ? `${color}55` : `${color}1a` },
+        style: { stroke: active ? `${color}44` : `${color}18` },
       })
     })
 
@@ -502,9 +1066,13 @@ export function CommitteeGraph({ state, dispatch }) {
           }),
         },
       })
+      const sourceAgent = agents[f.agentId]
+      const sourceNodeId = sourceAgent?.role === 'leader'
+        ? `agent-${f.agentId}`
+        : `element-${f.committee}-${sourceAgent?.element_id || f.agentId}`
       edges.push({
         id: `e-disc-${f.nodeId}`,
-        source: `agent-${f.agentId}`,
+        source: sourceNodeId,
         target: f.nodeId,
         type: 'smoothstep',
         animated: f.agentStatus === 'active',
@@ -516,8 +1084,8 @@ export function CommitteeGraph({ state, dispatch }) {
   }, [agents, committeeNames, findingX, dispatch])
 
   const allNodes = useMemo(
-    () => [orchestratorNode, ...committeeNodes, ...agentNodes, ...findingNodes],
-    [orchestratorNode, committeeNodes, agentNodes, findingNodes]
+    () => [orchestratorNode, ...committeeNodes, ...leaderNodes, ...elementAgentNodes, ...findingNodes],
+    [orchestratorNode, committeeNodes, leaderNodes, elementAgentNodes, findingNodes]
   )
 
   const allEdges = useMemo(
@@ -531,6 +1099,40 @@ export function CommitteeGraph({ state, dispatch }) {
 
   return (
     <div style={{ width: '100%', height: '100%' }}>
+      {selectedResult && (
+        <ResultModal
+          elementId={selectedResult.elementId}
+          winnerId={selectedResult.winnerId}
+          winnerTitle={selectedResult.winnerTitle}
+          rationale={selectedResult.rationale}
+          result={selectedResult.result}
+          variants={selectedResult.variants || []}
+          color={selectedResult.color}
+          onClose={() => setSelectedResult(null)}
+        />
+      )}
+      {selectedTool && (
+        <ToolResultModal
+          tool={selectedTool.tool}
+          inputSummary={selectedTool.input_summary}
+          result={selectedTool.result}
+          ts={selectedTool.ts}
+          color={selectedTool.color}
+          onClose={() => setSelectedTool(null)}
+          onDiscuss={() => {
+            setSelectedTool(null)
+            dispatch({
+              type: 'OPEN_CHAT',
+              payload: {
+                agentId: selectedTool.chatAgentId,
+                committeeId: selectedTool.committeeId,
+                agentTitle: selectedTool.chatAgentTitle,
+                findings: selectedTool.chatFindings,
+              },
+            })
+          }}
+        />
+      )}
       <style>{`
         @keyframes node-pulse {
           0%, 100% { opacity: 1; }
@@ -540,6 +1142,7 @@ export function CommitteeGraph({ state, dispatch }) {
           0%   { transform: translateX(-100%); }
           100% { transform: translateX(360%); }
         }
+        .react-flow__node { overflow: visible !important; }
       `}</style>
       <ReactFlow
         nodes={allNodes}

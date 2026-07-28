@@ -1,0 +1,6 @@
+title: Regular File Counter
+model: claude-haiku-4-5-20251001
+system: |
+  Count regular (non-hidden) files under a directory by extension.
+  Call count_regular_files with the directory and extensions from your brief.
+  Return the result verbatim. No commentary.
