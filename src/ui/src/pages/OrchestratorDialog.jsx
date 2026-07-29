@@ -4,40 +4,90 @@ import { sendChat, planReview } from '../api'
 
 marked.setOptions({ breaks: true })
 
-const GATE_BADGE_STYLE = {
-  display: 'inline-block',
-  fontSize: 8,
-  fontWeight: 800,
-  letterSpacing: 1.5,
-  textTransform: 'uppercase',
-  padding: '2px 6px',
-  borderRadius: 3,
-  background: '#1e3050',
-  color: '#3b82f6',
-  marginLeft: 8,
+const ORCH = 'athena.orchestrator'
+
+// Canned revision instructions sent to the orchestrator when a gate switch is flipped.
+// Toggles and free-form chat both reach the plan the same way — via a plan revision — so switch
+// state stays derived from plan.gates (single source of truth). See BRIEFING.md §5.
+// Only "pause" switches (approval gates) are wired here; traversal-gating switches (#5) stay
+// disabled until the manifest's declared transitions are surfaced to the UI (BRIEFING.md §8).
+const SWITCH_MESSAGES = {
+  everyCommittee: {
+    on: 'Require operator approval at every committee transition: add an operator-approval gate after each committee except the final one.',
+    off: 'Remove the operator-approval gates between committees (the ones at committee transitions). Keep any approval gate before the final report.',
+  },
+  beforeFinal: {
+    on: 'Require operator approval before the final report is delivered: add an operator-approval gate after the last committee.',
+    off: 'Remove the operator-approval gate before the final report (the one after the last committee).',
+  },
 }
 
-function PlanPreview({ plan, planReady, proceeding, error, onApprove, onRequestChanges }) {
+// Derive switch state from the plan itself — no local mirror to drift out of sync.
+// The UI treats committees as sequential (insertion order); the last is terminal.
+function deriveSwitches(plan) {
+  const names = Object.keys(plan?.committees || {})
+  const gateAfter = new Set((plan?.gates || []).map(g => g.after))
+  const terminal = names[names.length - 1]
+  const nonTerminal = names.slice(0, -1)
+  return {
+    everyCommittee: nonTerminal.length > 0 && nonTerminal.every(n => gateAfter.has(n)),
+    beforeFinal: !!terminal && gateAfter.has(terminal),
+  }
+}
+
+function BriefSwitchPanel({ plan, disabled, onToggle }) {
+  const d = deriveSwitches(plan)
+  const rows = [
+    { key: 'everyCommittee', label: 'Approve at every committee transition', on: d.everyCommittee, available: true },
+    { key: 'beforeFinal', label: 'Approve before the final report', on: d.beforeFinal, available: true },
+    { key: 'askRetry', label: 'Ask me before any retry or iterate', on: false, available: false, note: 'requires ensemble support' },
+    { key: 'elementGate', label: 'Approve every multi-specialist element', on: false, available: false, note: 'requires harness support' },
+  ]
+  return (
+    <div className="brief-switches">
+      <div className="brief-switches-title">
+        Operator gates
+        {disabled && <span className="brief-switches-spinner">updating…</span>}
+      </div>
+      {rows.map(r => (
+        <div key={r.key} className={`brief-switch${r.available ? '' : ' brief-switch--na'}`}>
+          <span className="brief-switch-label">
+            {r.label}
+            {r.note && <span className="brief-switch-note">{r.note}</span>}
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={r.on}
+            disabled={disabled || !r.available}
+            onClick={() => onToggle(r.key, !r.on)}
+            className={`brief-toggle${r.on ? ' brief-toggle--on' : ''}`}
+          >
+            <span className="brief-toggle-knob" />
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PlanPreview({ plan, planReady }) {
   if (!plan) return null
   const committeeNames = Object.keys(plan.committees || {})
   const gates = plan.gates || []
+  const terminal = committeeNames[committeeNames.length - 1]
 
   return (
-    <div style={{ padding: '24px 20px', overflowY: 'auto', height: '100%' }}>
+    <div className="brief-plan-scroll">
       <div style={{ fontSize: 9, letterSpacing: 2, textTransform: 'uppercase', color: '#3b5270', marginBottom: 4 }}>
         Engagement Plan
       </div>
-      <div style={{ fontSize: 10, color: '#475569', marginBottom: 20, lineHeight: 1.5 }}>
+      <div style={{ fontSize: 10, color: '#475569', marginBottom: 18, lineHeight: 1.5 }}>
         {committeeNames.length} committee{committeeNames.length !== 1 ? 's' : ''} will run in sequence.
-        Review the objectives below, then click Proceed.
       </div>
 
-      {planReady ? (
-        <div style={{ marginBottom: 20, padding: '10px 14px', background: '#071020', border: '1px solid #1e3050', borderRadius: 6, fontSize: 10, color: '#475569' }}>
-          Review the plan above, then approve to start the engagement.
-        </div>
-      ) : committeeNames.length > 0 && (
-        <div style={{ marginBottom: 20, padding: '10px 14px', background: '#071020', border: '1px solid #1e3050', borderRadius: 6, fontSize: 10, color: '#3b5270' }}>
+      {!planReady && committeeNames.length > 0 && (
+        <div style={{ marginBottom: 18, padding: '10px 14px', background: '#071020', border: '1px solid #1e3050', borderRadius: 6, fontSize: 10, color: '#3b5270' }}>
           Orchestrator is revising the plan…
         </div>
       )}
@@ -139,28 +189,17 @@ function PlanPreview({ plan, planReady, proceeding, error, onApprove, onRequestC
           </div>
         )
       })}
-      {planReady && (
-        <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {error && (
-            <div style={{ fontSize: 10, color: '#ef4444', textAlign: 'center' }}>{error}</div>
-          )}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="plan-review-btn plan-review-btn--reject"
-              style={{ flex: 1 }}
-              disabled={proceeding}
-              onClick={onRequestChanges}
-            >
-              No, I want to make changes
-            </button>
-            <button
-              className="plan-review-btn plan-review-btn--approve"
-              style={{ flex: 1 }}
-              disabled={proceeding}
-              onClick={onApprove}
-            >
-              {proceeding ? 'Starting…' : 'Approve →'}
-            </button>
+
+      {/* Terminal gate marker — approval after the last committee, before the report is delivered */}
+      {terminal && gates.some(g => g.after === terminal) && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '6px 0' }}>
+          <div style={{ width: 1, height: 8, background: '#1e3050' }} />
+          <div style={{
+            background: '#0d1a2a', border: '1px solid #1e4080', borderRadius: 4,
+            padding: '4px 10px', fontSize: 8, color: '#3b82f6',
+            letterSpacing: 1.5, textTransform: 'uppercase', fontWeight: 700,
+          }}>
+            ⬡ Approval before final report
           </div>
         </div>
       )}
@@ -174,9 +213,11 @@ export function OrchestratorDialog({ state, dispatch }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [proceeding, setProceeding] = useState(false)
-const [error, setError] = useState(null)
+  const [error, setError] = useState(null)
+  const [panelLocked, setPanelLocked] = useState(false)
   const messagesRef = useRef(null)
   const textareaRef = useRef(null)
+  const lockTimer = useRef(null)
 
   const awaitingReply = dialogMessages.length > 0 && dialogMessages[dialogMessages.length - 1].role === 'orch'
 
@@ -186,6 +227,14 @@ const [error, setError] = useState(null)
     }
   }, [dialogMessages])
 
+  // A fresh plan (identity changes on every PLAN_READY) releases the switch-panel lock.
+  useEffect(() => {
+    setPanelLocked(false)
+    if (lockTimer.current) { clearTimeout(lockTimer.current); lockTimer.current = null }
+  }, [plan])
+
+  useEffect(() => () => { if (lockTimer.current) clearTimeout(lockTimer.current) }, [])
+
   async function sendMessage(e) {
     e.preventDefault()
     const text = input.trim()
@@ -194,12 +243,37 @@ const [error, setError] = useState(null)
     setError(null)
     dispatch({ type: 'DIALOG_OPERATOR_MESSAGE', payload: { text } })
     try {
-      await sendChat(engagement.run_id, 'athena.orchestrator', text)
+      await sendChat(engagement.run_id, ORCH, text)
       setInput('')
     } catch (err) {
       setError(err.message)
     } finally {
       setSending(false)
+    }
+  }
+
+  // Flip a gate switch → send a canned revision to the orchestrator. Lock the whole panel until
+  // the revised plan arrives (unlocks in the [plan] effect) or a 3s fallback fires. This
+  // serializes gate changes so plan-derived switch state can't race. See BRIEFING.md §5.
+  async function handleToggle(key, nextOn) {
+    if (panelLocked) return
+    const group = SWITCH_MESSAGES[key]
+    if (!group) return
+    const msg = group[nextOn ? 'on' : 'off']
+
+    setError(null)
+    setPanelLocked(true)
+    dispatch({ type: 'DIALOG_OPERATOR_MESSAGE', payload: { text: msg } })
+
+    if (lockTimer.current) clearTimeout(lockTimer.current)
+    lockTimer.current = setTimeout(() => setPanelLocked(false), 3000)
+
+    try {
+      await sendChat(engagement.run_id, ORCH, msg)
+    } catch (err) {
+      setError(err.message)
+      setPanelLocked(false)
+      if (lockTimer.current) { clearTimeout(lockTimer.current); lockTimer.current = null }
     }
   }
 
@@ -220,6 +294,8 @@ const [error, setError] = useState(null)
       setProceeding(false)
     }
   }
+
+  const planVisible = planReady || plan
 
   return (
     <div className="dialog-shell">
@@ -282,7 +358,7 @@ const [error, setError] = useState(null)
                 rows={2}
                 value={input}
                 onChange={e => setInput(e.target.value)}
-                placeholder={awaitingReply ? 'Reply to orchestrator…' : 'Waiting for orchestrator…'}
+                placeholder={awaitingReply ? 'Reply to orchestrator…' : 'Message the orchestrator…'}
                 disabled={sending || proceeding}
                 onKeyDown={e => {
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(e) }
@@ -299,22 +375,39 @@ const [error, setError] = useState(null)
           </div>
         </div>
 
-        {/* ── Plan preview pane ── */}
-        <div
-          className="dialog-ext-pane"
-          style={{ display: planReady || plan ? undefined : 'none' }}
-        >
+        {/* ── Plan pane ── */}
+        <div className="dialog-ext-pane" style={{ display: planVisible ? undefined : 'none' }}>
           <div className="dialog-pane-header">
             <span className="dialog-pane-label">Engagement Plan</span>
           </div>
-          <PlanPreview
+
+          <BriefSwitchPanel
             plan={plan}
-            planReady={planReady}
-            proceeding={proceeding}
-            error={error}
-            onApprove={handleProceed}
-            onRequestChanges={handleRequestChanges}
+            disabled={panelLocked || !planReady || proceeding}
+            onToggle={handleToggle}
           />
+
+          <PlanPreview plan={plan} planReady={planReady} />
+
+          <div className="brief-action-bar">
+            {error && <div className="brief-action-error">{error}</div>}
+            <div className="brief-action-buttons">
+              <button
+                className="plan-review-btn plan-review-btn--reject"
+                disabled={proceeding || !planReady}
+                onClick={handleRequestChanges}
+              >
+                Request changes
+              </button>
+              <button
+                className="plan-review-btn plan-review-btn--approve"
+                disabled={proceeding || !planReady}
+                onClick={handleProceed}
+              >
+                {proceeding ? 'Starting…' : 'Approve →'}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
