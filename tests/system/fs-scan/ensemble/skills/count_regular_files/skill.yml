@@ -1,0 +1,18 @@
+name: count_regular_files
+description: >
+  Walk a directory tree read-only and count non-hidden files (names not starting with '.')
+  whose extension is in the provided list. Returns a count per extension plus the total.
+  Does not open file contents.
+parameters:
+  directory:
+    type: string
+    description: Absolute path of the directory to walk. Must resolve inside the allowed roots.
+  extensions:
+    type: array
+    description: Extensions to count, each including the dot (e.g. [".py", ".md"]). Case-insensitive.
+returns: >
+  Object with `directory` (resolved path), `counts` (list of {extension, count}), `total_files`,
+  and `skipped` (paths that could not be read).
+notes: >
+  Read-only. Recurses into subdirectories. Symlinks are not followed. Extension matching is
+  case-insensitive. Files whose extension is not in the list are ignored.

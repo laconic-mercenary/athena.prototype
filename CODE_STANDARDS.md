@@ -40,12 +40,16 @@
     thematic reusable logic) live in dedicated helper modules, not inlined repeatedly.
 11. **Don't reach for a library for a simple problem.** If it's simple, write it yourself.
     When unsure whether something crosses the "simple" threshold, ASK.
-12. **No non-None default parameter values.** Every parameter must be explicitly passed by
-    the caller. The only permitted default is `= None` for genuinely optional parameters
-    (typed as `T | None`). This applies to both `def` function signatures and dataclass
-    field defaults. (Framework exception: library-required defaults such as Pydantic
-    `Field(...)` and PyPubSub `topicObj=pub.AUTO_TOPIC` are permitted; document with a
-    comment.)
+12. **Schema and interface boundaries: all parameters required.** At any interface
+    boundary exposed to an external caller — skill yml schemas, ensemble configs, API
+    schemas — every parameter is required. No optional fields, no defaults. The caller
+    must always supply an explicit value. (The skill loader enforces this: parameters
+    are required unless explicitly marked `required: false`.)
+    In internal Python code, `T | None` with a `None` default is acceptable where the
+    absence of a value is a genuinely meaningful state (e.g. `temperature: float | None`
+    meaning "use provider default") — not as a shortcut to avoid thinking about the value.
+    (Framework exception: library-required defaults such as Pydantic `Field(...)` and
+    PyPubSub `topicObj=pub.AUTO_TOPIC` are permitted; document with a comment.)
 
 ## B. Architecture (language-agnostic)
 

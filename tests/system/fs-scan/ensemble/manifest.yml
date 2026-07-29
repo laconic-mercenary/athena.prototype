@@ -38,10 +38,17 @@ committees:
     max_steps: 3
     # entry committee — consumes nothing upstream
     elements:
-      - id: count_files
+      - id: count_regular_files
+        label: Regular Files
         specialists:
-          - elements/count_files/counter.yml
-        skills: [count_extensions]
+          - elements/count_regular_files/counter.yml
+        skills: [count_regular_files]
+      - id: count_hidden_files
+        label: Hidden Files
+        specialists:
+          - elements/count_hidden_files/counter.yml
+          - elements/count_hidden_files/counter_b.yml
+        skills: [count_hidden_files]
 
   report:
     leader: report/leader.yml
@@ -63,3 +70,9 @@ skills:
   - id: count_extensions
     definition: skills/count_extensions/skill.yml
     impl: skills/count_extensions/impl.py::count_extensions
+  - id: count_regular_files
+    definition: skills/count_regular_files/skill.yml
+    impl: skills/count_regular_files/impl.py::count_regular_files
+  - id: count_hidden_files
+    definition: skills/count_hidden_files/skill.yml
+    impl: skills/count_hidden_files/impl.py::count_hidden_files

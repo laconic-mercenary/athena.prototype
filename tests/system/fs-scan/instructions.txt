@@ -1,1 +1,2 @@
 Scan /data/testfiles for .py .md .sh .sql .json .yml .html .css .js .csv .txt .toml
+Report regular and hidden file counts separately.

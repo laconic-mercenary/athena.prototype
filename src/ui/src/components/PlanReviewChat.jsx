@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { planReview } from '../api'
 
-export function PlanReviewChat({ runId, committee, digest, onApproved, onRejected, onClose }) {
+export function PlanReviewChat({ runId, committee, digest, onApproved, onRejected, onOpenArtifact, onClose }) {
   const [pending, setPending] = useState(false)
   const [error, setError]     = useState(null)
 
@@ -26,13 +26,13 @@ export function PlanReviewChat({ runId, committee, digest, onApproved, onRejecte
         <div className="chat-header">
           <div>
             <div className="chat-title">{committee || 'Gate'} · Review</div>
-            <div className="chat-subtitle">Review the committee output before proceeding</div>
+            <div className="chat-subtitle">Orchestrator has staged this output for your approval</div>
           </div>
           <button className="chat-close" onClick={onClose}>✕</button>
         </div>
 
-        {digest ? (
-          <div className="chat-thread" style={{ flex: 1 }}>
+        <div className="chat-thread" style={{ flex: 1 }}>
+          {digest ? (
             <pre style={{
               margin: 0, padding: '12px 16px',
               fontSize: 10, color: '#64748b',
@@ -42,12 +42,12 @@ export function PlanReviewChat({ runId, committee, digest, onApproved, onRejecte
             }}>
               {digest}
             </pre>
-          </div>
-        ) : (
-          <div className="chat-empty" style={{ flex: 1 }}>
-            No digest available — approve or reject based on the artifact.
-          </div>
-        )}
+          ) : (
+            <div className="chat-empty">
+              No digest available — open the artifact for full context before deciding.
+            </div>
+          )}
+        </div>
 
         <div className="chat-actions plan-review-actions" style={{ padding: '12px 16px', gap: 8 }}>
           {error && <span className="chat-error">{error}</span>}
@@ -59,6 +59,16 @@ export function PlanReviewChat({ runId, committee, digest, onApproved, onRejecte
           >
             Reject ✕
           </button>
+          {onOpenArtifact && committee && (
+            <button
+              type="button"
+              className="plan-review-btn"
+              style={{ border: '1px solid #334155', color: '#94a3b8', background: 'transparent' }}
+              onClick={onOpenArtifact}
+            >
+              Artifact ↗
+            </button>
+          )}
           <button
             type="button"
             className="plan-review-btn plan-review-btn--approve"

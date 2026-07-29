@@ -6,7 +6,15 @@ import { OperatorChat } from '../components/OperatorChat'
 import { PlanReviewChat } from '../components/PlanReviewChat'
 import { ReportChat } from '../components/ReportChat'
 import { ReportModal } from '../components/ReportModal'
+import { CommitteeResultsModal } from '../components/CommitteeResultsModal'
 import { formatToolSummary } from '../App'
+
+const COMMITTEE_PALETTE = ['#f97316', '#22c55e', '#ef4444', '#eab308', '#3b82f6', '#a855f7', '#06b6d4']
+function committeeColor(name, committeeNames) {
+  if (name === 'orchestrator') return '#e2e8f0'
+  const idx = committeeNames.indexOf(name)
+  return COMMITTEE_PALETTE[idx % COMMITTEE_PALETTE.length] || '#94a3b8'
+}
 
 const STATUS_LABEL = {
   idle: 'Idle', running: 'Running', completed: 'Completed', rejected: 'Rejected', failed: 'Failed',
@@ -47,26 +55,34 @@ function SystemLogPanel({ eventLog }) {
 
 const TEXT_PREVIEW_MAX = 400
 
-function AgentLogPanel({ agents }) {
+function AgentLogPanel({ agents, committeeNames }) {
+  // Match the System Log's newest-first ordering: float the most-recently-active
+  // agent to the top, and show each agent's latest message at the top of its block.
   const agentList = Object.values(agents)
+    .map(agent => {
+      const log = agent.messageLog || []
+      return { agent, lastTs: log.length ? log[log.length - 1].ts : 0 }
+    })
+    .sort((a, b) => b.lastTs - a.lastTs)
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '12px 16px' }}>
       {agentList.length === 0 && (
         <div style={{ fontSize: 11, color: '#1e3050' }}>No agents yet</div>
       )}
-      {agentList.map(agent => {
-        const log = agent.messageLog || []
+      {agentList.map(({ agent }) => {
+        const log = [...(agent.messageLog || [])].reverse()
+        const color = committeeColor(agent.committee, committeeNames)
         return (
           <div key={agent.id} style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
               <span style={{
                 fontSize: 8, letterSpacing: 1.5, textTransform: 'uppercase',
-                color: '#2d4060', background: '#0a121e',
-                border: '1px solid #1e3050', borderRadius: 3, padding: '1px 6px',
+                color: `${color}99`, background: `${color}12`,
+                border: `1px solid ${color}33`, borderRadius: 3, padding: '1px 6px',
               }}>
                 {agent.committee}
               </span>
-              <span style={{ fontSize: 11, fontWeight: 600, color: '#64748b' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: `${color}cc` }}>
                 {agent.title || agent.id.split('.').pop()}
               </span>
               <span style={{ fontSize: 9, color: agent.status === 'active' ? '#22c55e' : '#2d4060' }}>
@@ -158,14 +174,9 @@ export function Dashboard({ state, dispatch }) {
   const [graphTab, setGraphTab] = useState('agent')
   const [showArtifacts, setShowArtifacts] = useState(false)
   const [openReport, setOpenReport] = useState(null)
+  const [openResults, setOpenResults] = useState(null) // { name, color }
   const [planReviewOpen, setPlanReviewOpen] = useState(false)
   const [reportChatOpen, setReportChatOpen] = useState(false)
-
-  // Dynamic list of committees with completed artifacts → artifact view buttons
-  const completedCommittees = useMemo(() =>
-    Object.entries(committees).filter(([_, c]) => c.status === 'completed'),
-    [committees]
-  )
 
   // Highest-severity committee needing operator attention
   const attention = useMemo(() => {
@@ -291,15 +302,6 @@ export function Dashboard({ state, dispatch }) {
             </button>
 
             <div className="graph-actions">
-              {completedCommittees.map(([name]) => (
-                <button
-                  key={name}
-                  className="dash-action-btn"
-                  onClick={() => setOpenReport({ name, title: `${name} artifact`, accent: '#94a3b8' })}
-                >
-                  View {name}
-                </button>
-              ))}
               {isCompleted && (
                 <button
                   className="dash-action-btn"
@@ -327,10 +329,20 @@ export function Dashboard({ state, dispatch }) {
           />
 
           <div className="graph-canvas">
-            {graphTab === 'agent' && <CommitteeGraph state={state} dispatch={dispatch} />}
+            {graphTab === 'agent' && (
+              <CommitteeGraph
+                state={state}
+                dispatch={dispatch}
+                onCommitteeResults={name => {
+                  const color = ['#f97316', '#22c55e', '#ef4444', '#eab308', '#3b82f6', '#a855f7', '#06b6d4']
+                  const idx = Object.keys(committees).indexOf(name)
+                  setOpenResults({ name, color: color[idx % color.length] || '#94a3b8' })
+                }}
+              />
+            )}
             {graphTab === 'system' && <SystemView state={state} dispatch={dispatch} />}
             {graphTab === 'syslog' && <SystemLogPanel eventLog={state.eventLog} />}
-            {graphTab === 'agentlog' && <AgentLogPanel agents={agents} />}
+            {graphTab === 'agentlog' && <AgentLogPanel agents={agents} committeeNames={Object.keys(committees)} />}
           </div>
 
           <div className="graph-footer">
@@ -365,6 +377,13 @@ export function Dashboard({ state, dispatch }) {
             setPlanReviewOpen(false)
             dispatch({ type: 'ENGAGEMENT_REJECTED', payload: {} })
           }}
+          onOpenArtifact={engagement.awaitingCommittee ? () => {
+            setOpenReport({
+              name: engagement.awaitingCommittee,
+              title: `${engagement.awaitingCommittee} artifact`,
+              accent: '#94a3b8',
+            })
+          } : undefined}
           onClose={() => setPlanReviewOpen(false)}
         />
       )}
@@ -390,6 +409,29 @@ export function Dashboard({ state, dispatch }) {
           accent={openReport.accent}
           incomplete={committees[openReport.name]?.incomplete}
           onClose={() => setOpenReport(null)}
+        />
+      )}
+
+      {openResults && (
+        <CommitteeResultsModal
+          runId={engagement.run_id}
+          name={openResults.name}
+          color={openResults.color}
+          digest={committees[openResults.name]?.digest}
+          incomplete={committees[openResults.name]?.incomplete}
+          onClose={() => setOpenResults(null)}
+          onDiscuss={isCompleted
+            ? () => setReportChatOpen(true)
+            : () => dispatch({
+                type: 'OPEN_CHAT',
+                payload: {
+                  agentId: 'athena.orchestrator',
+                  committeeId: null,
+                  agentTitle: 'Orchestrator',
+                  findings: [],
+                },
+              })
+          }
         />
       )}
     </div>

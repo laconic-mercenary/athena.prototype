@@ -35,12 +35,16 @@ BackendFactory = Callable[[str, "str | None"], ModelBackend]
 # Specialist agents run tight, bounded loops — they have a single well-scoped task.
 SPECIALIST_MAX_ITERATIONS = 30
 SPECIALIST_MAX_TOKENS = 4_096
+# Hard cap on how many real skill calls a single specialist may make per run.
+# Prevents models from calling the same skill twice to "verify" results.
+SPECIALIST_MAX_TOOL_CALLS = 1
 
 # Leaders plan across many steps and may iterate; they need a higher ceiling.
 LEADER_MAX_ITERATIONS = 500
 
 # SSE payload truncation — keeps the event stream lean without losing actionable info.
 TOOL_INPUT_SUMMARY_MAX_LEN = 500
+TOOL_RESULT_MAX_LEN = 2_000
 TASK_OUTPUT_SUMMARY_MAX_LEN = 300
 AGENT_TEXT_EVENT_MAX_LEN = 2_000
 
@@ -150,6 +154,28 @@ _READ_ARTIFACT_TOOL = ToolDefinition(
     },
 )
 
+_SELECT_RESULT_TOOL = ToolDefinition(
+    name="select_result",
+    description=(
+        "After receiving compare-mode outputs, record which variant you selected and why. "
+        "Call this once per compare element before calling finish()."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "winner_id": {
+                "type": "string",
+                "description": "Exact label of the selected variant as shown in the compare output (e.g. 'Hidden File Counter (t=0.0)').",
+            },
+            "rationale": {
+                "type": "string",
+                "description": "One or two sentences explaining why this variant was chosen over the others.",
+            },
+        },
+        "required": ["winner_id", "rationale"],
+    },
+)
+
 
 # ---------------------------------------------------------------------------
 # Brief builder
@@ -225,16 +251,18 @@ def _build_leader_brief(
 
 def _run_one_specialist(
     specialist: LoadedSpecialist,
-    skill_ids: list[str],
     task_brief: str,
     skills_map: dict[str, LoadedSkill],
     committee_name: str,
     run_id: str,
     make_backend: BackendFactory,
     agent_id: str,
+    element_id: str = "",
+    element_label: str = "",
+    variant_label: str = "",
 ) -> str:
     """Run a single specialist agent and return its text output."""
-    granted_skills = [skills_map[sid] for sid in skill_ids if sid in skills_map]
+    granted_skills = [skills_map[sid] for sid in specialist.skill_ids if sid in skills_map]
     spec_tools = [skill_to_tool_def(s) for s in granted_skills]
     skills_by_name = {s.name: s for s in granted_skills}
 
@@ -243,26 +271,48 @@ def _run_one_specialist(
         run_id=run_id,
         committee=committee_name,
         agent_id=agent_id,
-        title=specialist.id,
+        title=specialist.title,
         role="specialist",
+        element_id=element_id,
+        element_label=element_label or element_id,
+        variant_label=variant_label,
     )
+
+    _tool_calls_made = [0]
 
     def spec_dispatch(name: str, params: dict) -> str:
         skill = skills_by_name.get(name)
         if skill is None:
             return json.dumps({"error": f"Unknown skill: {name}"})
+        if _tool_calls_made[0] >= SPECIALIST_MAX_TOOL_CALLS:
+            return json.dumps({
+                "error": "Tool call limit reached. Use the result you already received and output your final answer now."
+            })
+        _tool_calls_made[0] += 1
+        call_id = new_id()
         pub.sendMessage(
             "agent.tool_called",
             run_id=run_id,
             committee=committee_name,
             agent_id=agent_id,
             tool=name,
+            call_id=call_id,
             input_summary=json.dumps(params, default=str)[:TOOL_INPUT_SUMMARY_MAX_LEN],
         )
         try:
-            return execute_skill(skill, params)
+            result = execute_skill(skill, params)
         except Exception as exc:
-            return json.dumps({"error": str(exc)})
+            result = json.dumps({"error": str(exc)})
+        pub.sendMessage(
+            "agent.tool_result",
+            run_id=run_id,
+            committee=committee_name,
+            agent_id=agent_id,
+            tool=name,
+            call_id=call_id,
+            result=result[:TOOL_RESULT_MAX_LEN],
+        )
+        return result
 
     def _on_model_response(text: str, stop_reason: str) -> None:
         pub.sendMessage(
@@ -307,7 +357,7 @@ def _variant_label(specialist: LoadedSpecialist, idx: int, all_models: list[str]
     if len(set(all_models)) > 1:
         meta.append(f"model={specialist.model}")
     suffix = f" ({', '.join(meta)})" if meta else ""
-    return f"Variant {idx + 1} — {specialist.id}{suffix}"
+    return f"{specialist.title}{suffix}"
 
 
 def _run_compare(
@@ -317,31 +367,39 @@ def _run_compare(
     committee_name: str,
     run_id: str,
     make_backend: BackendFactory,
+    compare_sink: dict[str, dict] | None = None,
 ) -> str:
     """Run all specialists in parallel and return labeled variant output for leader judgement."""
     all_models = [s.model for s in element.specialists]
+    # Precompute labels so the same string is used for display, sink keys, and agent.spawned.
+    variant_labels = [_variant_label(s, i, all_models) for i, s in enumerate(element.specialists)]
 
     def run_variant(args: tuple[int, LoadedSpecialist]) -> str:
         idx, specialist = args
         agent_id = f"{run_id}.{committee_name}.{element.id}.v{idx + 1}"
         return _run_one_specialist(
-            specialist, element.skill_ids, task_brief, skills_map,
+            specialist, task_brief, skills_map,
             committee_name, run_id, make_backend, agent_id,
+            element_id=element.id,
+            element_label=element.label,
+            variant_label=variant_labels[idx],
         )
 
     with ThreadPoolExecutor(max_workers=len(element.specialists)) as pool:
         # pool.map preserves input order in its results.
         outputs = list(pool.map(run_variant, enumerate(element.specialists)))
 
-    parts = [
-        f"[{_variant_label(s, i, all_models)}]\n{output}"
-        for i, (s, output) in enumerate(zip(element.specialists, outputs))
-    ]
+    if compare_sink is not None:
+        for label, specialist, output in zip(variant_labels, element.specialists, outputs):
+            compare_sink[label] = {"output": output, "title": specialist.title}
+
+    parts = [f"[{label}]\n{output}" for label, output in zip(variant_labels, outputs)]
     return (
         "\n\n---\n\n".join(parts)
-        + "\n\n[Select the variant that best meets the task objective, "
-        "or synthesise across variants if complementary.]"
+        + "\n\n[Select the variant that best meets the task objective. "
+        "Call select_result(winner_id, rationale) with the chosen variant's exact label.]"
     )
+
 
 
 def _run_element(
@@ -352,22 +410,19 @@ def _run_element(
     run_id: str,
     task_id: str,
     make_backend: BackendFactory,
+    compare_sink: dict[str, dict] | None = None,
 ) -> str:
     if len(element.specialists) == 1:
-        # Single-specialist path: works for both combine and compare mode.
         (specialist,) = element.specialists
         agent_id = f"{run_id}.{committee_name}.{element.id}"
         return _run_one_specialist(
-            specialist, element.skill_ids, task_brief, skills_map,
+            specialist, task_brief, skills_map,
             committee_name, run_id, make_backend, agent_id,
+            element_id=element.id,
+            element_label=element.label,
         )
 
-    if element.mode != "compare":
-        raise NotImplementedError(
-            f"Element {element.id!r}: mode='combine' with multiple specialists is not yet implemented"
-        )
-
-    return _run_compare(element, task_brief, skills_map, committee_name, run_id, make_backend)
+    return _run_compare(element, task_brief, skills_map, committee_name, run_id, make_backend, compare_sink=compare_sink)
 
 
 # ---------------------------------------------------------------------------
@@ -409,8 +464,9 @@ def run_committee_with_ensemble(
     _finished = [False]
     _incomplete = [False]
     _refuse_reason: list[str | None] = [None]
+    _element_compare_outputs: dict[str, dict[str, dict]] = {}  # element_id → {variant_label → {output, title}}
 
-    def tool_dispatch(name: str, params: dict) -> str:
+    def _dispatch(name: str, params: dict) -> str:
         if name == "submit_step":
             if step_count[0] >= committee.max_steps:
                 _incomplete[0] = True
@@ -472,6 +528,7 @@ def run_committee_with_ensemble(
                 )
 
                 element = next(e for e in committee.elements if e.id == task.element)
+                compare_sink: dict[str, dict] | None = {} if len(element.specialists) > 1 else None
                 output = _run_element(
                     element=element,
                     task_brief=task.brief,
@@ -480,7 +537,10 @@ def run_committee_with_ensemble(
                     run_id=run_id,
                     task_id=task_id,
                     make_backend=make_backend,
+                    compare_sink=compare_sink,
                 )
+                if compare_sink is not None:
+                    _element_compare_outputs[task.element] = compare_sink
 
                 pub.sendMessage(
                     "task.completed",
@@ -501,12 +561,50 @@ def run_committee_with_ensemble(
             )
             return f"Step {step_id} completed.\n\n{combined}"
 
+        if name == "select_result":
+            winner_id = params.get("winner_id", "")
+            rationale = params.get("rationale", "")
+            winner_output = ""
+            winner_title = ""
+            matched_element = ""
+            variants: list[dict] = []
+            for eid, sink in _element_compare_outputs.items():
+                if winner_id in sink:
+                    winner_output = sink[winner_id]["output"]
+                    winner_title = sink[winner_id]["title"]
+                    matched_element = eid
+                    variants = [
+                        {"label": lbl, "title": info["title"], "output": info["output"][:TOOL_RESULT_MAX_LEN]}
+                        for lbl, info in sink.items()
+                    ]
+                    break
+            pub.sendMessage(
+                "committee.result_selected",
+                run_id=run_id,
+                committee=committee.name,
+                element_id=matched_element,
+                winner_id=winner_id,
+                winner_title=winner_title,
+                rationale=rationale,
+                result=winner_output[:TOOL_RESULT_MAX_LEN],
+                variants=variants,
+            )
+            return "Selection recorded."
+
         if name == "finish":
             _finished[0] = True
+            fields = []
+            for k, field in committee.output_schema.model_fields.items():
+                ann = field.annotation
+                type_name = getattr(ann, "__name__", str(ann))
+                fields.append(f'"{k}" ({type_name})')
+            field_list = ", ".join(fields)
             return (
                 f"Objective met. Synthesise your final committee artifact now.\n\n"
-                f"Output only a valid JSON object matching the {schema_name} schema. "
-                "No prose, no markdown fences, no extra keys."
+                f"Your ENTIRE response must be a single raw JSON object — "
+                f"no prose, no markdown fences, no surrounding text of any kind.\n"
+                f"Required fields: {field_list}.\n"
+                f"String values that contain newlines must be JSON-escaped (\\n)."
             )
 
         if name == "refuse_start":
@@ -522,6 +620,17 @@ def run_committee_with_ensemble(
                 committee=committee.name,
                 question=question,
             )
+            if operator_queue is not None:
+                try:
+                    answer = operator_queue.get(timeout=300)
+                except queue.Empty:
+                    answer = "No operator response within timeout; proceed with best judgement."
+                pub.sendMessage(
+                    "committee.operator_replied",
+                    run_id=run_id,
+                    committee=committee.name,
+                )
+                return answer
             return ask_operator_handler(question)
 
         if name == "reply_operator":
@@ -550,12 +659,31 @@ def run_committee_with_ensemble(
 
         return f"Error: unknown tool '{name}'"
 
+    def tool_dispatch(name: str, params: dict) -> str:
+        call_id = new_id()
+        pub.sendMessage(
+            "agent.tool_called",
+            run_id=run_id, committee=committee.name,
+            agent_id=leader_id, tool=name, call_id=call_id,
+            input_summary=json.dumps(params, default=str)[:TOOL_INPUT_SUMMARY_MAX_LEN],
+        )
+        result = _dispatch(name, params)
+        pub.sendMessage(
+            "agent.tool_result",
+            run_id=run_id, committee=committee.name,
+            agent_id=leader_id, tool=name, call_id=call_id,
+            result=result[:TOOL_RESULT_MAX_LEN],
+        )
+        return result
+
     leader_tools = [
         _SUBMIT_STEP_TOOL, _FINISH_TOOL, _REFUSE_START_TOOL,
         _ASK_OPERATOR_TOOL, _REPLY_OPERATOR_TOOL,
     ]
     if committee.consumes_optional:
         leader_tools.append(_READ_ARTIFACT_TOOL)
+    if any(len(e.specialists) > 1 for e in committee.elements):
+        leader_tools.append(_SELECT_RESULT_TOOL)
 
     leader_id = f"{run_id}.{committee.name}.leader"
     pub.sendMessage(
@@ -563,7 +691,7 @@ def run_committee_with_ensemble(
         run_id=run_id,
         committee=committee.name,
         agent_id=leader_id,
-        title="Committee Leader",
+        title=f"{committee.name.replace('-', ' ').replace('_', ' ').title()} Leader",
         role="leader",
     )
 

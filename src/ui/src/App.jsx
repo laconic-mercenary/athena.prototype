@@ -22,6 +22,8 @@ function dominantClassification(findings) {
   return null
 }
 
+const ORCHESTRATOR_AGENT_ID = 'athena.orchestrator'
+
 const initialState = {
   page: 'request',
   engagement: {
@@ -37,6 +39,7 @@ const initialState = {
   gateDecisions: [],
   latestGateDecision: null,
   pendingLeaderQuestions: {},
+  pendingOrchestratorQuestion: null,
   agents: {},
   agentReplies: {},
   dialogMessages: [],
@@ -178,6 +181,24 @@ function reducer(state, action) {
     }
   }
 
+  if (type === 'COMMITTEE_RESULT_SELECTED') {
+    const { committee, element_id, winner_id, winner_title, rationale, result, variants } = payload
+    const prev = state.committees[committee] || INITIAL_COMMITTEE
+    return {
+      ...state,
+      committees: {
+        ...state.committees,
+        [committee]: {
+          ...prev,
+          elementResults: {
+            ...(prev.elementResults || {}),
+            [element_id]: { winnerId: winner_id, winnerTitle: winner_title, rationale, result, variants: variants || [] },
+          },
+        },
+      },
+    }
+  }
+
   if (type === 'STEP_STARTED') {
     const { committee, step_id, description } = payload
     const prev = state.steps[committee] || []
@@ -226,12 +247,22 @@ function reducer(state, action) {
   if (type === 'LEADER_QUESTION') {
     const { committee, question } = payload
     const ev = { kind: 'committee', text: `${committee} asks: ${question.slice(0, 60)}`, color: '#94a3b8', ts: Date.now() }
+    const leaderId = Object.keys(state.agents).find(
+      id => state.agents[id].committee === committee && state.agents[id].role === 'leader'
+    )
+    const agentReplies = leaderId
+      ? {
+          ...state.agentReplies,
+          [leaderId]: [...(state.agentReplies[leaderId] || []), { text: question, ts: Date.now(), role: 'agent' }],
+        }
+      : state.agentReplies
     return {
       ...state,
       pendingLeaderQuestions: {
         ...state.pendingLeaderQuestions,
         [committee]: { question, ts: Date.now() },
       },
+      agentReplies,
       latestEvent: ev,
       eventLog: appendLog(state, ev),
     }
@@ -245,13 +276,13 @@ function reducer(state, action) {
   }
 
   if (type === 'AGENT_SPAWNED') {
-    const { agent_id, committee, title, role } = payload
+    const { agent_id, committee, title, role, element_id, element_label, variant_label } = payload
     const ev = { kind: 'spawned', text: `${title} online`, color: '#22c55e', committee, ts: Date.now() }
     return {
       ...state,
       agents: {
         ...state.agents,
-        [agent_id]: { id: agent_id, committee, title, role: role || 'specialist', status: 'active', findings: [], classification: null, lastTool: null, toolHistory: [], messageLog: [] },
+        [agent_id]: { id: agent_id, committee, title, role: role || 'specialist', element_id: element_id || null, element_label: element_label || element_id || null, variant_label: variant_label || null, status: 'active', findings: [], classification: null, lastTool: null, toolHistory: [], messageLog: [] },
       },
       latestEvent: ev,
       eventLog: appendLog(state, ev),
@@ -268,9 +299,9 @@ function reducer(state, action) {
   }
 
   if (type === 'AGENT_TOOL_CALLED') {
-    const { agent_id, tool, input_summary } = payload
+    const { agent_id, tool, input_summary, call_id } = payload
     if (!state.agents[agent_id]) return state
-    const entry = { kind: 'tool', tool, input_summary, ts: Date.now() }
+    const entry = { kind: 'tool', tool, input_summary, call_id, ts: Date.now() }
     const prev = state.agents[agent_id]
     const agentTitle = prev.title || agent_id.split('.').pop()
     const callStr = formatToolSummary(tool, input_summary)
@@ -343,6 +374,22 @@ function reducer(state, action) {
     }
   }
 
+  if (type === 'AGENT_TOOL_RESULT') {
+    const { agent_id, call_id, result } = payload
+    if (!state.agents[agent_id]) return state
+    const prev = state.agents[agent_id]
+    const updatedToolHistory = (prev.toolHistory || []).map(entry =>
+      entry.call_id === call_id ? { ...entry, result } : entry
+    )
+    return {
+      ...state,
+      agents: {
+        ...state.agents,
+        [agent_id]: { ...prev, toolHistory: updatedToolHistory },
+      },
+    }
+  }
+
   if (type === 'AGENT_OPERATOR_REPLY') {
     const { agent_id, text } = payload
     const prev = state.agentReplies[agent_id] || []
@@ -356,16 +403,31 @@ function reducer(state, action) {
   }
 
   if (type === 'ORCHESTRATOR_QUESTION') {
+    const prev = state.agentReplies[ORCHESTRATOR_AGENT_ID] || []
     return {
       ...state,
+      pendingOrchestratorQuestion: payload.question,
       dialogMessages: [...state.dialogMessages, { role: 'orch', text: payload.question, ts: Date.now() }],
+      agentReplies: {
+        ...state.agentReplies,
+        [ORCHESTRATOR_AGENT_ID]: [...prev, { text: payload.question, ts: Date.now(), role: 'agent' }],
+      },
     }
   }
 
+  if (type === 'ORCHESTRATOR_ANSWERED') {
+    return { ...state, pendingOrchestratorQuestion: null }
+  }
+
   if (type === 'ORCHESTRATOR_MESSAGE') {
+    const prev = state.agentReplies[ORCHESTRATOR_AGENT_ID] || []
     return {
       ...state,
       dialogMessages: [...state.dialogMessages, { role: 'orch-msg', text: payload.text, ts: Date.now() }],
+      agentReplies: {
+        ...state.agentReplies,
+        [ORCHESTRATOR_AGENT_ID]: [...prev, { text: payload.text, ts: Date.now(), role: 'agent' }],
+      },
     }
   }
 
@@ -433,13 +495,17 @@ export default function App() {
     if (topic === 'step.completed')          dispatch({ type: 'STEP_COMPLETED', payload })
     if (topic === 'gate.decision')           dispatch({ type: 'GATE_DECISION', payload })
     if (topic === 'committee.ask_operator')  dispatch({ type: 'LEADER_QUESTION', payload })
+    if (topic === 'committee.operator_replied') dispatch({ type: 'LEADER_QUESTION_ANSWERED', payload })
     if (topic === 'agent.spawned')           dispatch({ type: 'AGENT_SPAWNED', payload })
     if (topic === 'agent.spun_down')         dispatch({ type: 'AGENT_SPUN_DOWN', payload })
     if (topic === 'agent.tool_called')       dispatch({ type: 'AGENT_TOOL_CALLED', payload })
+    if (topic === 'agent.tool_result')       dispatch({ type: 'AGENT_TOOL_RESULT', payload })
     if (topic === 'agent.model_text')        dispatch({ type: 'AGENT_MODEL_TEXT', payload })
     if (topic === 'agent.finding')           dispatch({ type: 'AGENT_FINDING', payload })
     if (topic === 'agent.operator_reply')    dispatch({ type: 'AGENT_OPERATOR_REPLY', payload })
+    if (topic === 'committee.result_selected') dispatch({ type: 'COMMITTEE_RESULT_SELECTED', payload })
     if (topic === 'orchestrator.question')    dispatch({ type: 'ORCHESTRATOR_QUESTION', payload })
+    if (topic === 'orchestrator.answer')      dispatch({ type: 'ORCHESTRATOR_ANSWERED', payload })
     if (topic === 'orchestrator.message')     dispatch({ type: 'ORCHESTRATOR_MESSAGE', payload })
     if (topic === 'engagement.plan_revision') dispatch({ type: 'PLAN_REVISION', payload })
   }, [])

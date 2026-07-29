@@ -146,6 +146,19 @@ def run_workflow(
         # Check for operator_approval gate after this committee
         gate = next((g for g in plan.gates if g.after == current), None)
         if gate is not None:
+            # Tell the orchestrator where we are before it can receive operator
+            # messages — otherwise it only has briefing context and will give
+            # wrong answers about what has run.
+            orchestrator.inject_harness_update(
+                f"== Operator-approval gate: {current!r} complete ==\n"
+                f"The {current!r} committee has just finished. The engagement is now "
+                f"paused at an operator-approval gate. The operator is reviewing the "
+                f"output in the UI and will approve (continue to the next committee) "
+                f"or reject (end the engagement). No other committees are running.\n"
+                f"If the operator messages you, answer accurately based on what has "
+                f"been completed so far. Do not say the pipeline is starting or that "
+                f"committees are running — everything is paused until they approve."
+            )
             pub.sendMessage("gate.awaiting_approval", run_id=run_id, committee=current)
             approved = approval_handler()
             if not approved:

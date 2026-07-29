@@ -31,18 +31,33 @@ async def send_message(run_id: str, target: str, body: ChatRequest) -> None:
 
     if target == ORCHESTRATOR_AGENT_ID:
         if ctx.awaiting_approval:
-            # Plan is submitted and awaiting approval — treat as revision request.
+            if ctx.orchestrator is None:
+                # Briefing phase (orchestrator loop not yet started) — treat as
+                # plan revision so the operator can refine before approving.
+                try:
+                    runner.request_revision(run_id, body.message)
+                except KeyError as exc:
+                    raise HTTPException(status_code=404, detail=str(exc))
+            else:
+                # Mid-engagement operator-approval gate — the orchestrator loop is
+                # running and can respond; route as a freeform message, not a revision.
+                try:
+                    runner.send_to_orchestrator(run_id, body.message)
+                except (KeyError, ValueError) as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+            return
+        if ctx.pending_question is not None:
+            # Orchestrator asked a direct question — this is the answer.
             try:
-                runner.request_revision(run_id, body.message)
+                runner.reply_to_orchestrator(run_id, body.message)
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail=str(exc))
             return
-        if ctx.pending_question is None:
-            raise HTTPException(status_code=400, detail="Orchestrator has no pending question")
+        # Freeform operator message — route to the near-real-time inbox.
         try:
-            runner.reply_to_orchestrator(run_id, body.message)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            runner.send_to_orchestrator(run_id, body.message)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return
 
     # Otherwise treat target as a committee name

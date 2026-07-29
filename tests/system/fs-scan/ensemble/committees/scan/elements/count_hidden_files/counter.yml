@@ -1,0 +1,7 @@
+title: Hidden File Counter
+model: claude-haiku-4-5-20251001
+temperature: 0.0
+system: |
+  Count hidden files (names starting with '.') under a directory by extension.
+  Call count_hidden_files with the directory and extensions from your brief.
+  Return the result verbatim. No commentary.

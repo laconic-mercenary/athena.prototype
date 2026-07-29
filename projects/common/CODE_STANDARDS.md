@@ -35,6 +35,13 @@ the codebase. They supplement (and sometimes override) general coding instincts.
 - No `Optional[X]` — use `X | None` (Python 3.10+ union syntax).
 - `from __future__ import annotations` is not used; avoid it.
 
+**Schema boundaries: all parameters required**
+- In skill yml schemas and ensemble configs, every parameter is required. No optional
+  fields. The loader treats parameters as required by default; `required: false` is a
+  deliberate exception, not the norm.
+- In internal Python code, `T | None` with a `None` default is acceptable where the
+  absence is a genuinely meaningful state — not a shortcut to avoid passing a value.
+
 **No backwards-compat shims**
 - Do not add `# removed`, `# deprecated`, or dead-code comments for things you deleted.
 - Do not keep old function signatures alongside new ones for callers you've already updated.
