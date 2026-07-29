@@ -56,14 +56,21 @@ function SystemLogPanel({ eventLog }) {
 const TEXT_PREVIEW_MAX = 400
 
 function AgentLogPanel({ agents, committeeNames }) {
+  // Match the System Log's newest-first ordering: float the most-recently-active
+  // agent to the top, and show each agent's latest message at the top of its block.
   const agentList = Object.values(agents)
+    .map(agent => {
+      const log = agent.messageLog || []
+      return { agent, lastTs: log.length ? log[log.length - 1].ts : 0 }
+    })
+    .sort((a, b) => b.lastTs - a.lastTs)
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '12px 16px' }}>
       {agentList.length === 0 && (
         <div style={{ fontSize: 11, color: '#1e3050' }}>No agents yet</div>
       )}
-      {agentList.map(agent => {
-        const log = agent.messageLog || []
+      {agentList.map(({ agent }) => {
+        const log = [...(agent.messageLog || [])].reverse()
         const color = committeeColor(agent.committee, committeeNames)
         return (
           <div key={agent.id} style={{ marginBottom: 20 }}>

@@ -755,13 +755,35 @@ function AgentNode({ data }) {
 const nodeTypes = { committee: CommitteeNode, committeeLabel: CommitteeLabelNode, agent: AgentNode, element: ElementNode, finding: FindingNode }
 
 const ORCH_POS  = { x: 0, y: 0 }
-const COMM_Y    = 110
-const COMM_GAP  = 230
-const COMM_LABEL_HEIGHT = 45
-const AGENT_OFFSET_Y = 130
-const AGENT_ROW_GAP  = 85
+const COMM_Y    = 115            // committee-label row (below orchestrator)
+const COMM_GAP  = 280            // horizontal gap between committee columns
+const COMM_LABEL_HEIGHT = 62     // committee label → first leader
+const NODE_V_GAP = 36            // vertical gap between stacked leader/element nodes
 const FINDING_GAP    = 88
 const FINDING_INIT_Y = 0
+
+// Node heights are content-driven, so we stack each column with a running cursor
+// rather than fixed offsets. These estimators approximate the rendered card height
+// (padding + rows + buttons); NODE_V_GAP absorbs the small error so nothing collides.
+function estimateLeaderHeight(agent, hasResults) {
+  const nTools = Math.min(3, (agent.toolHistory || []).length)
+  return 30 + nTools * 14 + (hasResults ? 30 : 0)
+}
+function estimateElementHeight(specialistCount, hasResult) {
+  return 42 + specialistCount * 46 + (hasResult ? 22 : 0)
+}
+
+// Horizontal alignment of a column's (wide) leader/element cards relative to its
+// (narrow) committee-label node. Cards fan outward from the centre: the leftmost
+// column right-aligns to its label, the rightmost left-aligns, middles centre.
+const LABEL_W = 92    // approx committee-label node width
+const CARD_W  = 214   // approx leader/element card width
+function columnXOffset(index, count) {
+  if (count === 1)         return (LABEL_W - CARD_W) / 2   // sole column: centred
+  if (index === 0)         return LABEL_W - CARD_W          // leftmost: right edges align
+  if (index === count - 1) return 0                         // rightmost: left edges align
+  return (LABEL_W - CARD_W) / 2                             // middle: centred
+}
 
 function computeCommitteePositions(committeeNames) {
   const n = committeeNames.length
@@ -849,6 +871,7 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
     Object.entries(byCommittee).forEach(([committee, list]) => {
       const committeeIndex = committeeNames.indexOf(committee)
       const parentPos = positions[committee] || { x: committeeIndex * COMM_GAP, y: COMM_Y }
+      const colX = parentPos.x + columnXOffset(committeeIndex, committeeNames.length)
       const color = committeeColor(committee, committeeIndex)
       const leaderId = Object.keys(agents).find(
         id => agents[id].committee === committee && agents[id].role === 'leader'
@@ -860,13 +883,20 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
       const leaderList   = list.filter(a => a.role === 'leader')
       const specialistList = list.filter(a => a.role !== 'leader')
 
+      // Running vertical cursor for this column — each node advances it by its own
+      // estimated height so leaders and elements never overlap regardless of content.
+      let cursorY = parentPos.y + COMM_LABEL_HEIGHT
+
       // Leader nodes — positioned where CommitteeNode was; carry RESULTS capability
       const isCompleted = (committees[committee] || {}).status === 'completed'
-      leaderList.forEach((agent, i) => {
+      leaderList.forEach((agent) => {
+        const leaderY = cursorY
+        const hasResults = isCompleted && !!onCommitteeResults
+        cursorY += estimateLeaderHeight(agent, hasResults) + NODE_V_GAP
         leaders.push({
           id: `agent-${agent.id}`,
           type: 'agent',
-          position: { x: parentPos.x + 8, y: parentPos.y + COMM_LABEL_HEIGHT + i * AGENT_ROW_GAP },
+          position: { x: colX, y: leaderY },
           data: {
             title: agent.title || agent.id.split('.').pop(),
             color,
@@ -891,16 +921,18 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
       })
 
       const elementEntries = Object.entries(byElement)
-      elementEntries.forEach(([eid, elementAgents], ei) => {
+      elementEntries.forEach(([eid, elementAgents]) => {
         const elementResult = committees[committee]?.elementResults?.[eid] || null
         const nodeId = `element-${committee}-${eid}`
         const elementLabel = elementAgents[0]?.element_label || eid
+        const elementY = cursorY
+        cursorY += estimateElementHeight(elementAgents.length, !!elementResult) + NODE_V_GAP
         elements.push({
           id: nodeId,
           type: 'element',
           position: {
-            x: parentPos.x + 8,
-            y: parentPos.y + COMM_LABEL_HEIGHT + AGENT_OFFSET_Y + ei * AGENT_ROW_GAP,
+            x: colX,
+            y: elementY,
           },
           data: {
             elementId: eid,
