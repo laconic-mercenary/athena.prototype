@@ -2,7 +2,7 @@
 
 import pytest
 
-from athena.agent_loop import MaxIterationsExceeded, run_agent
+from athena.agent_loop import MAX_END_TURN_CORRECTIONS, MaxIterationsExceeded, run_agent
 from athena.model_backend import FakeBackend, ModelResponse, ToolCall, ToolDefinition
 
 _TEST_MAX_TOKENS = 4_096
@@ -145,6 +145,73 @@ def test_temperature_defaults_to_none() -> None:
     backend = FakeBackend([_end("done")])
     _run(backend)
     assert backend.calls[0]["temperature"] is None
+
+
+def test_on_end_turn_accept_returns_immediately() -> None:
+    backend = FakeBackend([_end('{"ok": true}')])
+    result = run_agent(
+        agent_id="t", system="s", initial_message="go", tools=[],
+        tool_dispatch=lambda n, i: "ok", backend=backend, model="m",
+        max_iterations=5, max_tokens=_TEST_MAX_TOKENS,
+        on_end_turn=lambda text: None,  # accept
+    )
+    assert result == '{"ok": true}'
+    assert len(backend.calls) == 1
+
+
+def test_on_end_turn_reprompts_then_accepts() -> None:
+    # First end_turn is conversational (rejected); second is the real artifact.
+    backend = FakeBackend([_end("waiting for approval"), _end('{"ok": true}')])
+    seen: list[str] = []
+
+    def validate(text: str) -> str | None:
+        seen.append(text)
+        return "use a tool" if text == "waiting for approval" else None
+
+    result = run_agent(
+        agent_id="t", system="s", initial_message="go", tools=[],
+        tool_dispatch=lambda n, i: "ok", backend=backend, model="m",
+        max_iterations=5, max_tokens=_TEST_MAX_TOKENS, on_end_turn=validate,
+    )
+    assert result == '{"ok": true}'
+    assert seen == ["waiting for approval", '{"ok": true}']
+    assert len(backend.calls) == 2
+    # The rejected assistant turn was recorded, and the correction appended (as harness).
+    assert ("assistant_text", "waiting for approval") in backend.recorded
+    assert "use a tool" in backend.injected
+
+
+def test_on_end_turn_correction_budget_is_bounded() -> None:
+    # A model that never complies: after MAX corrections the text is returned as-is
+    # (the caller then surfaces a clear error) rather than looping forever.
+    n = MAX_END_TURN_CORRECTIONS + 1
+    backend = FakeBackend([_end("nope") for _ in range(n)])
+    result = run_agent(
+        agent_id="t", system="s", initial_message="go", tools=[],
+        tool_dispatch=lambda n, i: "ok", backend=backend, model="m",
+        max_iterations=n + 2, max_tokens=_TEST_MAX_TOKENS,
+        on_end_turn=lambda text: "still wrong",
+    )
+    assert result == "nope"
+    assert len(backend.calls) == n  # MAX corrections, then accepted on the next
+
+
+def test_on_end_turn_budget_resets_after_tool_use() -> None:
+    # A tool call between rejections resets the consecutive-correction budget.
+    backend = FakeBackend([
+        _end("chat"),                    # rejected (correction 1)
+        _tool("ask_operator", {}),       # progress → resets budget
+        _end("chat"),                    # rejected again (correction 1, not 2)
+        _end('{"ok": true}'),            # accepted
+    ])
+    result = run_agent(
+        agent_id="t", system="s", initial_message="go", tools=[],
+        tool_dispatch=lambda n, i: "ok", backend=backend, model="m",
+        max_iterations=8, max_tokens=_TEST_MAX_TOKENS,
+        on_end_turn=lambda text: "use a tool" if text == "chat" else None,
+    )
+    assert result == '{"ok": true}'
+    assert len(backend.calls) == 4
 
 
 def test_tools_passed_through_to_backend() -> None:

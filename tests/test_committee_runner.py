@@ -15,13 +15,15 @@ def _end(text: str) -> ModelResponse:
 
 def _specialist(id_: str, model: str = "test-model", temperature: float | None = None) -> LoadedSpecialist:
     return LoadedSpecialist(
-        id=id_, system="you are a test specialist",
-        model=model, provider="fake", temperature=temperature,
+        id=id_, title=id_, system="you are a test specialist",
+        model=model, provider="fake", temperature=temperature, skill_ids=[],
     )
 
 
 def _element(specialists: list[LoadedSpecialist], mode: str = "combine") -> LoadedElement:
-    return LoadedElement(id="test_elem", instances=1, specialists=specialists, skill_ids=[], mode=mode)
+    # `mode` is accepted for call-compatibility but no longer a field — compare vs
+    # single is now decided by specialist count.
+    return LoadedElement(id="test_elem", label="Test Element", instances=1, specialists=specialists, skill_ids=[])
 
 
 def _thread_safe_factory(backends: list[FakeBackend]):
@@ -78,11 +80,10 @@ def test_compare_mode_runs_all_specialists() -> None:
 
 
 def test_compare_mode_output_contains_variant_labels() -> None:
+    # Variant labels are title-based (e.g. "conservative (t=0.2)"), per fs-scan leader.yml.
     factory = _thread_safe_factory([FakeBackend([_end("A")]), FakeBackend([_end("B")])])
     element = _element([_specialist("conservative", temperature=0.2), _specialist("lateral", temperature=0.9)], mode="compare")
     result = _run_element(element, "task", {}, "comm", "run1", "t1", factory)
-    assert "Variant 1" in result
-    assert "Variant 2" in result
     assert "conservative" in result
     assert "lateral" in result
 
@@ -112,16 +113,6 @@ def test_compare_mode_single_specialist_returns_plain_output() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Combine + multiple specialists: not yet implemented
-# ---------------------------------------------------------------------------
-
-def test_combine_mode_multiple_specialists_raises() -> None:
-    element = _element([_specialist("s1"), _specialist("s2")], mode="combine")
-    with pytest.raises(NotImplementedError, match="not yet implemented"):
-        _run_element(element, "task", {}, "comm", "run1", "t1", lambda p, u=None: FakeBackend([]))
-
-
-# ---------------------------------------------------------------------------
 # _variant_label
 # ---------------------------------------------------------------------------
 
@@ -129,8 +120,7 @@ def test_variant_label_shows_temperature() -> None:
     s = _specialist("conservative", temperature=0.2)
     label = _variant_label(s, 0, ["test-model"])
     assert "t=0.2" in label
-    assert "Variant 1" in label
-    assert "conservative" in label
+    assert "conservative" in label  # title-based label
 
 
 def test_variant_label_omits_temperature_when_none() -> None:
@@ -151,7 +141,6 @@ def test_variant_label_omits_model_when_uniform() -> None:
     assert "model=" not in label
 
 
-def test_variant_label_index_is_one_based() -> None:
-    s = _specialist("s1")
-    assert _variant_label(s, 0, ["m"]).startswith("Variant 1")
-    assert _variant_label(s, 2, ["m"]).startswith("Variant 3")
+def test_variant_label_leads_with_title() -> None:
+    s = _specialist("recon_expert")
+    assert _variant_label(s, 0, ["m"]).startswith("recon_expert")

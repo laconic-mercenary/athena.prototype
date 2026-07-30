@@ -15,6 +15,7 @@ the loop thread so only one backend.complete() call runs at a time.
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 from dataclasses import dataclass
@@ -337,22 +338,37 @@ class OrchestratorHarness:
                     results.append(answer)
 
                 elif tc.name == "submit_plan":
-                    plan_raw = dict(tc.input.get("plan", {}))
-                    plan_raw["engagement_id"] = self._run_id
-                    try:
-                        plan = EngagementPlan.model_validate(plan_raw)
-                        self._plan = plan
-                        pub.sendMessage(
-                            "engagement.plan_ready",
-                            run_id=self._run_id,
-                            plan=plan.model_dump(),
-                        )
+                    # The model sometimes passes `plan` as a JSON string (or a malformed
+                    # value) instead of an object. Coerce/validate defensively and re-prompt
+                    # on failure — a bad submit_plan must never crash the engagement.
+                    raw = tc.input.get("plan", {})
+                    if isinstance(raw, str):
+                        try:
+                            raw = json.loads(raw)
+                        except (json.JSONDecodeError, ValueError):
+                            raw = None
+                    if not isinstance(raw, dict):
                         results.append(
-                            "Plan validated. Awaiting operator approval before the pipeline starts."
+                            "submit_plan's 'plan' must be a JSON object with the plan fields, "
+                            "not a string or list. Revise and resubmit."
                         )
-                        plan_ready = plan
-                    except ValidationError as exc:
-                        results.append(f"Plan validation failed: {exc}. Revise and resubmit.")
+                    else:
+                        plan_raw = dict(raw)
+                        plan_raw["engagement_id"] = self._run_id
+                        try:
+                            plan = EngagementPlan.model_validate(plan_raw)
+                            self._plan = plan
+                            pub.sendMessage(
+                                "engagement.plan_ready",
+                                run_id=self._run_id,
+                                plan=plan.model_dump(),
+                            )
+                            results.append(
+                                "Plan validated. Awaiting operator approval before the pipeline starts."
+                            )
+                            plan_ready = plan
+                        except ValidationError as exc:
+                            results.append(f"Plan validation failed: {exc}. Revise and resubmit.")
 
                 else:
                     results.append(f"Tool '{tc.name}' is not available during briefing.")

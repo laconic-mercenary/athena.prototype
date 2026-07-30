@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from athena.server import bus
-from athena.server.routes import artifacts, chat, engagements, events, plan_review, report_chat
+from athena.server.routes import artifacts, chat, engagements, events, gate_decision, loop_gate, plan_review, report_chat
 
 _UI_DIST = Path(__file__).parent.parent.parent.parent / "src" / "ui" / "dist"
 
@@ -48,6 +48,8 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(artifacts.router)
     app.include_router(plan_review.router)
+    app.include_router(gate_decision.router)
+    app.include_router(loop_gate.router)
     app.include_router(report_chat.router)
 
     # Serve the built React app when dist/ exists (production mode).

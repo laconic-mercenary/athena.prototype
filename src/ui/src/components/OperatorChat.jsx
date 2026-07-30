@@ -13,20 +13,21 @@ const CLASSIFICATION_LABEL = {
   signal_info:     'INFO',
 }
 
-export function OperatorChat({ runId, agentId, committeeId, agentTitle, findings, focusFindings, agentReplies, onClose }) {
+export function OperatorChat({ runId, agentId, committeeId, agentTitle, findings, focusFindings, agentReplies, operatorMessages, dispatch, onClose }) {
   const [tab, setTab] = useState(focusFindings && findings?.length ? 'findings' : 'chat')
-  const [messages, setMessages] = useState([])
   const [input, setInput]       = useState('')
   const [sending, setSending]   = useState(false)
   const [queued, setQueued]     = useState(false)
   const [error, setError]       = useState(null)
   const threadRef = useRef(null)
 
+  // Operator messages come from the agent's persistent log (via OPERATOR_MESSAGE),
+  // so they survive reopening the panel — single source of truth with the Agent Log.
   const thread = useMemo(() => {
-    const ops  = messages.map(m => ({ ...m, role: 'operator' }))
+    const ops  = (operatorMessages || []).map(m => ({ ...m, role: 'operator' }))
     const reps = (agentReplies || []).map(r => ({ ...r, role: 'agent' }))
     return [...ops, ...reps].sort((a, b) => a.ts - b.ts)
-  }, [messages, agentReplies])
+  }, [operatorMessages, agentReplies])
 
   useEffect(() => {
     if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
@@ -36,12 +37,12 @@ export function OperatorChat({ runId, agentId, committeeId, agentTitle, findings
     e.preventDefault()
     const text = input.trim()
     if (!text || sending) return
-    const msg = { text, ts: Date.now() }
-    setMessages(prev => [...prev, msg])
     setInput('')
     setSending(true)
     setError(null)
     setQueued(false)
+    // Record the message in the target agent's log; the thread renders from there.
+    dispatch?.({ type: 'OPERATOR_MESSAGE', payload: { committeeId, agentId, text } })
     try {
       // Route to committee name (not full agent_id) so the backend can find the leader queue.
       const target = committeeId || agentId

@@ -24,18 +24,24 @@ function dominantClassification(findings) {
 
 const ORCHESTRATOR_AGENT_ID = 'athena.orchestrator'
 
-const initialState = {
+function createInitialState() {
+  return {
   page: 'request',
   engagement: {
     run_id: null,
     status: 'idle',
     awaitingApproval: false,
     awaitingCommittee: null,
+    awaitingRedoAvailable: false,
   },
   planReady: false,
   plan: null,
   committees: {},
   steps: {},
+  // In-loop operator gate (element / step / tool). awaiting is true while a leader
+  // is blocked waiting for the operator's decision on a single tool call.
+  loopGate: { awaiting: false, kind: null, committee: null, payload: null },
+  armedGates: {},   // committee -> { element?: true, step?: true, tool?: true }
   gateDecisions: [],
   latestGateDecision: null,
   pendingLeaderQuestions: {},
@@ -46,6 +52,7 @@ const initialState = {
   chat: { isOpen: false, agentId: null, committeeId: null, agentTitle: null, findings: [], focusFindings: false },
   latestEvent: null,
   eventLog: [],
+  }
 }
 
 const GATE_COLORS = { advance: '#22c55e', retry: '#ef4444', iterate: '#f97316' }
@@ -78,11 +85,14 @@ function reducer(state, action) {
 
   if (type === 'NAVIGATE') return { ...state, page: payload }
 
+  // Demo Restart: throw away all engagement state and return to the start screen.
+  if (type === 'RESET') return createInitialState()
+
   if (type === 'RUN_STARTED') {
     return {
       ...state,
       page: 'dialog',
-      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null },
+      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
       planReady: false,
       plan: null,
       committees: {},
@@ -113,6 +123,13 @@ function reducer(state, action) {
     return { ...state, planReady: false, eventLog: appendLog(state, ev) }
   }
 
+  // Switch-panel fallback: a revision was requested but no new plan arrived in time
+  // (orchestrator answered conversationally, was slow, or the response dropped). Restore
+  // the ready state on the existing plan so the panel can't wedge disabled forever.
+  if (type === 'PLAN_REVISION_TIMEOUT') {
+    return state.plan ? { ...state, planReady: true } : state
+  }
+
   if (type === 'ENGAGEMENT_STARTED') {
     const ev = { kind: 'engagement', text: 'Engagement started', color: '#22c55e', ts: Date.now() }
     return { ...state, engagement: { ...state.engagement, status: 'running' }, eventLog: appendLog(state, ev) }
@@ -138,20 +155,53 @@ function reducer(state, action) {
   }
 
   if (type === 'GATE_AWAITING_APPROVAL') {
-    const ev = { kind: 'committee', text: `gate · awaiting approval after ${payload.committee}`, color: '#3b82f6', ts: Date.now() }
+    const ev = { kind: 'committee', text: `gate · awaiting decision after ${payload.committee}`, color: '#3b82f6', ts: Date.now() }
     return {
       ...state,
-      engagement: { ...state.engagement, awaitingApproval: true, awaitingCommittee: payload.committee },
+      engagement: {
+        ...state.engagement,
+        awaitingApproval: true,
+        awaitingCommittee: payload.committee,
+        awaitingRedoAvailable: payload.redo_available !== false,
+      },
       latestEvent: ev,
       eventLog: appendLog(state, ev),
     }
   }
 
-  if (type === 'ENGAGEMENT_APPROVED') {
+  if (type === 'ENGAGEMENT_APPROVED' || type === 'GATE_RESOLVED') {
     return {
       ...state,
-      engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null },
+      engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
     }
+  }
+
+  if (type === 'LOOP_GATE_AWAITING') {
+    // The event carries a nested `payload` (kind-specific body, e.g. element variants).
+    const { kind, committee, payload: body } = payload
+    const ev = { kind: 'committee', text: `${kind} gate · awaiting decision in ${committee}`, color: '#3b82f6', ts: Date.now() }
+    return {
+      ...state,
+      loopGate: { awaiting: true, kind, committee, payload: body || null },
+      latestEvent: ev,
+      eventLog: appendLog(state, ev),
+    }
+  }
+
+  if (type === 'LOOP_GATE_RESOLVED') {
+    return {
+      ...state,
+      loopGate: { awaiting: false, kind: null, committee: null, payload: null },
+    }
+  }
+
+  if (type === 'GATE_ARMED') {
+    const { committee, kind, armed } = payload
+    const prev = state.armedGates[committee] || {}
+    const next = { ...prev }
+    if (armed) next[kind] = true
+    else delete next[kind]
+    return { ...state, armedGates: { ...state.armedGates, [committee]: next } }
   }
 
   if (type === 'COMMITTEE_STARTED') {
@@ -227,8 +277,8 @@ function reducer(state, action) {
   }
 
   if (type === 'GATE_DECISION') {
-    const { committee, decision, rationale, to, next_objective, attempt } = payload
-    const entry = { committee, decision, rationale, to, next_objective, attempt, ts: Date.now() }
+    const { committee, decision, rationale, to, next_objective, attempt, decided_by } = payload
+    const entry = { committee, decision, rationale, to, next_objective, attempt, decidedBy: decided_by, ts: Date.now() }
     const icon = GATE_ICONS[decision] || '·'
     let text = `${icon} ${decision.toUpperCase()}`
     if (to && to !== committee) text += ` → ${to}`
@@ -332,6 +382,30 @@ function reducer(state, action) {
       agents: {
         ...state.agents,
         [agent_id]: {
+          ...prev,
+          messageLog: [...(prev.messageLog || []).slice(-(MESSAGE_LOG_MAX - 1)), entry],
+        },
+      },
+    }
+  }
+
+  if (type === 'OPERATOR_MESSAGE') {
+    // Thread an operator's outgoing chat into the target agent's log. Prefer the
+    // exact agent; fall back to the committee's leader when only a committee is known.
+    const { committeeId, agentId, text } = payload
+    const targetId = (agentId && state.agents[agentId])
+      ? agentId
+      : Object.keys(state.agents).find(
+          id => state.agents[id].committee === committeeId && state.agents[id].role === 'leader'
+        )
+    if (!targetId || !state.agents[targetId]) return state
+    const prev = state.agents[targetId]
+    const entry = { kind: 'operator', text, ts: Date.now() }
+    return {
+      ...state,
+      agents: {
+        ...state.agents,
+        [targetId]: {
           ...prev,
           messageLog: [...(prev.messageLog || []).slice(-(MESSAGE_LOG_MAX - 1)), entry],
         },
@@ -475,7 +549,7 @@ const PAGE_TITLES = {
 }
 
 export default function App() {
-  const [state, dispatch] = useReducer(reducer, initialState)
+  const [state, dispatch] = useReducer(reducer, undefined, createInitialState)
 
   useEffect(() => {
     document.title = PAGE_TITLES[state.page] || 'athena'
@@ -504,6 +578,8 @@ export default function App() {
     if (topic === 'agent.finding')           dispatch({ type: 'AGENT_FINDING', payload })
     if (topic === 'agent.operator_reply')    dispatch({ type: 'AGENT_OPERATOR_REPLY', payload })
     if (topic === 'committee.result_selected') dispatch({ type: 'COMMITTEE_RESULT_SELECTED', payload })
+    if (topic === 'loop_gate.awaiting')       dispatch({ type: 'LOOP_GATE_AWAITING', payload })
+    if (topic === 'loop_gate.resolved')       dispatch({ type: 'LOOP_GATE_RESOLVED', payload })
     if (topic === 'orchestrator.question')    dispatch({ type: 'ORCHESTRATOR_QUESTION', payload })
     if (topic === 'orchestrator.answer')      dispatch({ type: 'ORCHESTRATOR_ANSWERED', payload })
     if (topic === 'orchestrator.message')     dispatch({ type: 'ORCHESTRATOR_MESSAGE', payload })

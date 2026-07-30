@@ -42,3 +42,10 @@ async def get_engagement(run_id: str) -> EngagementStatusResponse:
     if ctx is None:
         raise HTTPException(status_code=404, detail="Engagement not found")
     return EngagementStatusResponse(run_id=run_id, status=ctx.status)
+
+
+@router.post("/{run_id}/abort", status_code=204)
+async def abort_engagement(run_id: str) -> None:
+    """Abandon a run and free the worker so a fresh engagement can start (demo Restart).
+    Idempotent — a missing/already-finished engagement is a no-op success."""
+    runner.abort_engagement(run_id)

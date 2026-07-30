@@ -57,6 +57,12 @@ the codebase. They supplement (and sometimes override) general coding instincts.
 - Do not add `try/except` inside the pipeline for errors that cannot happen in practice.
 - Trust PyPubSub topic dispatch, Pydantic validation (at schema boundary), and the
   agent loop contract. Do not wrap these in additional try/except.
+- **No empty or silent catch blocks.** Every caught exception (`except` / `catch`) must
+  re-raise, handle meaningfully, or — at minimum — log. Use a **warning** when the failure
+  is genuinely safe to ignore (and say why in a comment); an **error** when it is not.
+  Never swallow an exception with an empty or comment-only body — a deliberately ignored
+  exception still logs at least a `warn` (`console.warn` / `logger.warning`) so it is
+  traceable. Applies to Python `except` and JS/TS `catch` alike.
 
 **Comments**
 - Default to zero comments. Add one only when the WHY is non-obvious: a hidden
