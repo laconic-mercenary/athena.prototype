@@ -14,6 +14,7 @@ import json
 import logging
 import queue
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -32,12 +33,147 @@ _log = logging.getLogger("athena.harness.committee_runner")
 
 BackendFactory = Callable[[str, "str | None"], ModelBackend]
 
+
+@dataclass
+class LoopGateHooks:
+    """Operator control over gates that fire *inside* a leader's turn (the in-loop
+    gate family — see projects/202607/HARNESS.md). Unlike the between-committee gate
+    in workflow.py, these pause on a single tool call and stay within the leader's
+    turn (no graph traversal).
+
+    - is_armed(kind, committee) -> bool: is this gate kind armed for this committee?
+      (Cheap; consulted at every candidate tool call, so it must be fast.)
+    - decide(kind, committee, payload) -> dict: block on the operator and return the
+      decision, e.g. {"action": "accept"} / {"action": "override", "winner_id": ...}
+      / {"action": "redo"}. Only called when is_armed returned True.
+
+    kind is one of "element", "step", "tool". None-safe: when the hooks object is
+    absent the runner behaves exactly as before (no gating).
+    """
+
+    is_armed: Callable[[str, str], bool]
+    decide: Callable[[str, str, dict], dict]
+
+
+def _apply_element_gate(
+    hooks: "LoopGateHooks | None",
+    committee_name: str,
+    *,
+    element_id: str,
+    winner_id: str,
+    rationale: str,
+    variants: list[dict],
+    valid_ids: set[str],
+) -> "tuple[str, str | None, str | None]":
+    """Consult the operator element gate for a select_result call.
+
+    Pure and side-effect-free (all blocking/publishing lives in hooks.decide), so it
+    is unit-testable in isolation. Returns (winner_id, reprompt, note):
+    - reprompt not None -> the operator asked to re-select; the dispatch should return
+      this string so the leader calls select_result again (no selection recorded).
+    - otherwise winner_id is the final (possibly overridden) selection and note is an
+      optional suffix appended to the tool result.
+    """
+    if hooks is None or not hooks.is_armed("element", committee_name):
+        return winner_id, None, None
+
+    decision = hooks.decide(
+        "element",
+        committee_name,
+        {
+            "element_id": element_id,
+            "winner_id": winner_id,
+            "rationale": rationale,
+            "variants": variants,
+        },
+    )
+    action = (decision.get("action") or "accept").strip().lower()
+
+    if action == "redo":
+        return winner_id, (
+            "Operator requested a different selection. Re-evaluate the variants and "
+            "call select_result again with your revised choice."
+        ), None
+
+    if action == "override":
+        new_id = (decision.get("winner_id") or "").strip()
+        if new_id and new_id in valid_ids:
+            return new_id, None, f"Operator overrode the winner to {new_id!r}."
+        # Invalid override target (stale client): fail safe to the leader's choice.
+        _log.warning(
+            "Element gate override to unknown winner %r on %r; keeping %r.",
+            new_id, committee_name, winner_id,
+        )
+
+    return winner_id, None, None
+
+
+def _apply_tool_gate(
+    hooks: "LoopGateHooks | None",
+    committee_name: str,
+    *,
+    tool: str,
+    args: dict,
+    side_effect: str,
+) -> "tuple[bool, str | None]":
+    """Consult the operator tool-call authorization gate BEFORE a domain tool runs.
+
+    Returns (approved, deny_reason). When the gate is disarmed this is a fast no-op
+    that approves. On deny the caller must NOT execute the tool and should hand the
+    specialist a clear, actionable denial (denial is a first-class outcome — the
+    specialist adapts, it is not an error). See HARNESS.md §4/§6.
+    """
+    if hooks is None or not hooks.is_armed("tool", committee_name):
+        return True, None
+
+    decision = hooks.decide(
+        "tool", committee_name, {"tool": tool, "args": args, "side_effect": side_effect}
+    )
+    action = (decision.get("action") or "approve").strip().lower()
+    if action == "deny":
+        reason = (decision.get("reason") or decision.get("suggestion") or "").strip()
+        return False, reason or "Operator denied this action."
+    return True, None
+
+
+def _apply_step_gate(
+    hooks: "LoopGateHooks | None",
+    committee_name: str,
+    *,
+    step_id: str,
+    description: str,
+    digest: str,
+) -> "tuple[str, str | None]":
+    """Consult the operator post-step quality gate AFTER a step's work completes.
+
+    Returns (outcome, note): outcome is "accept" (step stands) / "redo" (leader should
+    revise and resubmit; note carries the operator's suggestion) / "skip" (accept as-is
+    and move on). Disarmed -> ("accept", None). See HARNESS.md §3.
+    """
+    if hooks is None or not hooks.is_armed("step", committee_name):
+        return "accept", None
+
+    decision = hooks.decide(
+        "step", committee_name, {"step_id": step_id, "description": description, "digest": digest}
+    )
+    action = (decision.get("action") or "accept").strip().lower()
+    if action == "redo":
+        return "redo", (decision.get("suggestion") or "").strip() or None
+    if action == "skip":
+        return "skip", None
+    return "accept", None
+
 # Specialist agents run tight, bounded loops — they have a single well-scoped task.
 SPECIALIST_MAX_ITERATIONS = 30
 SPECIALIST_MAX_TOKENS = 4_096
-# Hard cap on how many real skill calls a single specialist may make per run.
-# Prevents models from calling the same skill twice to "verify" results.
+# Hard cap on how many real skill calls a single specialist may EXECUTE per run.
+# Prevents models from calling the same skill twice to "verify" results. A denied
+# tool call does NOT count against this (see SPECIALIST_MAX_TOOL_ATTEMPTS).
 SPECIALIST_MAX_TOOL_CALLS = 1
+# Cap on total tool ATTEMPTS (executed + operator-denied). Denials don't consume the
+# executed budget above — so the specialist can propose a different action after a deny
+# — but this bounds the number of operator prompts a single specialist can generate (H14).
+SPECIALIST_MAX_TOOL_ATTEMPTS = 3
 
 # Leaders plan across many steps and may iterate; they need a higher ceiling.
 LEADER_MAX_ITERATIONS = 500
@@ -47,6 +183,9 @@ TOOL_INPUT_SUMMARY_MAX_LEN = 500
 TOOL_RESULT_MAX_LEN = 2_000
 TASK_OUTPUT_SUMMARY_MAX_LEN = 300
 AGENT_TEXT_EVENT_MAX_LEN = 2_000
+# Per-variant output preview sent to the element gate so the operator can actually
+# compare what each variant produced before confirming/overriding the winner (H10).
+ELEMENT_GATE_OUTPUT_PREVIEW_MAX_LEN = 600
 
 
 class RefuseStartError(Exception):
@@ -260,6 +399,7 @@ def _run_one_specialist(
     element_id: str = "",
     element_label: str = "",
     variant_label: str = "",
+    loop_gate_hooks: "LoopGateHooks | None" = None,
 ) -> str:
     """Run a single specialist agent and return its text output."""
     granted_skills = [skills_map[sid] for sid in specialist.skill_ids if sid in skills_map]
@@ -278,7 +418,8 @@ def _run_one_specialist(
         variant_label=variant_label,
     )
 
-    _tool_calls_made = [0]
+    _tool_calls_made = [0]   # executed (approved) calls — capped by SPECIALIST_MAX_TOOL_CALLS
+    _tool_attempts = [0]     # executed + denied — capped by SPECIALIST_MAX_TOOL_ATTEMPTS
 
     def spec_dispatch(name: str, params: dict) -> str:
         skill = skills_by_name.get(name)
@@ -288,7 +429,11 @@ def _run_one_specialist(
             return json.dumps({
                 "error": "Tool call limit reached. Use the result you already received and output your final answer now."
             })
-        _tool_calls_made[0] += 1
+        if _tool_attempts[0] >= SPECIALIST_MAX_TOOL_ATTEMPTS:
+            return json.dumps({
+                "error": "Too many denied attempts. Proceed to your final answer with what you already know."
+            })
+        _tool_attempts[0] += 1
         call_id = new_id()
         pub.sendMessage(
             "agent.tool_called",
@@ -299,10 +444,28 @@ def _run_one_specialist(
             call_id=call_id,
             input_summary=json.dumps(params, default=str)[:TOOL_INPUT_SUMMARY_MAX_LEN],
         )
-        try:
-            result = execute_skill(skill, params)
-        except Exception as exc:
-            result = json.dumps({"error": str(exc)})
+        # Tool-call authorization gate (in-loop): the operator may approve or deny this
+        # action before it runs. No-op unless the "tool" gate is armed for this committee.
+        approved, deny_reason = _apply_tool_gate(
+            loop_gate_hooks, committee_name,
+            tool=name, args=params,
+            side_effect=getattr(skill, "side_effect", "reads_local"),
+        )
+        if not approved:
+            # A denial does NOT consume the executed-call budget — the specialist may
+            # propose a different action (bounded by SPECIALIST_MAX_TOOL_ATTEMPTS).
+            result = json.dumps({
+                "denied": True,
+                "reason": deny_reason,
+                "note": "Operator denied this action. You may propose a different action, "
+                        "or proceed to your final answer with what you already know.",
+            })
+        else:
+            _tool_calls_made[0] += 1
+            try:
+                result = execute_skill(skill, params)
+            except Exception as exc:
+                result = json.dumps({"error": str(exc)})
         pub.sendMessage(
             "agent.tool_result",
             run_id=run_id,
@@ -368,6 +531,7 @@ def _run_compare(
     run_id: str,
     make_backend: BackendFactory,
     compare_sink: dict[str, dict] | None = None,
+    loop_gate_hooks: "LoopGateHooks | None" = None,
 ) -> str:
     """Run all specialists in parallel and return labeled variant output for leader judgement."""
     all_models = [s.model for s in element.specialists]
@@ -383,6 +547,7 @@ def _run_compare(
             element_id=element.id,
             element_label=element.label,
             variant_label=variant_labels[idx],
+            loop_gate_hooks=loop_gate_hooks,
         )
 
     with ThreadPoolExecutor(max_workers=len(element.specialists)) as pool:
@@ -411,6 +576,7 @@ def _run_element(
     task_id: str,
     make_backend: BackendFactory,
     compare_sink: dict[str, dict] | None = None,
+    loop_gate_hooks: "LoopGateHooks | None" = None,
 ) -> str:
     if len(element.specialists) == 1:
         (specialist,) = element.specialists
@@ -420,9 +586,13 @@ def _run_element(
             committee_name, run_id, make_backend, agent_id,
             element_id=element.id,
             element_label=element.label,
+            loop_gate_hooks=loop_gate_hooks,
         )
 
-    return _run_compare(element, task_brief, skills_map, committee_name, run_id, make_backend, compare_sink=compare_sink)
+    return _run_compare(
+        element, task_brief, skills_map, committee_name, run_id, make_backend,
+        compare_sink=compare_sink, loop_gate_hooks=loop_gate_hooks,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +609,7 @@ def run_committee_with_ensemble(
     make_backend: BackendFactory,
     ask_operator_handler: Callable[[str], str],
     operator_queue: queue.Queue | None = None,
+    loop_gate_hooks: LoopGateHooks | None = None,
     *,
     is_retry: bool,
     is_iterate: bool,
@@ -544,6 +715,7 @@ def run_committee_with_ensemble(
                     task_id=task_id,
                     make_backend=make_backend,
                     compare_sink=compare_sink,
+                    loop_gate_hooks=loop_gate_hooks,
                 )
                 if compare_sink is not None:
                     _element_compare_outputs[task.element] = compare_sink
@@ -565,7 +737,25 @@ def run_committee_with_ensemble(
                 committee=committee.name,
                 step_id=step_id,
             )
-            return f"Step {step_id} completed.\n\n{combined}"
+
+            # Post-step quality gate (in-loop): operator may accept / redo / skip the
+            # completed step. No-op unless the "step" gate is armed for this committee.
+            outcome, note = _apply_step_gate(
+                loop_gate_hooks, committee.name,
+                step_id=step_id, description=description,
+                digest=combined[:TOOL_RESULT_MAX_LEN],
+            )
+            if outcome == "redo":
+                msg = (
+                    f"Operator requested a revision of this step: {note}"
+                    if note else "Operator requested a revision of this step."
+                )
+                return (
+                    f"{msg} The step's output was not accepted — revise your approach "
+                    f"and call submit_step again.\n\n{combined}"
+                )
+            suffix = "\n\n[Operator skipped review of this step.]" if outcome == "skip" else ""
+            return f"Step {step_id} completed.{suffix}\n\n{combined}"
 
         if name == "select_result":
             winner_id = params.get("winner_id", "")
@@ -574,16 +764,44 @@ def run_committee_with_ensemble(
             winner_title = ""
             matched_element = ""
             variants: list[dict] = []
+            matched_sink: dict[str, dict] | None = None
             for eid, sink in _element_compare_outputs.items():
                 if winner_id in sink:
                     winner_output = sink[winner_id]["output"]
                     winner_title = sink[winner_id]["title"]
                     matched_element = eid
+                    matched_sink = sink
                     variants = [
                         {"label": lbl, "title": info["title"], "output": info["output"][:TOOL_RESULT_MAX_LEN]}
                         for lbl, info in sink.items()
                     ]
                     break
+
+            # Operator element gate (in-loop): confirm the winner, override it, or ask
+            # the leader to re-select. No-op unless the "element" gate is armed.
+            winner_id, reprompt, gate_note = _apply_element_gate(
+                loop_gate_hooks,
+                committee.name,
+                element_id=matched_element,
+                winner_id=winner_id,
+                rationale=rationale,
+                variants=[
+                    {
+                        "label": v["label"],
+                        "title": v["title"],
+                        "output": v["output"][:ELEMENT_GATE_OUTPUT_PREVIEW_MAX_LEN],
+                    }
+                    for v in variants
+                ],
+                valid_ids=set(matched_sink) if matched_sink else set(),
+            )
+            if reprompt is not None:
+                return reprompt
+            # An override may have changed the winner — recompute its output/title.
+            if matched_sink is not None and winner_id in matched_sink:
+                winner_output = matched_sink[winner_id]["output"]
+                winner_title = matched_sink[winner_id]["title"]
+
             pub.sendMessage(
                 "committee.result_selected",
                 run_id=run_id,
@@ -595,7 +813,7 @@ def run_committee_with_ensemble(
                 result=winner_output[:TOOL_RESULT_MAX_LEN],
                 variants=variants,
             )
-            return "Selection recorded."
+            return "Selection recorded." + (f" {gate_note}" if gate_note else "")
 
         if name == "finish":
             _finished[0] = True

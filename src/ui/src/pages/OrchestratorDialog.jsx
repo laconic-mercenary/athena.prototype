@@ -1,10 +1,15 @@
 import { useState, useRef, useEffect } from 'react'
 import { marked } from 'marked'
-import { sendChat, planReview } from '../api'
+import { sendChat, planReview, loopGateArm, abortEngagement } from '../api'
 
 marked.setOptions({ breaks: true })
 
 const ORCH = 'athena.orchestrator'
+
+// Fallback for a toggle whose revised plan never arrives (orchestrator answered
+// conversationally, was slow, or the response dropped). Long enough not to fire during a
+// normal LLM revision round-trip; short enough that the panel never wedges for long.
+const PANEL_LOCK_FALLBACK_MS = 12000
 
 // Canned revision instructions sent to the orchestrator when a gate switch is flipped.
 // Toggles and free-form chat both reach the plan the same way — via a plan revision — so switch
@@ -35,13 +40,27 @@ function deriveSwitches(plan) {
   }
 }
 
-function BriefSwitchPanel({ plan, disabled, onToggle }) {
+// Arm-switch state derives from armedGates (any committee armed for that kind), the same
+// source of truth the graph-view toggles use — so briefing and engagement stay in sync.
+function deriveArmSwitches(armedGates) {
+  const vals = Object.values(armedGates || {})
+  return {
+    preAction: vals.some(g => g.tool),
+    postAction: vals.some(g => g.step),
+  }
+}
+
+function BriefSwitchPanel({ plan, armedGates, disabled, armDisabled, onToggle }) {
   const d = deriveSwitches(plan)
+  const a = deriveArmSwitches(armedGates)
+  // Two switch families. "plan" switches are operator-approval gates baked into the plan
+  // (routed through the orchestrator, panel locks during the round-trip). "arm" switches
+  // toggle in-loop operator review at runtime (armed directly, no orchestrator, instant).
   const rows = [
-    { key: 'everyCommittee', label: 'Approve at every committee transition', on: d.everyCommittee, available: true },
-    { key: 'beforeFinal', label: 'Approve before the final report', on: d.beforeFinal, available: true },
-    { key: 'askRetry', label: 'Ask me before any retry or iterate', on: false, available: false, note: 'requires ensemble support' },
-    { key: 'elementGate', label: 'Approve every multi-specialist element', on: false, available: false, note: 'requires harness support' },
+    { key: 'everyCommittee', label: 'Approve at every committee transition', on: d.everyCommittee, kind: 'plan' },
+    { key: 'beforeFinal', label: 'Approve before the final report', on: d.beforeFinal, kind: 'plan' },
+    { key: 'preAction', label: 'Operator review — before each action', on: a.preAction, kind: 'arm', note: 'approve or deny each specialist tool call' },
+    { key: 'postAction', label: 'Operator review — after each step', on: a.postAction, kind: 'arm', note: 'accept, redo, or skip each step' },
   ]
   return (
     <div className="brief-switches">
@@ -49,24 +68,27 @@ function BriefSwitchPanel({ plan, disabled, onToggle }) {
         Operator gates
         {disabled && <span className="brief-switches-spinner">updating…</span>}
       </div>
-      {rows.map(r => (
-        <div key={r.key} className={`brief-switch${r.available ? '' : ' brief-switch--na'}`}>
-          <span className="brief-switch-label">
-            {r.label}
-            {r.note && <span className="brief-switch-note">{r.note}</span>}
-          </span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={r.on}
-            disabled={disabled || !r.available}
-            onClick={() => onToggle(r.key, !r.on)}
-            className={`brief-toggle${r.on ? ' brief-toggle--on' : ''}`}
-          >
-            <span className="brief-toggle-knob" />
-          </button>
-        </div>
-      ))}
+      {rows.map(r => {
+        const rowDisabled = r.kind === 'plan' ? disabled : armDisabled
+        return (
+          <div key={r.key} className="brief-switch">
+            <span className="brief-switch-label">
+              {r.label}
+              {r.note && <span className="brief-switch-note">{r.note}</span>}
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={r.on}
+              disabled={rowDisabled}
+              onClick={() => onToggle(r.key, !r.on)}
+              className={`brief-toggle${r.on ? ' brief-toggle--on' : ''}`}
+            >
+              <span className="brief-toggle-knob" />
+            </button>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -208,7 +230,7 @@ function PlanPreview({ plan, planReady }) {
 }
 
 export function OrchestratorDialog({ state, dispatch }) {
-  const { engagement, dialogMessages, planReady, plan } = state
+  const { engagement, dialogMessages, planReady, plan, armedGates } = state
 
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -252,10 +274,28 @@ export function OrchestratorDialog({ state, dispatch }) {
     }
   }
 
-  // Flip a gate switch → send a canned revision to the orchestrator. Lock the whole panel until
-  // the revised plan arrives (unlocks in the [plan] effect) or a 3s fallback fires. This
-  // serializes gate changes so plan-derived switch state can't race. See BRIEFING.md §5.
+  // Flip a gate switch → send a canned revision to the orchestrator. Lock the whole panel
+  // until the revised plan arrives (unlocks in the [plan] effect) or the fallback fires.
+  // The fallback restores BOTH the local lock and planReady — clearing panelLocked alone
+  // isn't enough, because PLAN_REVISION set planReady=false and the panel is also disabled
+  // on !planReady. This serializes gate changes so plan-derived state can't race. BRIEFING.md §5.
   async function handleToggle(key, nextOn) {
+    // Arm switches (pre/post-action) toggle in-loop review at runtime — armed directly on
+    // every committee, no orchestrator round-trip, so they never lock the panel.
+    if (key === 'preAction' || key === 'postAction') {
+      const gateKind = key === 'preAction' ? 'tool' : 'step'
+      setError(null)
+      try {
+        for (const name of Object.keys(plan?.committees || {})) {
+          await loopGateArm(engagement.run_id, name, gateKind, nextOn)
+          dispatch({ type: 'GATE_ARMED', payload: { committee: name, kind: gateKind, armed: nextOn } })
+        }
+      } catch (err) {
+        setError(err.message)
+      }
+      return
+    }
+
     if (panelLocked) return
     const group = SWITCH_MESSAGES[key]
     if (!group) return
@@ -266,13 +306,17 @@ export function OrchestratorDialog({ state, dispatch }) {
     dispatch({ type: 'DIALOG_OPERATOR_MESSAGE', payload: { text: msg } })
 
     if (lockTimer.current) clearTimeout(lockTimer.current)
-    lockTimer.current = setTimeout(() => setPanelLocked(false), 3000)
+    lockTimer.current = setTimeout(() => {
+      setPanelLocked(false)
+      dispatch({ type: 'PLAN_REVISION_TIMEOUT' })
+    }, PANEL_LOCK_FALLBACK_MS)
 
     try {
       await sendChat(engagement.run_id, ORCH, msg)
     } catch (err) {
       setError(err.message)
       setPanelLocked(false)
+      dispatch({ type: 'PLAN_REVISION_TIMEOUT' })
       if (lockTimer.current) { clearTimeout(lockTimer.current); lockTimer.current = null }
     }
   }
@@ -295,6 +339,19 @@ export function OrchestratorDialog({ state, dispatch }) {
     }
   }
 
+  async function handleRestart() {
+    if (engagement.run_id) {
+      // Best-effort: even if the abort call fails, we still reset the UI to the start
+      // screen — but never swallow the failure silently.
+      try {
+        await abortEngagement(engagement.run_id)
+      } catch (err) {
+        console.warn('restart: abort request failed, resetting UI anyway', err)
+      }
+    }
+    dispatch({ type: 'RESET' })
+  }
+
   const planVisible = planReady || plan
 
   return (
@@ -309,6 +366,13 @@ export function OrchestratorDialog({ state, dispatch }) {
           <span className="dialog-step dialog-step--next">Engagement</span>
         </div>
         <span className="dialog-run-id">{engagement.run_id}</span>
+        <button
+          className="dash-restart-btn"
+          onClick={handleRestart}
+          title="Abandon this engagement and return to the start screen"
+        >
+          ↺ Restart
+        </button>
       </div>
 
       <div className="dialog-body">
@@ -383,7 +447,9 @@ export function OrchestratorDialog({ state, dispatch }) {
 
           <BriefSwitchPanel
             plan={plan}
+            armedGates={armedGates}
             disabled={panelLocked || !planReady || proceeding}
+            armDisabled={!planReady || proceeding || !engagement.run_id}
             onToggle={handleToggle}
           />
 

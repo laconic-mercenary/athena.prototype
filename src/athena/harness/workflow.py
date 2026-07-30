@@ -24,7 +24,11 @@ from pydantic import BaseModel
 
 from athena.engagement_plan import CommitteeBrief, EngagementPlan
 from athena.ensemble.types import LoadedEnsemble, WorkflowNode
-from athena.harness.committee_runner import RefuseStartError, run_committee_with_ensemble
+from athena.harness.committee_runner import (
+    LoopGateHooks,
+    RefuseStartError,
+    run_committee_with_ensemble,
+)
 from athena.harness.orchestrator import GateDecision, OrchestratorHarness
 from athena.model_backend import ModelBackend
 
@@ -121,6 +125,7 @@ def run_workflow(
     gate_handler: GateHandler,
     leader_queues: dict[str, queue.Queue],
     global_step_budget: int,
+    loop_gate_hooks: LoopGateHooks | None = None,
 ) -> None:
     """Traverse the workflow graph until a terminal committee advances."""
 
@@ -160,6 +165,7 @@ def run_workflow(
                 make_backend=make_backend,
                 ask_operator_handler=ask_operator_handler,
                 operator_queue=leader_queues.get(current),
+                loop_gate_hooks=loop_gate_hooks,
                 is_retry=is_retry,
                 is_iterate=is_iterate,
                 prior_artifact=prior_artifact if is_iterate else None,

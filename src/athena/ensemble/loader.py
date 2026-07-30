@@ -82,6 +82,7 @@ def _load_skill(skill_entry: dict, ensemble_root: Path) -> LoadedSkill:
         description=raw.get("description", ""),
         parameters=_params_to_json_schema(raw.get("parameters", {})),
         impl=impl,
+        side_effect=raw.get("side_effect", "reads_local"),
     )
 
 

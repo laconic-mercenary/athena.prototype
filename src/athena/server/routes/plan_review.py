@@ -27,8 +27,8 @@ async def plan_review(run_id: str, body: PlanReviewRequest) -> PlanReviewRespons
     ctx = runner.get_context(run_id)
     if ctx is None:
         raise HTTPException(status_code=404, detail="Engagement not found")
-    if not ctx.awaiting_approval:
-        raise HTTPException(status_code=409, detail="Pipeline is not currently awaiting approval")
+    if ctx.await_phase != runner.AWAIT_PLAN:
+        raise HTTPException(status_code=409, detail="Pipeline is not currently awaiting plan approval")
 
     action = body.action.strip().lower()
     if action not in ("approve", "reject"):

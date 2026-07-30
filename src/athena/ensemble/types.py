@@ -21,6 +21,10 @@ class LoadedSkill:
     description: str
     parameters:  dict          # JSON Schema object (for ToolDefinition)
     impl:        Callable[..., Any]
+    # Risk tier for the tool-call authorization gate (HARNESS.md §5). "reads_local"
+    # (default) = harmless local inspection; "touches_target" = side-effecting / goes
+    # on the wire. Surfaced to the operator so they can judge before approving.
+    side_effect: str = "reads_local"
 
 
 @dataclass

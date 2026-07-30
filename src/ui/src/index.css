@@ -120,6 +120,22 @@ html, body, #root {
 .dash-target { color: var(--text); font-weight: 600; }
 .dash-status { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
 .dash-run-id { color: var(--text-muted); font-size: 10px; margin-left: auto; }
+.dash-restart-btn {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.dash-restart-btn:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
 .dash-question-btn {
   background: var(--orange);
   color: #000;
