@@ -1,23 +1,23 @@
 import { useState, useEffect } from 'react'
-import { marked } from 'marked'
-import { getArtifactMarkdown } from '../api'
+import { getArtifact } from '../api'
 
-marked.setOptions({ breaks: true })
-
-/**
- * Modal that fetches a rendered markdown report (plan.md, report.md, …) for a
- * run and displays it. The artifact is produced atomically by its committee, so
- * this shows the final content — no live updating needed. Mount only once the
- * committee's artifact_emitted event has fired (the .md exists on disk by then).
- */
-export function ReportModal({ runId, name, title, accent, onClose }) {
-  const [html, setHtml] = useState(null)
-  const [error, setError] = useState(null)
+export function ReportModal({ runId, name, title, accent, incomplete, onClose }) {
+  const [content, setContent] = useState(null)
+  const [error, setError]     = useState(null)
 
   useEffect(() => {
     let cancelled = false
-    getArtifactMarkdown(runId, name)
-      .then(md => { if (!cancelled) setHtml(marked.parse(md)) })
+    getArtifact(runId, name)
+      .then(text => {
+        if (!cancelled) {
+          // Pretty-print if valid JSON, else show raw
+          try {
+            setContent(JSON.stringify(JSON.parse(text), null, 2))
+          } catch {
+            setContent(text)
+          }
+        }
+      })
       .catch(err => { if (!cancelled) setError(err.message) })
     return () => { cancelled = true }
   }, [runId, name])
@@ -26,17 +26,34 @@ export function ReportModal({ runId, name, title, accent, onClose }) {
     <div className="report-modal-overlay" onClick={onClose}>
       <div className="report-modal" onClick={e => e.stopPropagation()}>
         <div className="report-modal-header" style={{ borderColor: accent }}>
-          <span className="report-modal-title" style={{ color: accent }}>{title}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span className="report-modal-title" style={{ color: accent }}>{title}</span>
+            {incomplete && (
+              <span style={{
+                fontSize: 8, fontWeight: 700, letterSpacing: 1.5,
+                textTransform: 'uppercase', color: '#f97316',
+                background: '#1a0e00', border: '1px solid #f9731644',
+                borderRadius: 3, padding: '2px 6px',
+              }}>
+                INCOMPLETE
+              </span>
+            )}
+          </div>
           <button className="report-modal-close" onClick={onClose}>✕</button>
         </div>
         <div className="report-modal-body">
-          {error && <div className="report-modal-error">Failed to load report: {error}</div>}
-          {!error && !html && <div className="report-modal-loading">Loading report…</div>}
-          {html && (
-            <div
-              className="report-modal-md"
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
+          {error && <div className="report-modal-error">Failed to load artifact: {error}</div>}
+          {!error && !content && <div className="report-modal-loading">Loading…</div>}
+          {content && (
+            <pre style={{
+              margin: 0, padding: '16px',
+              fontSize: 11, color: '#94a3b8',
+              lineHeight: 1.6, whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              fontFamily: 'monospace',
+            }}>
+              {content}
+            </pre>
           )}
         </div>
       </div>

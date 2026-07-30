@@ -31,6 +31,12 @@ ToolDispatch = Callable[[str, dict[str, Any]], str]
 # only — billing is on tokens actually generated — so being generous is free.
 SYNTHESIS_MAX_TOKENS = 16384
 
+# How many times we re-prompt a model that ends its turn without producing the
+# expected result (e.g. a leader that ends conversationally after reply_operator
+# instead of calling finish()). Bounds the correction loop; beyond it we give up
+# and return the text as-is so the caller can surface a clear error.
+MAX_END_TURN_CORRECTIONS = 4
+
 
 class MaxIterationsExceeded(RuntimeError):
     pass
@@ -46,14 +52,23 @@ def run_agent(
     backend: ModelBackend,
     model: str,
     max_iterations: int,
-    max_tokens: int = 4096,
+    max_tokens: int,
+    temperature: float | None = None,
+    on_model_response: Callable[[str, str], None] | None = None,
     operator_queue: queue.Queue | None = None,
     on_operator_reply: Callable[[str], None] | None = None,
+    on_end_turn: Callable[[str], "str | None"] | None = None,
 ) -> str:
     """Run an agent loop and return the final text response.
 
     Each call to the model counts as one iteration. Raises MaxIterationsExceeded
     if the cap is hit before the model emits end_turn.
+
+    on_end_turn, if given, validates the model's end_turn text: it returns None to
+    accept (the loop returns the text) or a correction string to inject as a user
+    message, re-prompting the model instead of returning. This keeps a leader that
+    ends its turn conversationally (e.g. after reply_operator) from being mistaken
+    for a final artifact. Bounded by MAX_END_TURN_CORRECTIONS.
     """
     logger = logging.getLogger(agent_id)
 
@@ -64,10 +79,14 @@ def run_agent(
     # True when operator messages were injected at the end of the previous
     # iteration; we capture the model's next text response as the reply.
     _pending_operator_reply = False
+    _end_turn_corrections = 0
 
     for _ in range(max_iterations):
         # Send the current conversation state to the model and get its next action.
-        response = backend.complete(model=model, tools=tools or None, max_tokens=max_tokens)
+        response = backend.complete(model=model, tools=tools or None, max_tokens=max_tokens, temperature=temperature)
+
+        if on_model_response is not None and response.text:
+            on_model_response(response.text, response.stop_reason)
 
         # Surface the model's conversational reply to an operator injection.
         # Only capture text from tool_use responses — end_turn text is the artifact JSON.
@@ -78,15 +97,33 @@ def run_agent(
         _pending_operator_reply = False
 
         if response.stop_reason == "end_turn":
+            text = response.text or ""
+            # Let the caller veto a premature/invalid end_turn and re-prompt instead
+            # of returning — e.g. a leader that ended conversationally without finish().
+            if on_end_turn is not None and _end_turn_corrections < MAX_END_TURN_CORRECTIONS:
+                correction = on_end_turn(text)
+                if correction is not None:
+                    _end_turn_corrections += 1
+                    logger.debug("end_turn rejected (%d): %r", _end_turn_corrections, text[:120])
+                    # Record the rejected assistant turn first so history stays a valid
+                    # alternating sequence, then add the correction as a harness message
+                    # (NOT inject_user_message — this is not operator input).
+                    backend.record_assistant_message(text)
+                    backend.append_harness_message(correction)
+                    continue
             # The model is done — it produced a final text response (the artifact).
-            logger.debug("end_turn: %r", (response.text or "")[:120])
-            return response.text or ""
+            logger.debug("end_turn: %r", text[:120])
+            return text
 
         if response.stop_reason == "max_tokens":
             # Output budget exhausted mid-response — the result is unusable.
             raise RuntimeError(f"{agent_id}: model hit max_tokens before completing")
 
-        # stop_reason == "tool_use": execute each requested tool, collect results.
+        # stop_reason == "tool_use": the model made progress — reset the end_turn
+        # correction budget so it applies only to consecutive stuck end_turns.
+        _end_turn_corrections = 0
+
+        # Execute each requested tool, collect results.
         # tool_dispatch is caller-supplied: (name, input) -> result string.
         results: list[str] = []
         for tc in response.tool_calls:

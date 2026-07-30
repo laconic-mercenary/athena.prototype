@@ -27,12 +27,12 @@ const FINDING_LABEL = {
 }
 
 // Which system does each agent target?
-function agentSystem(agent) {
+// Specific keyword rules take priority; everything else falls back to primaryTarget.
+function agentSystem(agent, primaryTarget) {
   const id = agent.id.toLowerCase()
   const title = (agent.title || '').toLowerCase()
   if (id.includes('db') || title.includes('db') || title.includes('database')) return 'pgdatabase'
-  if (agent.committee === 'recon' || agent.committee === 'retrieval') return 'target'
-  return null
+  return primaryTarget
 }
 
 // ── System node (container / host) ──────────────────────────────────
@@ -243,16 +243,9 @@ function FindingNode({ data }) {
 
 const nodeTypes = { system: SystemNode, systemAgent: SystemAgentNode, finding: FindingNode }
 
-// Known system services — inferred from docker-compose topology
-const SYSTEM_SERVICES = {
-  target:     ['SSH · 22', 'HTTP · 80'],
+// Known services for specific system IDs; other systems show no service chips.
+const KNOWN_SERVICES = {
   pgdatabase: ['PostgreSQL · 5432'],
-}
-
-// Fixed layout anchors for each system
-const SYSTEM_POSITIONS = {
-  target:     { x: 100,  y: 0 },
-  pgdatabase: { x: 600,  y: 0 },
 }
 
 const FINDING_X      = 950
@@ -266,11 +259,12 @@ export function SystemView({ state, dispatch }) {
   const { systemNodes, agentNodes, findingNodes, allEdges } = useMemo(() => {
     const agentList = Object.values(agents)
 
-    // Map agents to systems
-    const agentsBySystem = { target: [], pgdatabase: [] }
+    // Map agents to their system — build the map dynamically from actual agents.
+    const agentsBySystem = {}
     agentList.forEach(a => {
-      const sys = agentSystem(a)
-      if (sys && agentsBySystem[sys]) agentsBySystem[sys].push(a)
+      const sys = agentSystem(a, primaryTarget)
+      if (!agentsBySystem[sys]) agentsBySystem[sys] = []
+      agentsBySystem[sys].push(a)
     })
 
     // Collect displayable findings sorted by time
@@ -284,21 +278,26 @@ export function SystemView({ state, dispatch }) {
     allFindings.sort((a, b) => a.finding.ts - b.finding.ts)
 
     // ── System nodes ──────────────────────────────────────────────
-    const systemIds = Object.keys(SYSTEM_POSITIONS)
+    const systemIds = Object.keys(agentsBySystem)
+    // Lay systems out horizontally with 500px spacing.
+    const systemPositions = Object.fromEntries(
+      systemIds.map((id, i) => [id, { x: 100 + i * 500, y: 0 }])
+    )
+
     const sNodes = systemIds.map(sysId => {
       const sysAgents = agentsBySystem[sysId] || []
       const activeCount = sysAgents.filter(a => a.status === 'active').length
       const hasCritical = allFindings
-        .filter(f => agentSystem(f.agent) === sysId)
+        .filter(f => agentSystem(f.agent, primaryTarget) === sysId)
         .some(f => f.finding.classification === 'signal_critical')
 
       return {
         id: `sys-${sysId}`,
         type: 'system',
-        position: SYSTEM_POSITIONS[sysId],
+        position: systemPositions[sysId],
         data: {
           label: sysId,
-          services: SYSTEM_SERVICES[sysId] || [],
+          services: KNOWN_SERVICES[sysId] || [],
           activeAgentCount: activeCount,
           hasCritical,
         },
@@ -315,7 +314,7 @@ export function SystemView({ state, dispatch }) {
     const AGENT_START_Y = 180
 
     systemIds.forEach(sysId => {
-      const sysPos  = SYSTEM_POSITIONS[sysId]
+      const sysPos  = systemPositions[sysId]
       const sysAgents = agentsBySystem[sysId] || []
 
       sysAgents.forEach((agent, i) => {
@@ -397,7 +396,7 @@ export function SystemView({ state, dispatch }) {
 
     // System → finding edges for context
     allFindings.forEach(f => {
-      const sysId = agentSystem(f.agent) || 'target'
+      const sysId = agentSystem(f.agent, primaryTarget) || primaryTarget
       edges.push({
         id: `e-sv-sys-${f.nodeId}`,
         source: `sys-${sysId}`,
@@ -409,7 +408,7 @@ export function SystemView({ state, dispatch }) {
     })
 
     return { systemNodes: sNodes, agentNodes: aNodes, findingNodes: fNodes, allEdges: edges }
-  }, [agents, engagement.target, dispatch])
+  }, [agents, primaryTarget, dispatch])
 
   const allNodes = useMemo(
     () => [...systemNodes, ...agentNodes, ...findingNodes],

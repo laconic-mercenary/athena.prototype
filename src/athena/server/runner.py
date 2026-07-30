@@ -1,67 +1,88 @@
-"""Pipeline thread management and engagement lifecycle.
+"""Pipeline thread management and engagement lifecycle — ensemble harness edition.
 
 One engagement at a time. The pipeline runs in a ThreadPoolExecutor so it
-does not block the FastAPI event loop. EngagementContext holds all the
-state needed for the server to interact with a running pipeline:
-
-  - reply_event / pending_question / pending_answer: for the orchestrator's
-    ask_user blocking mechanism (Option B from WORKSPACE_ARCH.md).
-  - agent_queues: per-leader queue.Queues for mid-run operator chat.
-
-This module is a pure service layer — no FastAPI imports.
+does not block the FastAPI event loop. EngagementContext holds all state
+the server needs to interact with a running pipeline.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 
 from pubsub import pub
 
-from athena.config import AthenaConfig
+from athena.ensemble.loader import load_ensemble
+from athena.ensemble.types import LoadedEnsemble
+from athena.harness.committee_runner import LoopGateHooks
+from athena.harness.orchestrator import OrchestratorHarness
+from athena.harness.workflow import GLOBAL_STEP_BUDGET, run_workflow
 from athena.model_backend import make_backend
-from athena.orchestrator import run_orchestrator
 from athena.utils import new_id
 
 _log = logging.getLogger("athena.server.runner")
 
-# Agent IDs for committee leaders — pre-created queues so operators can
-# send messages before or during a leader's run.
-_LEADER_AGENT_IDS = [
-    "athena.recon.leader",
-    "athena.planning.leader",
-    "athena.retrieval.leader",
-    "athena.reporting.leader",
-]
-
-# Orchestrator's virtual agent_id for POST /chat routing.
+ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "claude-sonnet-4-6")
 ORCHESTRATOR_AGENT_ID = "athena.orchestrator"
 
-# One worker: enforces the "one engagement at a time" constraint.
-_executor = ThreadPoolExecutor(max_workers=1)
+# Which operator decision, if any, the pipeline is currently blocked on. A single
+# flag (the old `awaiting_approval` bool) conflated all of these, so a wrong-phase
+# POST (stale tab, double-submit) could pass a route guard and silently no-op the
+# other channel (HARNESS_DEFICIENCIES.md H3). Each route now guards on its own phase.
+AWAIT_NONE = "none"
+AWAIT_PLAN = "plan"                      # briefing: plan approve / reject / revise
+AWAIT_COMMITTEE_GATE = "committee_gate"  # between-committee operator gate (Accept/Redo)
+AWAIT_LOOP_GATE = "loop_gate"            # in-loop gate (element / step / tool)
 
+_executor = ThreadPoolExecutor(max_workers=1)
 _active: dict[str, "EngagementContext"] = {}
+
+
+class EngagementAborted(Exception):
+    """Raised inside the worker thread when the operator restarts/abandons a run, so the
+    workflow unwinds and frees the single worker instead of holding it (demo Restart)."""
 
 
 @dataclass
 class EngagementContext:
     run_id: str
-    status: str  # "running" | "completed" | "rejected" | "failed"
-    # Orchestrator ask_user gate — pipeline thread blocks here.
-    reply_event: threading.Event = field(default_factory=threading.Event)
+    status: str   # "running" | "completed" | "rejected" | "failed"
+
+    reply_event: threading.Event
+    plan_decision_event: threading.Event
+    gate_decision_event: threading.Event
+    loop_gate_event: threading.Event
+    await_phase: str   # one of the AWAIT_* constants
+    leader_queues: dict[str, queue.Queue]
+    # committee -> set of armed in-loop gate kinds ("element" | "step" | "tool").
+    armed_gates: dict[str, set[str]]
+    # Optional state (None-defaulted fields must follow required fields)
+    # Set once the orchestrator loop thread starts (after plan approval).
+    orchestrator: OrchestratorHarness | None = None
     pending_question: str | None = None
     pending_answer: str | None = None
-    # Per-leader queues for mid-run operator injection.
-    agent_queues: dict[str, queue.Queue] = field(default_factory=dict)
-    # Plan-review approval gate — blocks pipeline between planning and retrieval.
-    approval_event: threading.Event = field(default_factory=threading.Event)
-    approval_rejected: bool = False
-    awaiting_approval: bool = False
-    plan_review_history: list = field(default_factory=list)   # [{"q": str, "a": str}]
-    report_chat_history: list = field(default_factory=list)   # [{"q": str, "a": str}]
+    plan_decision_type: str | None = None
+    revision_message: str | None = None
+    # Committee-gate decision (operator-authoritative Accept / Redo). Distinct from
+    # the plan-approval channel above — a committee gate never overlaps briefing.
+    gate_decision_action: str | None = None       # "accept" | "redo"
+    gate_decision_suggestion: str | None = None   # operator's Redo note
+    # In-loop gate decision: {"action": ..., **kind-specific fields}.
+    loop_gate_decision: dict | None = None
+    # Set True by abort_engagement(); handlers raise EngagementAborted after their wait
+    # so the worker unwinds. Read on the worker thread, written on a route thread.
+    cancelled: bool = False
+
+    @property
+    def awaiting_approval(self) -> bool:
+        """True while blocked on any operator decision. Kept for callers that only
+        need 'is a decision pending' without caring which phase (e.g. chat routing)."""
+        return self.await_phase != AWAIT_NONE
 
 
 def get_context(run_id: str) -> EngagementContext | None:
@@ -72,15 +93,35 @@ def is_busy() -> bool:
     return any(ctx.status == "running" for ctx in _active.values())
 
 
-def start_engagement(instructions: str, config: AthenaConfig) -> str:
-    """Start a new engagement in the background. Returns the pre-generated run_id."""
+def _resolve_ensemble_path() -> Path:
+    env = os.environ.get("ENSEMBLE_PATH")
+    if env:
+        return Path(env)
+    raise RuntimeError(
+        "No ensemble configured. Set the ENSEMBLE_PATH environment variable."
+    )
+
+
+def start_engagement(instructions: str) -> str:
+    """Start a new engagement. Returns the pre-generated run_id."""
     if is_busy():
         raise RuntimeError("An engagement is already in progress")
 
+    ensemble_path = _resolve_ensemble_path()
+    ensemble = load_ensemble(ensemble_path)
+
     run_id = new_id()
-    ctx = EngagementContext(run_id=run_id, status="running")
-    for leader_id in _LEADER_AGENT_IDS:
-        ctx.agent_queues[leader_id] = queue.Queue()
+    ctx = EngagementContext(
+        run_id=run_id,
+        status="running",
+        reply_event=threading.Event(),
+        plan_decision_event=threading.Event(),
+        gate_decision_event=threading.Event(),
+        loop_gate_event=threading.Event(),
+        await_phase=AWAIT_NONE,
+        leader_queues={},
+        armed_gates={},
+    )
     _active[run_id] = ctx
 
     def _ask_user_handler(question: str) -> str:
@@ -88,45 +129,193 @@ def start_engagement(instructions: str, config: AthenaConfig) -> str:
         ctx.reply_event.clear()
         pub.sendMessage("orchestrator.question", run_id=run_id, question=question)
         answered = ctx.reply_event.wait(timeout=300)
+        if ctx.cancelled:
+            raise EngagementAborted()
         ctx.pending_question = None
         if not answered:
-            # Timed out — unblock the pipeline with a neutral response.
             return "No operator response within timeout; proceed with best judgement."
         answer = ctx.pending_answer or ""
         ctx.pending_answer = None
         return answer
 
-    def _approval_gate_handler() -> bool:
-        ctx.awaiting_approval = True
-        ctx.approval_rejected = False
-        ctx.approval_event.clear()
-        pub.sendMessage("engagement.awaiting_approval", run_id=run_id)
-        ctx.approval_event.wait()
-        ctx.awaiting_approval = False
-        return not ctx.approval_rejected
+    def _gate_handler(committee: str, digest: str, redo_available: bool) -> tuple[str, str | None]:
+        # Operator-authoritative committee gate. Blocks until the operator decides via
+        # resolve_gate_decision(). No timeout — the gate holds until the operator acts,
+        # matching the plan-approval gate. The awaiting flag is set BEFORE publishing
+        # gate.awaiting_approval so a fast operator POST can't 409 the decision.
+        ctx.await_phase = AWAIT_COMMITTEE_GATE
+        ctx.gate_decision_action = None
+        ctx.gate_decision_suggestion = None
+        ctx.gate_decision_event.clear()
+        pub.sendMessage(
+            "gate.awaiting_approval",
+            run_id=run_id,
+            committee=committee,
+            digest=digest,
+            redo_available=redo_available,
+        )
+        ctx.gate_decision_event.wait()
+        ctx.await_phase = AWAIT_NONE
+        if ctx.cancelled:
+            raise EngagementAborted()
+        return (ctx.gate_decision_action or "accept", ctx.gate_decision_suggestion)
+
+    loop_gate_lock = threading.Lock()
+
+    def _loop_gate_handler(kind: str, committee: str, payload: dict) -> dict:
+        # In-loop operator gate (element / step / tool). Same rendezvous discipline as
+        # the committee gate: mark the phase and clear the event BEFORE publishing
+        # loop_gate.awaiting, so a fast operator POST can't be lost or race the flag.
+        #
+        # The lock serializes concurrent gates: a compare-mode element runs its
+        # specialists in PARALLEL, so two tool-call gates can fire at once. Without the
+        # lock they would trample the single decision slot (event / phase / decision).
+        # The lock makes the operator decide them one at a time.
+        with loop_gate_lock:
+            ctx.await_phase = AWAIT_LOOP_GATE
+            ctx.loop_gate_decision = None
+            ctx.loop_gate_event.clear()
+            pub.sendMessage(
+                "loop_gate.awaiting",
+                run_id=run_id,
+                kind=kind,
+                committee=committee,
+                payload=payload,
+            )
+            try:
+                ctx.loop_gate_event.wait()
+                if ctx.cancelled:
+                    raise EngagementAborted()
+                decision = ctx.loop_gate_decision or {"action": "accept"}
+            finally:
+                # Always clear the phase, even if the wait is interrupted, so a stuck
+                # AWAIT_LOOP_GATE can't wedge the routes' phase guards (H16).
+                ctx.await_phase = AWAIT_NONE
+            pub.sendMessage(
+                "loop_gate.resolved",
+                run_id=run_id,
+                kind=kind,
+                committee=committee,
+                action=decision.get("action", "accept"),
+            )
+            return decision
+
+    def _is_gate_armed(kind: str, committee: str) -> bool:
+        return kind in ctx.armed_gates.get(committee, set())
+
+    loop_gate_hooks = LoopGateHooks(is_armed=_is_gate_armed, decide=_loop_gate_handler)
+
+    def _read_artifact_fn(name: str) -> str:
+        artifacts_dir = Path("artifacts") / run_id
+        path = artifacts_dir / f"{name}.json"
+        if not path.exists():
+            return f"No artifact found for '{name}'"
+        return path.read_text()
 
     def _run() -> None:
         try:
-            result = run_orchestrator(
-                instructions=instructions,
-                config=config,
-                _backend_factory=make_backend,
-                ask_user_handler=_ask_user_handler,
+            pub.sendMessage(
+                "engagement.started",
                 run_id=run_id,
-                leader_queues=ctx.agent_queues,
-                approval_gate_handler=_approval_gate_handler,
+                ensemble=ensemble.name,
+                version=ensemble.version,
             )
-            ctx.status = "completed" if result is not None else "rejected"
+
+            orch_backend = make_backend("anthropic", None)
+            orchestrator = OrchestratorHarness(
+                backend=orch_backend,
+                model=ORCHESTRATOR_MODEL,
+                run_id=run_id,
+                ask_user_handler=_ask_user_handler,
+                read_artifact_fn=_read_artifact_fn,
+            )
+
+            orchestrator.start_briefing(
+                ensemble_name=ensemble.name,
+                version=ensemble.version,
+                capability=ensemble.capability,
+                operator_message=instructions,
+            )
+
+            # Briefing + revision loop: operator may request changes before approving.
+            while True:
+                plan = orchestrator.run_briefing()
+
+                for committee_name in ensemble.committees:
+                    ctx.leader_queues.setdefault(committee_name, queue.Queue())
+
+                ctx.await_phase = AWAIT_PLAN
+                ctx.plan_decision_type = None
+                ctx.revision_message = None
+                ctx.plan_decision_event.clear()
+                ctx.plan_decision_event.wait()
+                ctx.await_phase = AWAIT_NONE
+
+                if ctx.cancelled:
+                    raise EngagementAborted()
+
+                if ctx.plan_decision_type == "revise":
+                    orchestrator.inject_revision(ctx.revision_message or "Please revise.")
+                    pub.sendMessage("engagement.plan_revision", run_id=run_id)
+                    continue
+
+                if ctx.plan_decision_type != "approve":
+                    pub.sendMessage(
+                        "engagement.rejected", run_id=run_id, reason="Operator rejected the plan"
+                    )
+                    ctx.status = "rejected"
+                    return
+
+                break
+
+            pub.sendMessage("engagement.approved", run_id=run_id)
+
+            ctx.orchestrator = orchestrator
+            orch_thread = threading.Thread(
+                target=orchestrator.run_loop,
+                name=f"orch-{run_id}",
+                daemon=True,
+            )
+            orch_thread.start()
+
+            try:
+                run_workflow(
+                    ensemble=ensemble,
+                    plan=plan,
+                    orchestrator=orchestrator,
+                    make_backend=make_backend,
+                    artifacts_dir=Path("artifacts") / run_id,
+                    run_id=run_id,
+                    ask_operator_handler=_ask_user_handler,
+                    gate_handler=_gate_handler,
+                    leader_queues=ctx.leader_queues,
+                    global_step_budget=GLOBAL_STEP_BUDGET,
+                    loop_gate_hooks=loop_gate_hooks,
+                )
+            finally:
+                orchestrator.stop()
+                orch_thread.join(timeout=30)
+
+            ctx.status = "completed"
+
+        except EngagementAborted:
+            _log.info("engagement %s aborted by operator (restart)", run_id)
+            ctx.status = "abandoned"
+            pub.sendMessage("engagement.aborted", run_id=run_id)
         except Exception:
             _log.exception("engagement %s failed", run_id)
+            pub.sendMessage("engagement.rejected", run_id=run_id, reason="Internal error")
             ctx.status = "failed"
 
     _executor.submit(_run)
     return run_id
 
 
+# ---------------------------------------------------------------------------
+# Server → pipeline interaction
+# ---------------------------------------------------------------------------
+
 def reply_to_orchestrator(run_id: str, answer: str) -> None:
-    """Unblock the orchestrator's ask_user wait with the operator's answer."""
     ctx = _active.get(run_id)
     if ctx is None:
         raise KeyError(f"No engagement: {run_id!r}")
@@ -135,57 +324,104 @@ def reply_to_orchestrator(run_id: str, answer: str) -> None:
     pub.sendMessage("orchestrator.answer", run_id=run_id, answer=answer)
 
 
-def send_to_agent(run_id: str, agent_id: str, message: str) -> None:
-    """Put a message into a committee leader's queue for mid-run injection."""
+def resolve_approval(run_id: str, *, approved: bool) -> None:
     ctx = _active.get(run_id)
     if ctx is None:
         raise KeyError(f"No engagement: {run_id!r}")
-    q = ctx.agent_queues.get(agent_id)
+    ctx.plan_decision_type = "approve" if approved else "reject"
+    ctx.plan_decision_event.set()
+
+
+def request_revision(run_id: str, message: str) -> None:
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    ctx.revision_message = message
+    ctx.plan_decision_type = "revise"
+    ctx.plan_decision_event.set()
+
+
+def resolve_gate_decision(run_id: str, *, action: str, suggestion: str | None) -> None:
+    """Release a committee-gate. action is "accept" or "redo"; suggestion is the
+    operator's Redo note (ignored for accept)."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    ctx.gate_decision_action = action
+    ctx.gate_decision_suggestion = suggestion
+    ctx.gate_decision_event.set()
+
+
+def abort_engagement(run_id: str) -> None:
+    """Abandon a running engagement (demo Restart). Marks it non-running so a fresh
+    engagement can start, and unblocks every wait so the worker thread unwinds via
+    EngagementAborted instead of holding the single ThreadPoolExecutor slot.
+
+    Note: if the worker is mid-LLM-call (not blocked on a wait) it finishes that call
+    before hitting the next cancellation check — acceptable for a single-operator demo.
+    """
+    ctx = _active.get(run_id)
+    if ctx is None:
+        return
+    ctx.cancelled = True
+    ctx.status = "abandoned"
+    # Wake anything the worker might be blocked on so it can observe `cancelled`.
+    # This covers the "paused, waiting for the operator" states — briefing approval,
+    # committee/in-loop gates, orchestrator questions — which is when Restart is normally
+    # pressed. A leader blocked in ask_operator (operator_queue.get) still has its own
+    # 300s timeout, and a mid-LLM-call worker finishes that call first; both then hit the
+    # next cancellation check. is_busy() is already False, so the next engagement can start.
+    ctx.reply_event.set()
+    ctx.plan_decision_event.set()
+    ctx.gate_decision_event.set()
+    ctx.loop_gate_event.set()
+
+
+def resolve_loop_gate_decision(
+    run_id: str, *, action: str, payload: dict | None = None
+) -> None:
+    """Release an in-loop gate (element / step / tool). action is the operator's
+    choice ("accept" / "override" / "redo" / "approve" / "deny" / …); payload carries
+    any kind-specific fields (e.g. {"winner_id": ...} for an element override)."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    ctx.loop_gate_decision = {"action": action, **(payload or {})}
+    ctx.loop_gate_event.set()
+
+
+def arm_gate(run_id: str, committee: str, kind: str, *, armed: bool) -> None:
+    """Arm or disarm an in-loop gate kind for a committee (forward-only: takes effect
+    on the next matching tool call). Runtime observation mode — deliberately NOT routed
+    through the orchestrator plan (see projects/202607/HARNESS.md §7)."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    kinds = ctx.armed_gates.setdefault(committee, set())
+    if armed:
+        kinds.add(kind)
+    else:
+        kinds.discard(kind)
+
+
+def send_to_leader(run_id: str, committee_name: str, message: str) -> None:
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    q = ctx.leader_queues.get(committee_name)
     if q is None:
-        raise KeyError(f"No queue for agent: {agent_id!r}")
+        raise KeyError(f"No leader queue for committee: {committee_name!r}")
     q.put_nowait(message)
 
 
-def resolve_approval(run_id: str, *, approved: bool) -> None:
-    """Unblock the plan-review approval gate. approved=True continues retrieval, False cancels."""
+def send_to_orchestrator(run_id: str, message: str) -> None:
+    """Inject an operator message into the orchestrator's near-real-time inbox.
+
+    Only available after plan approval — raises ValueError during briefing.
+    """
     ctx = _active.get(run_id)
     if ctx is None:
         raise KeyError(f"No engagement: {run_id!r}")
-    if not ctx.awaiting_approval:
-        raise ValueError("Engagement is not currently awaiting approval")
-    ctx.approval_rejected = not approved
-    ctx.approval_event.set()
-    if approved:
-        pub.sendMessage("engagement.approved", run_id=run_id)
-
-
-def get_plan_review_history(run_id: str) -> list:
-    """Return the running Q&A history for the plan review session."""
-    ctx = _active.get(run_id)
-    if ctx is None:
-        raise KeyError(f"No engagement: {run_id!r}")
-    return ctx.plan_review_history
-
-
-def add_plan_review_exchange(run_id: str, question: str, answer: str) -> None:
-    """Append a Q&A exchange to the plan review history."""
-    ctx = _active.get(run_id)
-    if ctx is None:
-        raise KeyError(f"No engagement: {run_id!r}")
-    ctx.plan_review_history.append({"q": question, "a": answer})
-
-
-def get_report_chat_history(run_id: str) -> list:
-    """Return the running Q&A history for the report debrief session."""
-    ctx = _active.get(run_id)
-    if ctx is None:
-        raise KeyError(f"No engagement: {run_id!r}")
-    return ctx.report_chat_history
-
-
-def add_report_chat_exchange(run_id: str, question: str, answer: str) -> None:
-    """Append a Q&A exchange to the report chat history."""
-    ctx = _active.get(run_id)
-    if ctx is None:
-        raise KeyError(f"No engagement: {run_id!r}")
-    ctx.report_chat_history.append({"q": question, "a": answer})
+    if ctx.orchestrator is None:
+        raise ValueError("Orchestrator chat is not available during briefing")
+    ctx.orchestrator.inject_operator_message(message)

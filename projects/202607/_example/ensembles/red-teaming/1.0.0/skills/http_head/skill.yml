@@ -1,0 +1,12 @@
+name: http_head
+description: >
+  HTTP HEAD request — returns status code and headers only, no body. Use as the
+  first probe for any path before deciding whether to retrieve the full body with
+  http_get.
+parameters:
+  url:
+    type: string
+    description: Full URL including scheme and path. Hostname must be in the ensemble allowlist.
+    required: true
+returns: >
+  HttpHeadResult — url, status_code, headers (dict), summary string.

@@ -13,40 +13,40 @@ const CLASSIFICATION_LABEL = {
   signal_info:     'INFO',
 }
 
-export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindings, agentReplies, onClose }) {
+export function OperatorChat({ runId, agentId, committeeId, agentTitle, findings, focusFindings, agentReplies, operatorMessages, dispatch, onClose }) {
   const [tab, setTab] = useState(focusFindings && findings?.length ? 'findings' : 'chat')
-  const [messages, setMessages] = useState([])
-  const [input, setInput] = useState('')
-  const [sending, setSending] = useState(false)
-  const [queued, setQueued] = useState(false)
-  const [error, setError] = useState(null)
+  const [input, setInput]       = useState('')
+  const [sending, setSending]   = useState(false)
+  const [queued, setQueued]     = useState(false)
+  const [error, setError]       = useState(null)
   const threadRef = useRef(null)
 
-  // Merge operator-sent messages with agent replies, sorted by timestamp.
+  // Operator messages come from the agent's persistent log (via OPERATOR_MESSAGE),
+  // so they survive reopening the panel — single source of truth with the Agent Log.
   const thread = useMemo(() => {
-    const ops = messages.map(m => ({ ...m, role: 'operator' }))
+    const ops  = (operatorMessages || []).map(m => ({ ...m, role: 'operator' }))
     const reps = (agentReplies || []).map(r => ({ ...r, role: 'agent' }))
     return [...ops, ...reps].sort((a, b) => a.ts - b.ts)
-  }, [messages, agentReplies])
+  }, [operatorMessages, agentReplies])
 
   useEffect(() => {
-    if (threadRef.current) {
-      threadRef.current.scrollTop = threadRef.current.scrollHeight
-    }
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
   }, [thread])
 
   async function handleSend(e) {
     e.preventDefault()
     const text = input.trim()
     if (!text || sending) return
-    const msg = { text, ts: Date.now() }
-    setMessages(prev => [...prev, msg])
     setInput('')
     setSending(true)
     setError(null)
     setQueued(false)
+    // Record the message in the target agent's log; the thread renders from there.
+    dispatch?.({ type: 'OPERATOR_MESSAGE', payload: { committeeId, agentId, text } })
     try {
-      await sendChat(runId, agentId, text)
+      // Route to committee name (not full agent_id) so the backend can find the leader queue.
+      const target = committeeId || agentId
+      await sendChat(runId, target, text)
       setQueued(true)
       setTimeout(() => setQueued(false), 3000)
     } catch (err) {
@@ -65,7 +65,6 @@ export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindin
     <div className="chat-overlay" onClick={onClose}>
       <div className="chat-panel" onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
         <div className="chat-header">
           <div>
             <div className="chat-title">{agentTitle}</div>
@@ -74,7 +73,6 @@ export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindin
           <button className="chat-close" onClick={onClose}>✕</button>
         </div>
 
-        {/* Tabs — only show if there are alert findings */}
         {hasFindings && (
           <div className="chat-tabs">
             <button
@@ -92,7 +90,6 @@ export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindin
           </div>
         )}
 
-        {/* Findings tab */}
         {tab === 'findings' && (
           <div className="chat-findings">
             {alertFindings.map((f, i) => {
@@ -108,7 +105,6 @@ export function OperatorChat({ runId, agentId, agentTitle, findings, focusFindin
           </div>
         )}
 
-        {/* Chat tab */}
         {tab === 'chat' && (
           <>
             <div className="chat-thread" ref={threadRef}>

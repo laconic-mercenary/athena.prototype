@@ -1,0 +1,34 @@
+name: postgres_query
+description: >
+  Executes a read-only SQL query against an allowed PostgreSQL host. Connection is
+  opened with default_transaction_read_only=on — write operations will be rejected
+  by the database server. Credentials must come from findings discovered during recon.
+parameters:
+  host:
+    type: string
+    description: Database hostname. Must be in the ensemble DB allowlist (pgdatabase).
+    required: true
+  port:
+    type: integer
+    description: PostgreSQL port. Default 5432.
+    required: true
+  database:
+    type: string
+    description: Database name.
+    required: true
+  username:
+    type: string
+    description: Database username. Must come from ReconOutput findings.
+    required: true
+  password:
+    type: string
+    description: Database password. Must come from ReconOutput findings.
+    required: true
+  query:
+    type: string
+    description: SQL query to execute. Read-only operations only.
+    required: true
+returns: >
+  PostgresQueryResult — host, database, query, columns (list), rows (list of lists),
+  row_count, error (string | null), summary string.
+notes: Separate allowlist from network tools — pgdatabase only, not the web target.

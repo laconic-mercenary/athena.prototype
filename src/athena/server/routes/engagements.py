@@ -29,9 +29,8 @@ class EngagementStatusResponse(BaseModel):
 
 @router.post("", response_model=StartEngagementResponse, status_code=202)
 async def start_engagement(body: StartEngagementRequest, request: Request) -> StartEngagementResponse:
-    config = request.app.state.config
     try:
-        run_id = runner.start_engagement(body.instructions, config)
+        run_id = runner.start_engagement(body.instructions)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StartEngagementResponse(run_id=run_id)
@@ -43,3 +42,10 @@ async def get_engagement(run_id: str) -> EngagementStatusResponse:
     if ctx is None:
         raise HTTPException(status_code=404, detail="Engagement not found")
     return EngagementStatusResponse(run_id=run_id, status=ctx.status)
+
+
+@router.post("/{run_id}/abort", status_code=204)
+async def abort_engagement(run_id: str) -> None:
+    """Abandon a run and free the worker so a fresh engagement can start (demo Restart).
+    Idempotent — a missing/already-finished engagement is a no-op success."""
+    runner.abort_engagement(run_id)

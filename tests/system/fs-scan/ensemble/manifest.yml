@@ -1,0 +1,78 @@
+name: inventory
+version: 1.0.0
+description: Count files by extension under a directory, then produce a readable inventory report.
+capability_doc: capability.md
+
+# ---
+# Workflow graph — committees are nodes; transitions are the edges the orchestrator may traverse.
+# No operator_approval gates: this ensemble is read-only and benign.
+# ---
+workflow:
+  entry: scan
+  nodes:
+    scan:
+      output_schema: schemas.ScanOutput
+      transitions:
+        - to: report
+        - to: scan
+          condition: retry
+        - to: scan
+          condition: iterate
+    report:
+      output_schema: schemas.ReportOutput
+      transitions:
+        - to: report
+          condition: retry
+        - to: report
+          condition: iterate
+
+# ---
+# Committees. Each leader runs the just-in-time re-planning loop (submit_step / finish).
+# max_steps caps the intra-committee Step loop (harness default is 12; both committees here
+# are trivially one Step, so a low cap is fine).
+# ---
+committees:
+  scan:
+    leader: scan/leader.yml
+    model: claude-sonnet-4-6
+    max_steps: 3
+    # entry committee — consumes nothing upstream
+    elements:
+      - id: count_regular_files
+        label: Regular Files
+        specialists:
+          - elements/count_regular_files/counter.yml
+        skills: [count_regular_files]
+      - id: count_hidden_files
+        label: Hidden Files
+        specialists:
+          - elements/count_hidden_files/counter.yml
+          - elements/count_hidden_files/counter_b.yml
+        skills: [count_hidden_files]
+
+  report:
+    leader: report/leader.yml
+    model: claude-sonnet-4-6
+    max_steps: 3
+    consumes:
+      required: [scan]     # full ScanOutput injected — the report cannot format without it
+      optional: []
+    elements:
+      - id: summarize
+        specialists:
+          - elements/summarize/summarizer.yml
+        skills: []   # reasoning only — formats the ScanOutput
+
+# ---
+# Skills registry. impl is co-located inside skills/ (an ensemble-bundled skill).
+# ---
+skills:
+  - id: count_extensions
+    definition: skills/count_extensions/skill.yml
+    impl: skills/count_extensions/impl.py::count_extensions
+  - id: count_regular_files
+    definition: skills/count_regular_files/skill.yml
+    impl: skills/count_regular_files/impl.py::count_regular_files
+  - id: count_hidden_files
+    definition: skills/count_hidden_files/skill.yml
+    impl: skills/count_hidden_files/impl.py::count_hidden_files

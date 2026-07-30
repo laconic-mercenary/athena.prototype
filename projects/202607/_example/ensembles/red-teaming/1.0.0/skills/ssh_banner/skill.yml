@@ -1,0 +1,16 @@
+name: ssh_banner
+description: >
+  Reads the SSH identification string sent by the server immediately on TCP connect
+  (the "SSH-2.0-OpenSSH_X.Y" line). Use to confirm SSH version and patch level
+  without performing authentication.
+parameters:
+  host:
+    type: string
+    description: Target hostname. Must be in the ensemble allowlist.
+    required: true
+  port:
+    type: integer
+    description: SSH port. Default 22.
+    required: false
+returns: >
+  SshBannerResult — host, port, banner (string | null), error (string | null), summary string.
