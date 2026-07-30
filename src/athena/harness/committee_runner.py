@@ -460,6 +460,12 @@ def run_committee_with_ensemble(
     schema_name = committee.output_schema.__name__
     element_ids = {e.id for e in committee.elements}
 
+    # Field list for the artifact schema — used by finish() and the end_turn validator.
+    _field_list = ", ".join(
+        f'"{k}" ({getattr(field.annotation, "__name__", str(field.annotation))})'
+        for k, field in committee.output_schema.model_fields.items()
+    )
+
     step_count = [0]
     _finished = [False]
     _incomplete = [False]
@@ -593,17 +599,11 @@ def run_committee_with_ensemble(
 
         if name == "finish":
             _finished[0] = True
-            fields = []
-            for k, field in committee.output_schema.model_fields.items():
-                ann = field.annotation
-                type_name = getattr(ann, "__name__", str(ann))
-                fields.append(f'"{k}" ({type_name})')
-            field_list = ", ".join(fields)
             return (
                 f"Objective met. Synthesise your final committee artifact now.\n\n"
                 f"Your ENTIRE response must be a single raw JSON object — "
                 f"no prose, no markdown fences, no surrounding text of any kind.\n"
-                f"Required fields: {field_list}.\n"
+                f"Required fields: {_field_list}.\n"
                 f"String values that contain newlines must be JSON-escaped (\\n)."
             )
 
@@ -705,6 +705,30 @@ def run_committee_with_ensemble(
             stop_reason=stop_reason,
         )
 
+    def _validate_end_turn(text: str) -> str | None:
+        # The leader must end its turn ONLY to emit the final artifact, which happens
+        # after finish(). If it ends conversationally (e.g. after reply_operator), or
+        # after finish() but with unparseable JSON, re-prompt instead of crashing on
+        # extract_json downstream.
+        if _refuse_reason[0] is not None:
+            return None  # refused — accept the end_turn; the caller raises RefuseStartError
+        if not _finished[0]:
+            return (
+                "You ended your turn without calling a tool. Do not reply in plain text. "
+                "If the objective is met, call finish() to synthesise the final artifact. "
+                "If you are waiting on the operator, call ask_operator(). Otherwise call "
+                "submit_step() to continue."
+            )
+        try:
+            committee.output_schema.model_validate(extract_json(text))
+        except (ValueError, ValidationError) as exc:
+            return (
+                f"That was not a valid {schema_name} artifact ({str(exc)[:200]}). Resend your "
+                f"ENTIRE response as a single raw JSON object with fields: {_field_list}. "
+                f"No prose, no markdown fences."
+            )
+        return None
+
     backend = make_backend(committee.provider, None)
     artifact_text = run_agent(
         agent_id=leader_id,
@@ -718,6 +742,7 @@ def run_committee_with_ensemble(
         max_tokens=SYNTHESIS_MAX_TOKENS,
         operator_queue=operator_queue,
         on_model_response=_on_leader_response,
+        on_end_turn=_validate_end_turn,
     )
 
     pub.sendMessage(
@@ -733,12 +758,15 @@ def run_committee_with_ensemble(
     if not _finished[0]:
         _log.warning("%s leader produced end_turn without calling finish()", committee.name)
 
-    raw = extract_json(artifact_text)
+    # The on_end_turn validator normally guarantees a parseable artifact by the time we
+    # get here. This guards the residual case where the correction budget was exhausted,
+    # turning a raw ValueError into a clear committee-level failure.
     try:
+        raw = extract_json(artifact_text)
         artifact = committee.output_schema.model_validate(raw)
-    except ValidationError as exc:
+    except (ValueError, ValidationError) as exc:
         raise RuntimeError(
-            f"Committee {committee.name!r} artifact failed schema validation: {exc}"
+            f"Committee {committee.name!r} did not produce a valid {schema_name} artifact: {exc}"
         ) from exc
 
     return artifact, _incomplete[0]

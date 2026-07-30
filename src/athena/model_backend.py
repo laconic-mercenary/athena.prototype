@@ -83,6 +83,17 @@ class ModelBackend(ABC):
         ...
 
     @abstractmethod
+    def record_assistant_message(self, text: str) -> None:
+        """Append a plain assistant text turn to history.
+
+        complete() does NOT record the assistant turn (record_tool_results does that
+        for tool_use). When the loop re-prompts after an end_turn, it must first record
+        the assistant's text here so history stays a valid alternating sequence and the
+        model keeps sight of what it just said.
+        """
+        ...
+
+    @abstractmethod
     def inject_user_message(self, text: str) -> None:
         """Append an operator message mid-run for committee leader chat.
 
@@ -179,6 +190,10 @@ class AnthropicBackend(ModelBackend):
                 for tc, result in zip(assistant_response.tool_calls, results)
             ],
         })
+
+    def record_assistant_message(self, text: str) -> None:
+        if text:
+            self._messages.append({"role": "assistant", "content": text})
 
     def inject_user_message(self, text: str) -> None:
         formatted = f"[Operator]: {text}"
@@ -337,6 +352,10 @@ class OllamaBackend(ModelBackend):
                 "content": result,
             })
 
+    def record_assistant_message(self, text: str) -> None:
+        if text:
+            self._messages.append({"role": "assistant", "content": text})
+
     def inject_user_message(self, text: str) -> None:
         # OpenAI-compatible format allows a user message after tool messages
         # without the alternation constraint Anthropic imposes.
@@ -385,6 +404,9 @@ class FakeBackend(ModelBackend):
         results: list[str],
     ) -> None:
         self.recorded.append((assistant_response, results))
+
+    def record_assistant_message(self, text: str) -> None:
+        self.recorded.append(("assistant_text", text))
 
     def inject_user_message(self, text: str) -> None:
         self.injected.append(text)

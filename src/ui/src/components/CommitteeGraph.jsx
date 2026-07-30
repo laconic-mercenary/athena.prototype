@@ -4,6 +4,9 @@ import {
   Background,
   Handle,
   Position,
+  BaseEdge,
+  EdgeLabelRenderer,
+  getSmoothStepPath,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -228,27 +231,49 @@ function ResultModal({ elementId, winnerId, winnerTitle, rationale, variants, co
 }
 
 // ── Specialist sub-card (inside ElementNode) ──────────────────────────────────
-function SpecialistCard({ agent, color, onToolClick, isWinner }) {
+function SpecialistCard({ agent, color, onToolClick, isWinner, winnerRationale }) {
   const recentTools = (agent.toolHistory || []).slice(-3).reverse()
   const isActive = agent.status === 'active'
   const winnerColor = '#22c55e'
+  const [badgeHover, setBadgeHover] = useState(false)
 
   return (
     <div style={{
       background: '#07101f',
       border: isWinner ? `1px solid ${winnerColor}88` : `1px solid ${color}22`,
       borderRadius: 4, padding: '6px 9px', position: 'relative',
-      overflow: 'hidden',
+      overflow: 'visible',
       boxShadow: isWinner ? `0 0 8px ${winnerColor}33` : 'none',
     }}>
       {isWinner && (
-        <div style={{
-          position: 'absolute', top: -1, right: 8,
-          background: winnerColor, color: '#000',
-          fontSize: 7, fontWeight: 800, letterSpacing: 1.5,
-          padding: '1px 6px', borderRadius: '0 0 3px 3px',
-          textTransform: 'uppercase',
-        }}>winner</div>
+        <div
+          className="nopan nodrag"
+          onMouseEnter={() => setBadgeHover(true)}
+          onMouseLeave={() => setBadgeHover(false)}
+          style={{
+            position: 'absolute', top: -1, right: 8, zIndex: 5,
+            background: winnerColor, color: '#000',
+            fontSize: 7, fontWeight: 800, letterSpacing: 1.5,
+            padding: '1px 6px', borderRadius: '0 0 3px 3px',
+            textTransform: 'uppercase', cursor: winnerRationale ? 'help' : 'default',
+          }}
+        >
+          winner
+          {badgeHover && winnerRationale && (
+            <div style={{
+              position: 'absolute', top: 'calc(100% + 5px)', right: 0, width: 210, zIndex: 60,
+              background: '#0f172a', border: `1px solid ${winnerColor}44`,
+              borderRadius: 6, padding: '9px 11px', boxShadow: '0 6px 22px rgba(0,0,0,0.7)',
+              fontSize: 9, fontWeight: 400, color: '#94a3b8', lineHeight: 1.55,
+              letterSpacing: 0, textTransform: 'none', textAlign: 'left', whiteSpace: 'normal',
+            }}>
+              <div style={{ fontSize: 7.5, fontWeight: 800, letterSpacing: 1.5, color: winnerColor, marginBottom: 4 }}>
+                WHY THIS WON
+              </div>
+              {winnerRationale}
+            </div>
+          )}
+        </div>
       )}
       <div style={{ fontWeight: 700, fontSize: 10, color: isWinner ? `${winnerColor}cc` : `${color}aa`, marginBottom: recentTools.length ? 4 : 0 }}>
         {agent.title}
@@ -317,6 +342,7 @@ function ElementNode({ data }) {
           color={color}
           onToolClick={onToolClick}
           isWinner={!!elementResult && agent.variant_label === elementResult.winnerId}
+          winnerRationale={elementResult?.rationale}
         />
       ))}
 
@@ -424,12 +450,17 @@ function FindingNode({ data }) {
 
 // ── Committee label node (visual-only header above leader) ───────────────────
 function CommitteeLabelNode({ data }) {
-  const { label, color, status } = data
+  const { label, color, status, objective } = data
   const isActive = status === 'active'
   const isDone   = status === 'completed'
+  const [hovered, setHovered] = useState(false)
+  const hasObjective = Array.isArray(objective) && objective.length > 0
 
   return (
-    <div style={{
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
       background: '#07101f',
       border: `1px solid ${color}33`,
       borderRadius: 5,
@@ -443,11 +474,12 @@ function CommitteeLabelNode({ data }) {
       minWidth: 90,
       opacity: isDone ? 0.55 : 1,
       userSelect: 'none',
-      cursor: 'default',
+      cursor: hasObjective ? 'help' : 'default',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 6,
+      position: 'relative',
     }}>
       <Handle type="target" position={Position.Top}    style={{ visibility: 'hidden' }} />
       {label}
@@ -457,6 +489,24 @@ function CommitteeLabelNode({ data }) {
           background: color, boxShadow: `0 0 5px ${color}`,
           animation: 'node-pulse 1.8s ease-in-out infinite', flexShrink: 0,
         }} />
+      )}
+      {hovered && hasObjective && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: '50%', transform: 'translateX(-50%)',
+          width: 240, zIndex: 60, textAlign: 'left',
+          background: '#0f172a', border: `1px solid ${color}44`,
+          borderRadius: 6, padding: '9px 11px', boxShadow: '0 6px 22px rgba(0,0,0,0.7)',
+          fontWeight: 400, letterSpacing: 0, textTransform: 'none',
+        }}>
+          <div style={{ fontSize: 7.5, fontWeight: 800, letterSpacing: 1.5, color: `${color}cc`, marginBottom: 5 }}>
+            OBJECTIVE
+          </div>
+          {objective.map((o, i) => (
+            <div key={i} style={{ fontSize: 9, color: '#94a3b8', lineHeight: 1.55, marginBottom: 2 }}>
+              • {o}
+            </div>
+          ))}
+        </div>
       )}
       <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
     </div>
@@ -752,7 +802,147 @@ function AgentNode({ data }) {
   )
 }
 
+// ── Gate back-edge (retry / iterate) with a hover tooltip ─────────────────────
+function GateEdgeLabel({ data }) {
+  const [hovered, setHovered] = useState(false)
+  const color = GATE_COLORS[data.decision] || '#94a3b8'
+  const crossCommittee = data.to && data.committee && data.to !== data.committee
+  return (
+    <div
+      className="nodrag nopan"
+      style={{ position: 'relative', pointerEvents: 'all' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {data.subtle ? (
+        // Forward advance edges are always drawn — a subtle dot keeps them quiet
+        // until hovered, unlike the loud chip used for occasional back-edges.
+        <div style={{
+          width: 10, height: 10, borderRadius: '50%',
+          background: '#07101f', border: `1px solid ${color}${hovered ? 'cc' : '55'}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'help', transition: 'border-color 0.15s',
+        }}>
+          <div style={{ width: 3, height: 3, borderRadius: '50%', background: hovered ? color : `${color}77` }} />
+        </div>
+      ) : (
+        <div style={{
+          fontSize: 8, fontWeight: 700, letterSpacing: 0.5,
+          color, background: '#07101f', border: `1px solid ${color}66`,
+          borderRadius: 3, padding: '2px 7px', whiteSpace: 'nowrap', cursor: 'help',
+        }}>
+          {data.label}
+        </div>
+      )}
+      {hovered && (
+        <div style={{
+          position: 'absolute', bottom: 'calc(100% + 6px)', left: '50%',
+          transform: 'translateX(-50%)', zIndex: 60,
+          width: 230, background: '#0f172a', border: `1px solid ${color}44`,
+          borderRadius: 6, padding: '9px 11px', boxShadow: '0 6px 22px rgba(0,0,0,0.7)',
+          fontSize: 9, color: '#94a3b8', lineHeight: 1.55, whiteSpace: 'normal', textAlign: 'left',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 5 }}>
+            <span style={{ fontWeight: 800, color, letterSpacing: 1, textTransform: 'uppercase' }}>
+              {data.decision}{crossCommittee ? ` → ${data.to}` : ''}
+            </span>
+            {data.decidedBy && (
+              <span style={{ fontSize: 7.5, letterSpacing: 1, textTransform: 'uppercase', color: '#475569' }}>
+                {data.decidedBy}
+              </span>
+            )}
+          </div>
+          {data.attempt && (
+            <div style={{ fontSize: 8, color: '#64748b', marginBottom: 5 }}>Attempt {data.attempt}</div>
+          )}
+          {data.rationale
+            ? <div>{data.rationale}</div>
+            : <div style={{ color: '#475569', fontStyle: 'italic' }}>No rationale provided.</div>}
+          {data.nextObjective && (
+            <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${color}22` }}>
+              <div style={{ fontSize: 7.5, fontWeight: 800, letterSpacing: 1.5, color: `${color}aa`, marginBottom: 3 }}>
+                REFINED NEXT OBJECTIVE
+              </div>
+              <div>{data.nextObjective}</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Faint chevrons that travel along an edge toward its target and fade out — a
+// directional "current" indicator. Each chevron follows the edge's own path via
+// <mpath>, staggered in time so a small train of arrows flows continuously.
+function EdgeChevrons({ edgeId, color, count = 3, dur = 1.9 }) {
+  return Array.from({ length: count }).map((_, i) => {
+    const begin = `${(i * dur) / count}s`
+    return (
+      <path
+        key={i}
+        d="M -3 -3 L 3 0 L -3 3"
+        fill="none"
+        stroke={color}
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0"
+        style={{ pointerEvents: 'none' }}
+      >
+        <animateMotion dur={`${dur}s`} begin={begin} repeatCount="indefinite" rotate="auto">
+          <mpath href={`#${edgeId}`} />
+        </animateMotion>
+        <animate
+          attributeName="opacity"
+          dur={`${dur}s`}
+          begin={begin}
+          repeatCount="indefinite"
+          values="0;0.8;0"
+          keyTimes="0;0.45;1"
+        />
+      </path>
+    )
+  })
+}
+
+function GateEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, data }) {
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition,
+  })
+  const color = GATE_COLORS[data?.decision] || '#94a3b8'
+  return (
+    <>
+      <BaseEdge id={id} path={edgePath} style={style} />
+      {data?.flow && <EdgeChevrons edgeId={id} color={color} />}
+      <EdgeLabelRenderer>
+        <div style={{
+          position: 'absolute',
+          transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+          pointerEvents: 'all',
+        }}>
+          <GateEdgeLabel data={data} />
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  )
+}
+
+// Structural / active edges — no label, just the flowing chevrons when active.
+function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, data }) {
+  const [edgePath] = getSmoothStepPath({
+    sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition,
+  })
+  return (
+    <>
+      <BaseEdge id={id} path={edgePath} style={style} />
+      {data?.flow && <EdgeChevrons edgeId={id} color={data.flowColor || '#3b82f6'} />}
+    </>
+  )
+}
+
 const nodeTypes = { committee: CommitteeNode, committeeLabel: CommitteeLabelNode, agent: AgentNode, element: ElementNode, finding: FindingNode }
+const edgeTypes = { gate: GateEdge, flow: FlowEdge }
 
 const ORCH_POS  = { x: 0, y: 0 }
 const COMM_Y    = 115            // committee-label row (below orchestrator)
@@ -761,6 +951,16 @@ const COMM_LABEL_HEIGHT = 62     // committee label → first leader
 const NODE_V_GAP = 36            // vertical gap between stacked leader/element nodes
 const FINDING_GAP    = 88
 const FINDING_INIT_Y = 0
+
+// Static per-type node z-index. Applied to EVERY node (no undefined values, no
+// hover-driven changes) so React Flow keeps a stable render layering. Committee
+// labels sit above the leaders/elements below them so their downward tooltips
+// (objective) clear those nodes without any dynamic elevation.
+const Z_COMMITTEE = 20
+const Z_LEADER    = 10
+const Z_ELEMENT   = 10
+const Z_ORCH      = 10
+const Z_FINDING   = 5
 
 // Node heights are content-driven, so we stack each column with a running cursor
 // rather than fixed offsets. These estimators approximate the rendered card height
@@ -817,6 +1017,7 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
       id: 'committee-orchestrator',
       type: 'committee',
       position: pos,
+      zIndex: Z_ORCH,
       data: {
         label: 'Orchestrator',
         color,
@@ -847,14 +1048,19 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
       const pos   = positions[name] || { x: i * COMM_GAP, y: COMM_Y }
       const data  = committees[name] || {}
       const color = committeeColor(name, i)
+      const nodeId = `committee-${name}`
       return {
-        id: `committee-${name}`,
+        id: nodeId,
         type: 'committeeLabel',
         position: pos,
-        data: { label: name, color, status: data.status || 'inactive' },
+        zIndex: Z_COMMITTEE,
+        data: {
+          label: name, color, status: data.status || 'inactive',
+          objective: plan?.committees?.[name]?.objective,
+        },
       }
     }),
-    [committeeNames, committees, positions]
+    [committeeNames, committees, positions, plan]
   )
 
   // ── Agent nodes (leaders only) + Element nodes (specialist groups) ────────
@@ -897,6 +1103,7 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
           id: `agent-${agent.id}`,
           type: 'agent',
           position: { x: colX, y: leaderY },
+          zIndex: Z_LEADER,
           data: {
             title: agent.title || agent.id.split('.').pop(),
             color,
@@ -934,6 +1141,7 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
             x: colX,
             y: elementY,
           },
+          zIndex: Z_ELEMENT,
           data: {
             elementId: eid,
             elementLabel,
@@ -968,9 +1176,9 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
         id: `e-orch-${name}`,
         source: 'committee-orchestrator',
         target: `committee-${name}`,
-        type: 'smoothstep',
-        animated: active,
+        type: 'flow',
         style: { stroke: active ? `${color}66` : '#1a2540' },
+        data: { flow: active, flowColor: color },
       })
     })
 
@@ -984,9 +1192,9 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
         id: `e-comm-leader-${name}`,
         source: `committee-${name}`,
         target: `agent-${leaderId}`,
-        type: 'smoothstep',
-        animated: active,
+        type: 'flow',
         style: { stroke: active ? `${color}55` : '#1a2540' },
+        data: { flow: active, flowColor: color },
       })
     })
 
@@ -998,17 +1206,36 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
         const nextLeaderId = leaderIdByCommittee[nextName]
         if (!leaderId || !nextLeaderId) return
         const color = committeeColor(nextName, i + 1)
-        const advancing = gateDecisions.some(
+        const advanceDecision = gateDecisions.find(
           g => g.committee === name && g.decision === 'advance' && (!g.to || g.to === nextName)
         )
-        result.push({
+        const advancing = !!advanceDecision
+        const fwd = {
           id: `e-fwd-${name}-${nextName}`,
           source: `agent-${leaderId}`,
           target: `agent-${nextLeaderId}`,
-          type: 'smoothstep',
-          animated: advancing,
           style: { stroke: advancing ? `${color}88` : '#1a2540' },
-        })
+        }
+        if (advanceDecision) {
+          // Hoverable advance edge — subtle dot, reveals the advance rationale; flows.
+          fwd.type = 'gate'
+          fwd.data = {
+            subtle: true,
+            flow: true,
+            label: '→ advance',
+            decision: 'advance',
+            rationale: advanceDecision.rationale,
+            nextObjective: advanceDecision.next_objective,
+            to: advanceDecision.to,
+            committee: name,
+            decidedBy: advanceDecision.decidedBy,
+            attempt: advanceDecision.attempt,
+          }
+        } else {
+          fwd.type = 'flow'
+          fwd.data = { flow: false, flowColor: color }
+        }
+        result.push(fwd)
       }
     })
 
@@ -1023,15 +1250,22 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
           id: `e-back-${idx}`,
           source: `agent-${sourceId}`,
           target: `agent-${targetId}`,
-          type: 'smoothstep',
+          type: 'gate',
           style: {
             stroke: `${edgeColor}88`,
             strokeDasharray: '5 4',
             strokeWidth: 1.5,
           },
-          label: g.decision === 'retry' ? '↩ retry' : '↻ iterate',
-          labelStyle: { fontSize: 8, fill: edgeColor },
-          labelBgStyle: { fill: '#07101f' },
+          data: {
+            flow: true,
+            label: g.decision === 'retry' ? '↩ retry' : '↻ iterate',
+            decision: g.decision,
+            rationale: g.rationale,
+            to: g.to,
+            committee: g.committee,
+            decidedBy: g.decidedBy,
+            attempt: g.attempt,
+          },
         })
       }
     })
@@ -1053,9 +1287,9 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
         id: `e-elem-${nodeId}`,
         source: `agent-${leaderId}`,
         target: nodeId,
-        type: 'smoothstep',
-        animated: active,
+        type: 'flow',
         style: { stroke: active ? `${color}44` : `${color}18` },
+        data: { flow: active, flowColor: color },
       })
     })
 
@@ -1084,6 +1318,7 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
         id: f.nodeId,
         type: 'finding',
         position: { x: findingX, y: FINDING_INIT_Y + i * FINDING_GAP },
+        zIndex: Z_FINDING,
         data: {
           finding: f.finding,
           onOpenChat: () => dispatch({
@@ -1106,9 +1341,9 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
         id: `e-disc-${f.nodeId}`,
         source: sourceNodeId,
         target: f.nodeId,
-        type: 'smoothstep',
-        animated: f.agentStatus === 'active',
+        type: 'flow',
         style: { stroke: `${color}55`, strokeDasharray: '5 4', strokeWidth: 1 },
+        data: { flow: f.agentStatus === 'active', flowColor: color },
       })
     })
 
@@ -1180,6 +1415,7 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
         nodes={allNodes}
         edges={allEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodeClick={onNodeClick}
         fitView
         fitViewOptions={{ padding: 0.25 }}

@@ -40,6 +40,7 @@ class EngagementContext:
 
     reply_event: threading.Event
     plan_decision_event: threading.Event
+    gate_decision_event: threading.Event
     awaiting_approval: bool
     leader_queues: dict[str, queue.Queue]
     # Optional state (None-defaulted fields must follow required fields)
@@ -49,6 +50,10 @@ class EngagementContext:
     pending_answer: str | None = None
     plan_decision_type: str | None = None
     revision_message: str | None = None
+    # Committee-gate decision (operator-authoritative Accept / Redo). Distinct from
+    # the plan-approval channel above — a committee gate never overlaps briefing.
+    gate_decision_action: str | None = None       # "accept" | "redo"
+    gate_decision_suggestion: str | None = None   # operator's Redo note
 
 
 def get_context(run_id: str) -> EngagementContext | None:
@@ -82,6 +87,7 @@ def start_engagement(instructions: str) -> str:
         status="running",
         reply_event=threading.Event(),
         plan_decision_event=threading.Event(),
+        gate_decision_event=threading.Event(),
         awaiting_approval=False,
         leader_queues={},
     )
@@ -99,15 +105,25 @@ def start_engagement(instructions: str) -> str:
         ctx.pending_answer = None
         return answer
 
-    def _approval_handler() -> bool:
-        # workflow.py already publishes gate.awaiting_approval with the correct
-        # committee name before calling this function — don't duplicate it here.
+    def _gate_handler(committee: str, digest: str, redo_available: bool) -> tuple[str, str | None]:
+        # Operator-authoritative committee gate. Blocks until the operator decides via
+        # resolve_gate_decision(). No timeout — the gate holds until the operator acts,
+        # matching the plan-approval gate. The awaiting flag is set BEFORE publishing
+        # gate.awaiting_approval so a fast operator POST can't 409 the decision.
         ctx.awaiting_approval = True
-        ctx.plan_decision_type = None
-        ctx.plan_decision_event.clear()
-        ctx.plan_decision_event.wait()
+        ctx.gate_decision_action = None
+        ctx.gate_decision_suggestion = None
+        ctx.gate_decision_event.clear()
+        pub.sendMessage(
+            "gate.awaiting_approval",
+            run_id=run_id,
+            committee=committee,
+            digest=digest,
+            redo_available=redo_available,
+        )
+        ctx.gate_decision_event.wait()
         ctx.awaiting_approval = False
-        return ctx.plan_decision_type == "approve"
+        return (ctx.gate_decision_action or "accept", ctx.gate_decision_suggestion)
 
     def _read_artifact_fn(name: str) -> str:
         artifacts_dir = Path("artifacts") / run_id
@@ -188,7 +204,7 @@ def start_engagement(instructions: str) -> str:
                     artifacts_dir=Path("artifacts") / run_id,
                     run_id=run_id,
                     ask_operator_handler=_ask_user_handler,
-                    approval_handler=_approval_handler,
+                    gate_handler=_gate_handler,
                     leader_queues=ctx.leader_queues,
                     global_step_budget=GLOBAL_STEP_BUDGET,
                 )
@@ -235,6 +251,17 @@ def request_revision(run_id: str, message: str) -> None:
     ctx.revision_message = message
     ctx.plan_decision_type = "revise"
     ctx.plan_decision_event.set()
+
+
+def resolve_gate_decision(run_id: str, *, action: str, suggestion: str | None) -> None:
+    """Release a committee-gate. action is "accept" or "redo"; suggestion is the
+    operator's Redo note (ignored for accept)."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    ctx.gate_decision_action = action
+    ctx.gate_decision_suggestion = suggestion
+    ctx.gate_decision_event.set()
 
 
 def send_to_leader(run_id: str, committee_name: str, message: str) -> None:

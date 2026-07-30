@@ -31,6 +31,7 @@ const initialState = {
     status: 'idle',
     awaitingApproval: false,
     awaitingCommittee: null,
+    awaitingRedoAvailable: false,
   },
   planReady: false,
   plan: null,
@@ -82,7 +83,7 @@ function reducer(state, action) {
     return {
       ...state,
       page: 'dialog',
-      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null },
+      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
       planReady: false,
       plan: null,
       committees: {},
@@ -138,19 +139,24 @@ function reducer(state, action) {
   }
 
   if (type === 'GATE_AWAITING_APPROVAL') {
-    const ev = { kind: 'committee', text: `gate · awaiting approval after ${payload.committee}`, color: '#3b82f6', ts: Date.now() }
+    const ev = { kind: 'committee', text: `gate · awaiting decision after ${payload.committee}`, color: '#3b82f6', ts: Date.now() }
     return {
       ...state,
-      engagement: { ...state.engagement, awaitingApproval: true, awaitingCommittee: payload.committee },
+      engagement: {
+        ...state.engagement,
+        awaitingApproval: true,
+        awaitingCommittee: payload.committee,
+        awaitingRedoAvailable: payload.redo_available !== false,
+      },
       latestEvent: ev,
       eventLog: appendLog(state, ev),
     }
   }
 
-  if (type === 'ENGAGEMENT_APPROVED') {
+  if (type === 'ENGAGEMENT_APPROVED' || type === 'GATE_RESOLVED') {
     return {
       ...state,
-      engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null },
+      engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
     }
   }
 
@@ -227,8 +233,8 @@ function reducer(state, action) {
   }
 
   if (type === 'GATE_DECISION') {
-    const { committee, decision, rationale, to, next_objective, attempt } = payload
-    const entry = { committee, decision, rationale, to, next_objective, attempt, ts: Date.now() }
+    const { committee, decision, rationale, to, next_objective, attempt, decided_by } = payload
+    const entry = { committee, decision, rationale, to, next_objective, attempt, decidedBy: decided_by, ts: Date.now() }
     const icon = GATE_ICONS[decision] || '·'
     let text = `${icon} ${decision.toUpperCase()}`
     if (to && to !== committee) text += ` → ${to}`
@@ -332,6 +338,30 @@ function reducer(state, action) {
       agents: {
         ...state.agents,
         [agent_id]: {
+          ...prev,
+          messageLog: [...(prev.messageLog || []).slice(-(MESSAGE_LOG_MAX - 1)), entry],
+        },
+      },
+    }
+  }
+
+  if (type === 'OPERATOR_MESSAGE') {
+    // Thread an operator's outgoing chat into the target agent's log. Prefer the
+    // exact agent; fall back to the committee's leader when only a committee is known.
+    const { committeeId, agentId, text } = payload
+    const targetId = (agentId && state.agents[agentId])
+      ? agentId
+      : Object.keys(state.agents).find(
+          id => state.agents[id].committee === committeeId && state.agents[id].role === 'leader'
+        )
+    if (!targetId || !state.agents[targetId]) return state
+    const prev = state.agents[targetId]
+    const entry = { kind: 'operator', text, ts: Date.now() }
+    return {
+      ...state,
+      agents: {
+        ...state.agents,
+        [targetId]: {
           ...prev,
           messageLog: [...(prev.messageLog || []).slice(-(MESSAGE_LOG_MAX - 1)), entry],
         },

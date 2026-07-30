@@ -47,6 +47,14 @@ export async function planReview(runId, action) {
   }))
 }
 
+export async function gateDecision(runId, action, suggestion) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/gate-decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, suggestion: suggestion || null }),
+  }))
+}
+
 export async function reportChat(runId, message) {
   return _json(await fetch(`${BASE}/engagements/${runId}/report-chat`, {
     method: 'POST',

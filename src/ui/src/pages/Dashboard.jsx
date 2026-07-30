@@ -3,11 +3,12 @@ import { CommitteeGraph } from '../components/CommitteeGraph'
 import { SystemView } from '../components/SystemView'
 import { ArtifactTable } from '../components/ArtifactTable'
 import { OperatorChat } from '../components/OperatorChat'
-import { PlanReviewChat } from '../components/PlanReviewChat'
+import { OperatorDecisionModal } from '../components/OperatorDecisionModal'
 import { ReportChat } from '../components/ReportChat'
 import { ReportModal } from '../components/ReportModal'
 import { CommitteeResultsModal } from '../components/CommitteeResultsModal'
 import { formatToolSummary } from '../App'
+import { gateDecision } from '../api'
 
 const COMMITTEE_PALETTE = ['#f97316', '#22c55e', '#ef4444', '#eab308', '#3b82f6', '#a855f7', '#06b6d4']
 function committeeColor(name, committeeNames) {
@@ -99,6 +100,16 @@ function AgentLogPanel({ agents, committeeNames }) {
                   </span>
                   <span style={{ color: '#64748b' }}>
                     ⚙ {formatToolSummary(entry.tool, entry.input_summary)}
+                  </span>
+                </div>
+              ) : entry.kind === 'operator' ? (
+                <div key={i} style={{ display: 'flex', gap: 10, fontSize: 10, alignItems: 'flex-start', paddingLeft: 8, marginBottom: 4 }}>
+                  <span style={{ color: '#2d4060', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtTime(entry.ts)}
+                  </span>
+                  <span style={{ color: '#3b82f6', lineHeight: 1.5 }}>
+                    <span style={{ fontWeight: 700, letterSpacing: 0.5 }}>operator › </span>
+                    {entry.text.length > TEXT_PREVIEW_MAX ? entry.text.slice(0, TEXT_PREVIEW_MAX) + '…' : entry.text}
                   </span>
                 </div>
               ) : (
@@ -240,28 +251,38 @@ export function Dashboard({ state, dispatch }) {
       <header className="dashboard-header">
         <h1 className="dash-title">Athena</h1>
 
-        {/* Alert hierarchy: approval gate > leader question > critical finding */}
+        {/* Alert hierarchy: approval gate > pending question (orchestrator/leader) > critical finding.
+            Short chips — the action, not a sentence; committee shown as a subtle tag. */}
         {engagement.awaitingApproval ? (
           <button
             className="dash-alert-btn dash-alert-btn--approval"
             onClick={() => setPlanReviewOpen(true)}
           >
-            ✦ Gate: review &amp; approve {engagement.awaitingCommittee} output →
+            ⬢ Approval Required
+            {engagement.awaitingCommittee && <span className="dash-alert-tag"> · {engagement.awaitingCommittee}</span>}
+          </button>
+        ) : state.pendingOrchestratorQuestion && !chat.isOpen ? (
+          <button
+            className="dash-alert-btn dash-alert-btn--warn"
+            onClick={() => dispatch({ type: 'OPEN_CHAT', payload: { agentId: 'athena.orchestrator', committeeId: null, agentTitle: 'Orchestrator', findings: [] } })}
+          >
+            ✎ Answer Required<span className="dash-alert-tag"> · orchestrator</span>
           </button>
         ) : pendingLeaderQuestion && !chat.isOpen ? (
           <button
             className="dash-alert-btn dash-alert-btn--warn"
             onClick={() => openLeadChat(pendingLeaderQuestion)}
           >
-            ? {pendingLeaderQuestion.committee} asks: {pendingLeaderQuestion.question.slice(0, 60)}…
+            ✎ Answer Required<span className="dash-alert-tag"> · {pendingLeaderQuestion.committee}</span>
           </button>
         ) : attention && !chat.isOpen ? (
           <button
             className={`dash-alert-btn dash-alert-btn--${attention.sev === 'signal_critical' ? 'crit' : 'warn'}`}
             onClick={() => openLeadChat(attention)}
           >
-            {attention.sev === 'signal_critical' ? '⚠ Critical finding' : '⚠ Finding flagged'}
-            {attention.count > 1 ? ` ×${attention.count}` : ''} — brief the {attention.committee} lead →
+            ⚠ {attention.sev === 'signal_critical' ? 'Critical' : 'Flagged'}
+            {attention.count > 1 ? ` ×${attention.count}` : ''}
+            <span className="dash-alert-tag"> · {attention.committee}</span>
           </button>
         ) : null}
 
@@ -365,17 +386,20 @@ export function Dashboard({ state, dispatch }) {
       )}
 
       {planReviewOpen && engagement.awaitingApproval && (
-        <PlanReviewChat
-          runId={engagement.run_id}
-          committee={engagement.awaitingCommittee}
-          digest={committees[engagement.awaitingCommittee]?.digest}
-          onApproved={() => {
+        <OperatorDecisionModal
+          title={`${engagement.awaitingCommittee || 'Gate'} · Review`}
+          subtitle="Accept to advance, or Redo to re-run this committee"
+          body={committees[engagement.awaitingCommittee]?.digest}
+          redoAvailable={engagement.awaitingRedoAvailable}
+          onAccept={async () => {
+            await gateDecision(engagement.run_id, 'accept')
             setPlanReviewOpen(false)
-            dispatch({ type: 'ENGAGEMENT_APPROVED', payload: {} })
+            dispatch({ type: 'GATE_RESOLVED', payload: {} })
           }}
-          onRejected={() => {
+          onRedo={async (suggestion) => {
+            await gateDecision(engagement.run_id, 'redo', suggestion)
             setPlanReviewOpen(false)
-            dispatch({ type: 'ENGAGEMENT_REJECTED', payload: {} })
+            dispatch({ type: 'GATE_RESOLVED', payload: {} })
           }}
           onOpenArtifact={engagement.awaitingCommittee ? () => {
             setOpenReport({
@@ -397,6 +421,8 @@ export function Dashboard({ state, dispatch }) {
           findings={chat.findings}
           focusFindings={chat.focusFindings}
           agentReplies={state.agentReplies?.[chat.agentId] || []}
+          operatorMessages={(state.agents[chat.agentId]?.messageLog || []).filter(e => e.kind === 'operator')}
+          dispatch={dispatch}
           onClose={() => dispatch({ type: 'CLOSE_CHAT' })}
         />
       )}

@@ -494,6 +494,11 @@ html, body, #root {
   border-color: #ef4444;
   color: #ef4444;
 }
+.plan-review-btn--redo {
+  background: rgba(249,115,22,0.12);
+  border-color: #f97316;
+  color: #f97316;
+}
 .plan-review-thinking {
   color: var(--text-muted);
   font-style: italic;
@@ -1361,11 +1366,13 @@ html, body, #root {
   font-family: inherit;
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
   cursor: pointer;
   color: #fff;
   white-space: nowrap;
 }
+.dash-alert-tag { opacity: 0.65; font-weight: 600; }
 .dash-alert-btn--crit {
   background: var(--red);
   animation: alert-pulse-red 1.3s ease-in-out infinite;

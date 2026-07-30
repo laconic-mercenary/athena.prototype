@@ -4,7 +4,9 @@ Design notes for the **Briefing page** (Instructions › Briefing › Engagement
 the moment the orchestrator presents the EngagementPlan and the operator configures gates and
 approves. Companion to [[ENSEMBLES.md]] (harness) and [[ENSEMBLE_UI.md]] (UI rework).
 
-Status: **design / discussion.** Nothing here is built yet.
+Status: **partially implemented.** Built so far: the 50/50 briefing layout + switch panel
+(switches #1/#3 live; #5/#4 disabled) and the operator-authoritative **committee gate** (§10,
+Architecture X). Remaining items are design/discussion.
 
 ---
 
@@ -70,7 +72,10 @@ Toggles a non-expert can flip pre-engagement. **Build: 1, 3, 4, 5 as toggles; 2 
 
 Switch #5 is the key mid-engagement lever: today the operator largely engages the orchestrator
 **at the end** of the run. #5 creates a decision point *during* the run where the operator can
-direct a **retry or iterate** — which depends on Task A (cross-committee back-edges).
+direct a **retry or iterate**. It requires only that retry/iterate edges be **declared in the
+manifest** (fs-scan declares both as self-loops, so #5 is valid there). It does **not** require a
+cross-committee back-edge — Task A only extends *how far back* a retry/iterate may reach. See §8
+(Safety envelope) for why switch validity must be derived from the manifest.
 
 ---
 
@@ -174,12 +179,83 @@ Engagement Orchestrator lean.
 
 ---
 
-## 8. Open decisions
+## 8. Safety envelope — the manifest is authoritative
+
+**Rule: the manifest.yml is the safety boundary. Neither the operator's switches nor the
+orchestrator's decisions may exceed what the manifest declares.** The manifest overrides anything
+the orchestrator (or operator) could otherwise request.
+
+**Already enforced for the orchestrator.** An undeclared `retry`/`iterate` target **fails closed**
+— [workflow.py:208-216](../../src/athena/harness/workflow.py) logs a warning and defaults to
+`advance` rather than traversing an edge the author did not sanction. The set of transitions the
+orchestrator may traverse = exactly the manifest's declared edges.
+
+**Consequence for the switch panel — validity is derived from the manifest, not assumed.** Two
+classes of switch:
+- **Approval gates (pauses)** — #1, #3. A gate is a *pause*, not a graph traversal; the workflow
+  honors any `plan.gates` entry regardless of edges. Always safe to place → no manifest backing
+  needed.
+- **Traversal-gating switches** — #5 (and any future "send work back to committee X"). These gate
+  *re-execution*, so they are valid **only if the manifest declares the corresponding
+  `retry`/`iterate` edge.** fs-scan declares retry/iterate self-loops → #5 valid. An ensemble with
+  no retry/iterate edges → #5 must be **disabled** (fail closed, like #4).
+
+**Therefore the UI needs the manifest's declared transitions per committee** surfaced alongside the
+plan — the switch panel renders each traversal-gating switch's availability from manifest
+capabilities, defaulting to disabled when the capability is not declared. This upgrades the
+"element/graph data is not in the EngagementPlan" gap (§ layout notes) from cosmetic to a **safety
+requirement**.
+
+**Smell to fix:** the fail-closed fallback is correct but **silent** (only a log line). If a switch
+ever lets the operator request a traversal, an undeclared/undoable request must **surface to the
+operator**, not vanish into an `advance`.
+
+---
+
+## 9. Open decisions
 - [x] **Source-of-truth for the plan** — DECIDED: everything routes through the orchestrator
   (toggle → revision message → `plan_ready` → UI). Single source of truth = the orchestrator's
   plan; toggle state derives from `plan.gates`. See §5.
 - [ ] **Two orchestrators (Idea C)** — PARKED. Revisit when orchestrator load (D1) bites; the §5
   toggle-through-orchestrator decision pushes in this direction.
+- [ ] **Surface manifest capabilities to the UI** (declared transitions per committee) so the
+  switch panel can validate traversal-gating switches — a **safety requirement**, not cosmetic (§8).
+- [ ] **Surface the silent fail-closed fallback** to the operator when a requested traversal is
+  undeclared (§8 smell).
 - [ ] Element-gate (#4) this pass, or after harness SIT is stable?
 - [ ] Annotate plan with ensemble intervention points (needs orchestrator + event work).
 - [ ] Add declared cross-committee back-edges to fs-scan to exercise Task A end-to-end.
+
+---
+
+## 10. IMPLEMENTED — committee gate (Architecture X)
+
+The committee operator-approval gate is now **operator-authoritative** (Accept / Redo),
+replacing the old approve/reject. At a **gated** committee the operator's decision drives the
+transition and the orchestrator's `run_gate` is **skipped**; **non-gated** committees are
+unchanged (orchestrator decides). Reject was removed (future global kill switch).
+
+**Flow:** committee finishes → `gate.awaiting_approval` (now carries `digest` + `redo_available`)
+→ operator picks **Accept** (→ advance) or **Redo(suggestion)** (→ iterate self, suggestion as
+objective note; retry if only retry is declared) → harness emits `gate.decision` tagged
+`decided_by: "operator"` (animates the graph) and injects a note so the orchestrator stays
+coherent.
+
+**Manifest still governs.** Redo is guarded by the SAME `_has_declared_transition` check the
+orchestrator uses — enforced in `_await_operator_gate`, not `run_gate`. `redo_available` is
+computed from the declared edges and hides Redo in the UI when undeclared; a stale Redo is
+rejected via `gate.redo_unsupported` and the gate re-awaits.
+
+**Files:** `harness/workflow.py` (`_await_operator_gate`, `GateHandler`, gated/non-gated split),
+`server/runner.py` (`gate_decision_event` channel, `_gate_handler`, `resolve_gate_decision`),
+new `server/routes/gate_decision.py`, `server/app.py`. UI: new reusable
+`components/OperatorDecisionModal.jsx` (Accept / Redo, `showSkip` reserved for step reuse),
+`api.js` `gateDecision()`, `App.jsx` (`redo_available` in state, `GATE_RESOLVED`), `Dashboard.jsx`
+(swap modal, header copy), `index.css` (`.plan-review-btn--redo`). `PlanReviewChat.jsx` orphaned.
+
+**Demo path (no manifest change):** operator flips switch #1 at briefing → gate after `scan` →
+`scan` finishes → `OperatorDecisionModal` with Accept/Redo (Redo live, `scan` declares iterate).
+
+**Status:** built; backend imports + full UI build verified. Not yet exercised live (needs the
+running app + a gated engagement). Reuses cleanly for the step-level gate (C): same modal + Skip,
+same channel, pointed at a step.

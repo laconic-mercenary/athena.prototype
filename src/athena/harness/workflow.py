@@ -34,7 +34,11 @@ GLOBAL_STEP_BUDGET = 750
 
 BackendFactory = Callable[[str, "str | None"], ModelBackend]
 AskOperatorHandler = Callable[[str], str]
-ApprovalHandler = Callable[[], bool]
+# Runs one operator committee-gate: receives (committee, digest, redo_available),
+# publishes gate.awaiting_approval itself (after marking the engagement as awaiting,
+# so a fast operator POST can't race the flag), blocks, and returns the operator's
+# decision as (action, suggestion) — action is "accept" or "redo".
+GateHandler = Callable[[str, str, bool], "tuple[str, str | None]"]
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +64,48 @@ def _has_declared_transition(node: WorkflowNode, condition: str, to: str) -> boo
     return any(t.condition == condition and t.to == to for t in node.transitions)
 
 
+def _await_operator_gate(
+    gate_handler: GateHandler,
+    node: WorkflowNode,
+    committee: str,
+    digest: str,
+    redo_available: bool,
+    run_id: str,
+) -> GateDecision:
+    """Block on the operator-authoritative committee gate and return a GateDecision.
+
+    Accept → advance. Redo → iterate (or retry, if only retry is declared) on the
+    same committee, with the operator's suggestion as the objective note. Redo is
+    guarded by the SAME manifest check the orchestrator uses (_has_declared_transition):
+    an undeclared Redo is rejected and the gate re-awaits — so operator authority never
+    exceeds the manifest envelope.
+    """
+    while True:
+        # The handler marks the engagement as awaiting and publishes
+        # gate.awaiting_approval itself (flag set before the event), then blocks.
+        action, suggestion = gate_handler(committee, digest, redo_available)
+
+        if action == "accept":
+            return GateDecision(decision="advance", rationale="Operator accepted the output.")
+
+        if action == "redo":
+            cond = (
+                "iterate" if _has_declared_transition(node, "iterate", committee)
+                else "retry" if _has_declared_transition(node, "retry", committee)
+                else None
+            )
+            if cond is None:
+                # Defensive: the UI hides Redo when redo_available is False, so this
+                # only fires on a stale client. Tell the operator, keep the gate open.
+                pub.sendMessage("gate.redo_unsupported", run_id=run_id, committee=committee)
+                continue
+            note = (suggestion or "").strip() or None
+            rationale = f"Operator requested redo: {note}" if note else "Operator requested redo."
+            return GateDecision(decision=cond, to=committee, note=note, rationale=rationale)
+
+        _log.warning("Unknown gate action %r on %r; re-awaiting.", action, committee)
+
+
 # ---------------------------------------------------------------------------
 # Main workflow runner
 # ---------------------------------------------------------------------------
@@ -72,7 +118,7 @@ def run_workflow(
     artifacts_dir: Path,
     run_id: str,
     ask_operator_handler: AskOperatorHandler,
-    approval_handler: ApprovalHandler,
+    gate_handler: GateHandler,
     leader_queues: dict[str, queue.Queue],
     global_step_budget: int,
 ) -> None:
@@ -143,42 +189,54 @@ def run_workflow(
             artifact=str(artifact_path),
         )
 
-        # Check for operator_approval gate after this committee
-        gate = next((g for g in plan.gates if g.after == current), None)
-        if gate is not None:
-            # Tell the orchestrator where we are before it can receive operator
-            # messages — otherwise it only has briefing context and will give
-            # wrong answers about what has run.
-            orchestrator.inject_harness_update(
-                f"== Operator-approval gate: {current!r} complete ==\n"
-                f"The {current!r} committee has just finished. The engagement is now "
-                f"paused at an operator-approval gate. The operator is reviewing the "
-                f"output in the UI and will approve (continue to the next committee) "
-                f"or reject (end the engagement). No other committees are running.\n"
-                f"If the operator messages you, answer accurately based on what has "
-                f"been completed so far. Do not say the pipeline is starting or that "
-                f"committees are running — everything is paused until they approve."
-            )
-            pub.sendMessage("gate.awaiting_approval", run_id=run_id, committee=current)
-            approved = approval_handler()
-            if not approved:
-                pub.sendMessage(
-                    "engagement.rejected",
-                    run_id=run_id,
-                    reason=f"Operator rejected at gate after {current!r}",
-                )
-                return
-            pub.sendMessage("engagement.approved", run_id=run_id)
-
         terminal = _is_terminal(node)
 
-        decision = orchestrator.run_gate(
-            committee_name=current,
-            digest=digest,
-            gate_type=gate.type.value if gate else "auto",
-            retry_count=retry_counts.get(current, 0),
-            iterate_count=iterate_counts.get(current, 0),
-        )
+        # A declared operator_approval gate makes this committee OPERATOR-AUTHORITATIVE:
+        # the operator's Accept/Redo drives the transition and the orchestrator's
+        # autonomous run_gate is skipped. Without a gate, the orchestrator decides as
+        # usual. Either way the manifest governs via _has_declared_transition.
+        gate = next((g for g in plan.gates if g.after == current), None)
+        if gate is not None:
+            redo_available = (
+                _has_declared_transition(node, "iterate", current)
+                or _has_declared_transition(node, "retry", current)
+            )
+            # Keep the orchestrator's context accurate — it may still field operator
+            # chat during the pause, and it decides later non-gated committees.
+            orchestrator.inject_harness_update(
+                f"== Operator gate: {current!r} complete ==\n"
+                f"The {current!r} committee has just finished. The engagement is paused "
+                f"at an operator gate; the operator will Accept (advance) or Redo (re-run "
+                f"this committee). You are not deciding this gate. If the operator messages "
+                f"you, answer accurately about what has run so far — nothing is running "
+                f"until they decide."
+            )
+            decision = _await_operator_gate(
+                gate_handler, node, current, digest, redo_available, run_id
+            )
+            orchestrator.inject_harness_update(
+                f"== Operator gate decision on {current!r}: {decision.decision.upper()} =="
+                + (f"\nOperator note: {decision.note}" if decision.note else "")
+            )
+            pub.sendMessage(
+                "gate.decision",
+                run_id=run_id,
+                committee=current,
+                decision=decision.decision,
+                rationale=decision.rationale,
+                to=decision.to,
+                next_objective=None,
+                attempt=None,
+                decided_by="operator",
+            )
+        else:
+            decision = orchestrator.run_gate(
+                committee_name=current,
+                digest=digest,
+                gate_type="auto",
+                retry_count=retry_counts.get(current, 0),
+                iterate_count=iterate_counts.get(current, 0),
+            )
 
         _log.info("Gate %r → %s (rationale: %s)", current, decision.decision, decision.rationale)
 
