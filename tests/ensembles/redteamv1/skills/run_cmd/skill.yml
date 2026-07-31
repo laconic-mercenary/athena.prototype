@@ -1,0 +1,23 @@
+name: run_cmd
+description: >
+  Execute a shell command in an active reverse shell session and return its output.
+  Uses a UUID sentinel to cleanly delimit command output without relying on a prompt.
+side_effect: touches_target
+parameters:
+  session_id:
+    type: string
+    description: Session ID returned by get_shell.
+  cmd:
+    type: string
+    description: >
+      Shell command to execute (e.g. "id", "whoami", "cat /etc/passwd",
+      "find / -name user.txt 2>/dev/null"). Avoid interactive commands.
+  timeout:
+    type: integer
+    description: Seconds to wait for command output. Default 15.
+    required: false
+returns: >
+  Object with `session_id`, `output` (command stdout/stderr), and optionally `error`.
+notes: >
+  The harness appends "; echo __DONE__<uuid>" to cleanly terminate recvuntil.
+  Avoid commands that produce no output — the read will timeout.

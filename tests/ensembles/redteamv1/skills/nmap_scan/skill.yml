@@ -1,0 +1,25 @@
+name: nmap_scan
+description: >
+  Run an nmap port scan against a target host. Returns raw nmap output plus a parsed
+  list of open ports with service and version information.
+side_effect: touches_target
+parameters:
+  target:
+    type: string
+    description: IP address or hostname to scan.
+  ports:
+    type: string
+    description: Port range to scan (e.g. "1-1000", "22,80,443", "1-65535").
+    required: false
+  flags:
+    type: string
+    description: >
+      Additional nmap flags as a space-separated string (e.g. "-sV -sC -T4").
+      Defaults to "-sV -sC -T4". Do not include -p or the target here.
+    required: false
+returns: >
+  Object with `stdout` (raw nmap output), `returncode` (int), and `open_ports`
+  (list of {port, protocol, service, version}).
+notes: >
+  Requires nmap to be installed on the harness machine. Typical HTB scan:
+  ports="1-65535", flags="-sV -sC -T4". For a fast initial sweep use ports="1-1000".

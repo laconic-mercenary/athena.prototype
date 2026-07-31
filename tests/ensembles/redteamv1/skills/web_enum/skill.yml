@@ -1,0 +1,24 @@
+name: web_enum
+description: >
+  Enumerate web paths on a target HTTP/HTTPS service by probing a wordlist of common
+  paths. Returns paths that returned non-404 responses, grouped by status code.
+side_effect: touches_target
+parameters:
+  url:
+    type: string
+    description: >
+      Base URL of the target web service (e.g. "http://10.10.11.5:80"). Trailing
+      slash optional. HTTPS supported.
+  wordlist_path:
+    type: string
+    description: >
+      Absolute path to a newline-delimited wordlist file (e.g.
+      /usr/share/wordlists/dirb/common.txt). If omitted or not found, a built-in
+      wordlist of ~60 common paths is used.
+    required: false
+returns: >
+  Object with `base_url`, `found` (list of {path, status_code, size}),
+  `total_probed` (int), and `error` (string, if the base URL was unreachable).
+notes: >
+  Uses Python requests — no external binary dependency. Set wordlist_path to
+  /usr/share/seclists/Discovery/Web-Content/common.txt for a thorough scan.

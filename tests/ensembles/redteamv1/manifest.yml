@@ -1,0 +1,166 @@
+name: redteam-htb
+version: 1.0.0
+description: >
+  Red team engagement ensemble for HTB-style Linux targets. Performs network recon,
+  MITRE-mapped attack planning (with Foundation-Sec), exploitation via reverse shell,
+  and formal reporting. Operator-approval gate between planning and exploitation.
+capability_doc: capability.md
+
+# ---
+# Workflow — linear pipeline with a single operator-approval gate after planning.
+# All committees support retry and iterate back-edges.
+# ---
+workflow:
+  entry: recon
+  nodes:
+    recon:
+      output_schema: schemas.ReconOutput
+      transitions:
+        - to: planning
+        - to: recon
+          condition: retry
+        - to: recon
+          condition: iterate
+    planning:
+      output_schema: schemas.PlanOutput
+      transitions:
+        - to: exploit
+        - to: planning
+          condition: retry
+        - to: planning
+          condition: iterate
+    exploit:
+      output_schema: schemas.ExploitOutput
+      transitions:
+        - to: reporting
+        - to: exploit
+          condition: retry
+        - to: exploit
+          condition: iterate
+    reporting:
+      output_schema: schemas.ReportOutput
+      transitions:
+        - to: reporting
+          condition: retry
+        - to: reporting
+          condition: iterate
+
+# ---
+# Committees
+# ---
+committees:
+  recon:
+    leader: recon/leader.yml
+    model: claude-sonnet-4-6
+    max_steps: 8
+    elements:
+      - id: port_scan
+        label: Port Scanner
+        specialists:
+          - elements/port_scan/scanner.yml
+        skills: [nmap_scan]
+
+      - id: web_enum
+        label: Web Enumerator
+        specialists:
+          - elements/web_enum/enumerator.yml
+        skills: [web_enum]
+
+      - id: cve_lookup
+        label: CVE Researcher
+        specialists:
+          - elements/cve_lookup/researcher.yml
+        skills: [searchsploit]
+
+      - id: threat_analyst
+        label: Threat Analyst
+        provider: ollama
+        model: foundation-sec-8b
+        specialists:
+          - elements/threat_analyst/analyst.yml
+        skills: []
+
+  planning:
+    leader: planning/leader.yml
+    model: claude-sonnet-4-6
+    max_steps: 4
+    consumes:
+      required: [recon]
+    elements:
+      - id: exploit_planner
+        label: Exploit Planner
+        specialists:
+          - elements/exploit_planner/planner_a.yml
+          - elements/exploit_planner/planner_b.yml
+          - elements/exploit_planner/planner_fs.yml
+        skills: []
+
+  exploit:
+    leader: exploit/leader.yml
+    model: claude-sonnet-4-6
+    max_steps: 14
+    consumes:
+      required: [planning]
+      optional: [recon]
+    elements:
+      - id: web_exploiter
+        label: Web Exploiter
+        specialists:
+          - elements/web_exploiter/exploiter.yml
+        skills: [http_get, http_post, get_shell]
+
+      - id: shell_operator
+        label: Shell Operator
+        specialists:
+          - elements/shell_operator/operator.yml
+        skills: [run_cmd, close_shell]
+
+  reporting:
+    leader: reporting/leader.yml
+    model: claude-haiku-4-5-20251001
+    max_steps: 4
+    consumes:
+      required: [exploit]
+      optional: [recon, planning]
+    elements:
+      - id: report_writer
+        label: Report Writer
+        specialists:
+          - elements/report_writer/writer.yml
+        skills: []
+
+# ---
+# Skills registry
+# ---
+skills:
+  - id: nmap_scan
+    definition: skills/nmap_scan/skill.yml
+    impl: skills/nmap_scan/impl.py::nmap_scan
+
+  - id: web_enum
+    definition: skills/web_enum/skill.yml
+    impl: skills/web_enum/impl.py::web_enum
+
+  - id: searchsploit
+    definition: skills/searchsploit/skill.yml
+    impl: skills/searchsploit/impl.py::searchsploit
+
+  - id: http_get
+    definition: skills/http_get/skill.yml
+    impl: skills/http_get/impl.py::http_get
+
+  - id: http_post
+    definition: skills/http_post/skill.yml
+    impl: skills/http_post/impl.py::http_post
+
+  - id: get_shell
+    definition: skills/get_shell/skill.yml
+    impl: skills/get_shell/impl.py::get_shell
+
+  - id: run_cmd
+    definition: skills/run_cmd/skill.yml
+    impl: skills/run_cmd/impl.py::run_cmd
+
+  - id: close_shell
+    definition: skills/close_shell/skill.yml
+    impl: skills/close_shell/impl.py::close_shell

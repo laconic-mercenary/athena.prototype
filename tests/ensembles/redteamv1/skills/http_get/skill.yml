@@ -1,0 +1,22 @@
+name: http_get
+description: >
+  Send an HTTP GET request to a URL and return the status code, response headers,
+  and body. Follows redirects by default.
+side_effect: touches_target
+parameters:
+  url:
+    type: string
+    description: Full URL to request (e.g. "http://10.10.11.5/login").
+  headers:
+    type: object
+    description: >
+      Optional HTTP headers as a JSON object
+      (e.g. Cookie header for authenticated requests).
+    required: false
+  follow_redirects:
+    type: boolean
+    description: Follow HTTP redirects. Defaults to true.
+    required: false
+returns: >
+  Object with `status_code` (int), `headers` (dict), `body` (first 4000 chars of
+  response body), and `url` (final URL after redirects).

@@ -143,6 +143,8 @@ def _load_specialist(
     provider = raw.get("provider") or element_provider or committee_provider or global_provider
     temperature_raw = raw.get("temperature")
     temperature = float(temperature_raw) if temperature_raw is not None else None
+    max_tokens_raw = raw.get("max_tokens")
+    max_tokens = int(max_tokens_raw) if max_tokens_raw is not None else None
     # Specialist-level skills override the element's list; element list is the fallback.
     skill_ids = raw.get("skills", element_skill_ids)
     stem = yml_path.stem
@@ -154,6 +156,7 @@ def _load_specialist(
         provider=provider,
         temperature=temperature,
         skill_ids=skill_ids,
+        max_tokens=max_tokens,
     )
 
 

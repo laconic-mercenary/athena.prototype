@@ -1,0 +1,51 @@
+services:
+  athena_web:
+    build:
+      context: ../../..
+      dockerfile: tests/system/redteam_easy/Dockerfile
+    command:
+      - python
+      - server.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    volumes:
+      - ../../../artifacts:/app/artifacts
+      - ../../ensembles/redteamv1:/app/ensemble:ro
+    env_file: ../../../.env
+    environment:
+      - ENSEMBLE_PATH=/app/ensemble
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - external-net
+      - engagement-net
+
+  target:
+    image: ubuntu:24.04
+    hostname: target
+    command: ["sleep", "infinity"]
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    networks:
+      - engagement-net
+
+networks:
+  external-net:
+    driver: bridge
+
+  engagement-net:
+    driver: bridge
+    internal: true

@@ -497,7 +497,7 @@ def _run_one_specialist(
         backend=backend,
         model=specialist.model,
         max_iterations=SPECIALIST_MAX_ITERATIONS,
-        max_tokens=SPECIALIST_MAX_TOKENS,
+        max_tokens=specialist.max_tokens or SPECIALIST_MAX_TOKENS,
         temperature=specialist.temperature,
         on_model_response=_on_model_response,
     )

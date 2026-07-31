@@ -428,7 +428,11 @@ def make_backend(provider: str, ollama_base_url: str | None = None) -> ModelBack
     if provider == "anthropic":
         return AnthropicBackend()
     if provider == "ollama":
-        if not ollama_base_url:
-            raise ValueError("ollama_base_url is required when provider is 'ollama'")
-        return OllamaBackend(base_url=ollama_base_url)
+        url = ollama_base_url or os.environ.get("OLLAMA_BASE_URL")
+        if not url:
+            raise ValueError(
+                "ollama_base_url is required when provider is 'ollama' "
+                "(pass it explicitly or set OLLAMA_BASE_URL)"
+            )
+        return OllamaBackend(base_url=url)
     raise ValueError(f"Unknown provider: {provider!r}")
