@@ -1,0 +1,24 @@
+name: http_post
+description: >
+  Send an HTTP POST request with a custom body and headers. Used for form submission,
+  API calls, and exploit payload delivery. Returns status code, headers, and response body.
+side_effect: touches_target
+parameters:
+  url:
+    type: string
+    description: Full URL to POST to.
+  body:
+    type: string
+    description: >
+      Request body as a string. For form data use "key=value&key2=value2".
+      For JSON use a JSON string. Set Content-Type header accordingly.
+  headers:
+    type: object
+    description: >
+      HTTP headers as a JSON object. Set Content-Type to
+      "application/x-www-form-urlencoded" for form data or
+      "application/json" for JSON bodies.
+    required: false
+returns: >
+  Object with `status_code` (int), `headers` (dict), `body` (first 4000 chars),
+  and `url` (final URL after any redirects).

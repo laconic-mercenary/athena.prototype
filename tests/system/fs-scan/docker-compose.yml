@@ -13,7 +13,7 @@ services:
     volumes:
       - ../../../artifacts:/app/artifacts
       - ./testdata:/data/testfiles:ro
-      - ./ensemble:/app/ensemble:ro
+      - ../../ensembles/fsscanv1:/app/ensemble:ro
     env_file: ../../../.env
     environment:
       - SKILL_ALLOWED_ROOTS=/data
@@ -40,7 +40,7 @@ services:
     volumes:
       - ../../../artifacts:/app/artifacts
       - ./testdata:/data/testfiles:ro
-      - ./ensemble:/app/ensemble:ro
+      - ../../ensembles/fsscanv1:/app/ensemble:ro
     env_file: ../../../.env
     environment:
       - SKILL_ALLOWED_ROOTS=/data

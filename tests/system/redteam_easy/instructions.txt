@@ -1,0 +1,65 @@
+redteam_easy — Integration test: bare Ubuntu target
+====================================================
+
+Purpose
+-------
+Validate that the redteamv1 ensemble loads and runs end-to-end against a
+network-isolated Ubuntu container. The target has no services, no flags, and
+no intentional vulnerabilities — this run confirms Athena's recon, planning,
+exploit, and reporting committees execute without errors and that the
+operator-approval gate fires as expected.
+
+Prerequisites
+-------------
+- Docker Desktop (or Docker Engine + Compose v2) running
+- athena.prototype/.env populated with ANTHROPIC_API_KEY (and OLLAMA_HOST if
+  using Foundation-Sec)
+- Ollama running locally with foundation-sec-8b pulled (for planning committee)
+
+Starting
+--------
+  ./run.sh
+
+This builds the Athena image, starts athena_web and the target container, and
+prints the target's IP address on the engagement network.
+
+Engagement parameters (enter in the UI when prompted)
+------------------------------------------------------
+  target   : <IP printed by run.sh>
+  lhost    : athena_web          (service name, resolvable inside engagement-net)
+  lport    : 4444
+  scope    : 172.16.0.0/12       (Docker bridge subnet — adjust if needed)
+
+The reverse-shell listener inside athena_web will bind on lport and is
+reachable from the target over the internal engagement-net bridge. There is
+no internet egress from the target (internal: true network).
+
+What to expect
+--------------
+1. Recon committee runs nmap, web_enum, searchsploit against the target.
+   Findings will be sparse — no open ports beyond what Docker exposes.
+2. Planning committee produces an attack plan; Foundation-Sec planner runs in
+   compare mode alongside two haiku planners.
+3. Exploit committee leader should hit the operator-approval gate and pause
+   for your confirmation before attempting exploitation.
+4. Reporting committee produces a summary even if no flags were captured.
+
+Stopping
+--------
+  ./stop.sh
+
+Network topology
+----------------
+  [internet / Claude API]
+        |
+  external-net (bridge, outbound allowed)
+        |
+  athena_web ──── engagement-net (bridge, internal: true) ──── target
+                  (no internet egress from target)
+
+Target security posture
+-----------------------
+  cap_drop: ALL          — no Linux capabilities
+  no-new-privileges      — prevents setuid escalation
+  read_only rootfs       — /tmp and /run are tmpfs; rest is read-only
+  no docker socket       — cannot escape to host Docker daemon

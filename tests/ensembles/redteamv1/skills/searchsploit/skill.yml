@@ -1,0 +1,19 @@
+name: searchsploit
+description: >
+  Search ExploitDB for known exploits matching a service name and version string.
+  Returns matching exploit titles, paths, and CVE IDs. If the searchsploit binary is
+  not installed, returns a helpful note so the agent can reason from model knowledge.
+side_effect: reads_local
+parameters:
+  query:
+    type: string
+    description: >
+      Search query — typically "<service> <version>" (e.g. "Apache 2.4.49",
+      "OpenSSH 7.2", "vsftpd 2.3.4"). Be specific: include version numbers.
+returns: >
+  Object with `query`, `results` (list of {title, path, cve}) if searchsploit is
+  installed, or `note` explaining it is unavailable alongside the query for
+  model-based CVE reasoning.
+notes: >
+  Requires searchsploit (ExploitDB) to be installed: `apt install exploitdb` on Kali.
+  When unavailable the agent should reason from its own CVE knowledge.

@@ -36,6 +36,7 @@ class LoadedSpecialist:
     provider:    str              # "anthropic" | "ollama"
     temperature: float | None     # None → provider default; set for sampling diversity
     skill_ids:   list[str]        # effective skills for this specialist; overrides element-level list
+    max_tokens:  int | None       # None → falls back to SPECIALIST_MAX_TOKENS in committee_runner
 
 
 @dataclass

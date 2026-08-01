@@ -404,3 +404,54 @@ to confirmed techniques in `ReportArtifact`.
       RCE) before the reverse shell adds one technique and makes the kill chain more complete,
       at the cost of one more step in the exploitation committee. Low complexity; good
       ATT&CK coverage improvement.
+
+---
+
+## 11. Hack The Box — Proof-of-Capability Badge
+
+The demo itself uses the Docker Compose environment above. HTB is **not** the demo target.
+
+HTB is used separately to produce a solved-box badge or screenshot that can be referenced
+during the demo as proof that the same ensemble works against real, unknown machines — not
+just a purpose-built lab. This de-risks the live demo (no live exploit against an unknown
+machine) while retaining the credibility claim ("we've already solved X box with this").
+
+### Access model
+
+HTB machines sit on a private VPN subnet (`10.10.11.x` / `10.129.x.x`). The harness machine
+connects via OpenVPN (`.ovpn` config from HTB dashboard), which brings up a `tun0` interface.
+From that point Athena has direct TCP access to the target — no relay, no proxy. Reverse shell
+callbacks use the `tun0` IP as `LHOST`.
+
+### Committee structure differs from Docker ensemble
+
+HTB machines have no company website, so the committee structure flips to network-first:
+
+| Committee | HTB variant |
+|-----------|-------------|
+| Recon | `nmap_scan` + `http_probe` + `ffuf_scan` (directory enum) + `searchsploit` (CVE lookup) |
+| Planning | Same consensus model, reasoning from discovered services/versions |
+| Exploitation | Exploit delivery + reverse shell + privilege escalation |
+| Post-exploitation | `linux_enum` (linpeas wrapper) + flag harvest (`user.txt`, `root.txt`) |
+
+### Machine selection criteria
+
+- **Retired box** (writeup available — validate ensemble succeeds before recording)
+- **Web-based initial foothold** — SSTI, LFI, deserialization, or CVE against a known service;
+  agents reason about these better than binary exploitation
+- **One clear privesc path** — sudo misconfiguration, SUID, cron, or token; keeps post-exploit
+  committee shallow
+- **No kernel exploits** — LLM-directed kernel payloads are fragile
+- Difficulty: Medium Linux
+
+### Additional skills needed (HTB only)
+
+| Skill | Notes |
+|-------|-------|
+| `nmap_scan(target, flags)` | Port / service / version discovery |
+| `ffuf_scan(url, wordlist)` | Directory and vhost bruteforce |
+| `searchsploit(service, version)` | Local ExploitDB CVE lookup |
+| `linux_enum(session_id)` | Stripped linpeas/linenum; returns priv-esc candidates |
+| `read_file(session_id, path)` | Flag file retrieval |
+
+`get_shell`, `run_cmd`, `close_shell` are shared with the Docker ensemble unchanged.

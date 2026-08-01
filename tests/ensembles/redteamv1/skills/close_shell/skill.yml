@@ -1,0 +1,11 @@
+name: close_shell
+description: >
+  Close a reverse shell session and remove it from the session registry.
+  Call this after the exploit committee has finished to clean up the connection.
+side_effect: touches_target
+parameters:
+  session_id:
+    type: string
+    description: Session ID returned by get_shell.
+returns: >
+  Object with `closed` (the session_id) or `error` if the session was not found.
