@@ -3,6 +3,7 @@ import { useEvents } from './useEvents'
 import { EngagementRequest } from './pages/EngagementRequest'
 import { OrchestratorDialog } from './pages/OrchestratorDialog'
 import { Dashboard } from './pages/Dashboard'
+import { AcceptanceBanner } from './components/AcceptanceBanner'
 import './index.css'
 
 const INITIAL_COMMITTEE = {
@@ -590,15 +591,28 @@ export default function App() {
 
   if (state.page === 'request') {
     return (
-      <EngagementRequest
-        onSubmit={(run_id) => dispatch({ type: 'RUN_STARTED', payload: { run_id } })}
-      />
+      <>
+        <AcceptanceBanner />
+        <EngagementRequest
+          onSubmit={(run_id) => dispatch({ type: 'RUN_STARTED', payload: { run_id } })}
+        />
+      </>
     )
   }
 
   if (state.page === 'dialog') {
-    return <OrchestratorDialog state={state} dispatch={dispatch} />
+    return (
+      <>
+        <AcceptanceBanner />
+        <OrchestratorDialog state={state} dispatch={dispatch} />
+      </>
+    )
   }
 
-  return <Dashboard state={state} dispatch={dispatch} />
+  return (
+    <>
+      <AcceptanceBanner />
+      <Dashboard state={state} dispatch={dispatch} />
+    </>
+  )
 }
