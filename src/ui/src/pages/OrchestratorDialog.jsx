@@ -230,11 +230,12 @@ function PlanPreview({ plan, planReady }) {
 }
 
 export function OrchestratorDialog({ state, dispatch }) {
-  const { engagement, dialogMessages, planReady, plan, armedGates } = state
+  const { engagement, dialogMessages, planReady, plan, armedGates, collaboratorPending } = state
 
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [proceeding, setProceeding] = useState(false)
+  const [collaboratorAlias, setCollaboratorAlias] = useState('')
   const [error, setError] = useState(null)
   const [panelLocked, setPanelLocked] = useState(false)
   const messagesRef = useRef(null)
@@ -327,14 +328,21 @@ export function OrchestratorDialog({ state, dispatch }) {
   }
 
   async function handleProceed() {
-    if (!planReady || proceeding) return
+    if (!planReady || proceeding || collaboratorPending) return
     setProceeding(true)
     setError(null)
     try {
-      await planReview(engagement.run_id, 'approve')
-      dispatch({ type: 'NAVIGATE', payload: 'dashboard' })
+      const alias = collaboratorAlias.trim() || null
+      const planText = alias && plan ? JSON.stringify(plan, null, 2) : null
+      const resp = await planReview(engagement.run_id, 'approve', alias, planText)
+      if (resp.action !== 'collaborator_pending') {
+        dispatch({ type: 'NAVIGATE', payload: 'dashboard' })
+      }
+      // Collaboration path: SSE engagement.collaborator_pending drives UI,
+      // SSE engagement.approved drives navigation — nothing more to do here.
     } catch (err) {
       setError(err.message)
+    } finally {
       setProceeding(false)
     }
   }
@@ -457,22 +465,44 @@ export function OrchestratorDialog({ state, dispatch }) {
 
           <div className="brief-action-bar">
             {error && <div className="brief-action-error">{error}</div>}
-            <div className="brief-action-buttons">
-              <button
-                className="plan-review-btn plan-review-btn--reject"
-                disabled={proceeding || !planReady}
-                onClick={handleRequestChanges}
-              >
-                Request changes
-              </button>
-              <button
-                className="plan-review-btn plan-review-btn--approve"
-                disabled={proceeding || !planReady}
-                onClick={handleProceed}
-              >
-                {proceeding ? 'Starting…' : 'Approve →'}
-              </button>
-            </div>
+            {collaboratorPending ? (
+              <div className="brief-collab-pending">
+                <span className="brief-collab-pending-dot" />
+                Awaiting @{collaboratorPending.alias}
+                <span className="brief-collab-pending-time">
+                  · sent {new Date(collaboratorPending.sentAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+            ) : (
+              <>
+                <div className="brief-collab-row">
+                  <input
+                    className="brief-collab-input"
+                    type="text"
+                    placeholder="@alias — request co-approval (optional)"
+                    value={collaboratorAlias}
+                    onChange={e => setCollaboratorAlias(e.target.value)}
+                    disabled={proceeding || !planReady}
+                  />
+                </div>
+                <div className="brief-action-buttons">
+                  <button
+                    className="plan-review-btn plan-review-btn--reject"
+                    disabled={proceeding || !planReady}
+                    onClick={handleRequestChanges}
+                  >
+                    Request changes
+                  </button>
+                  <button
+                    className="plan-review-btn plan-review-btn--approve"
+                    disabled={proceeding || !planReady}
+                    onClick={handleProceed}
+                  >
+                    {proceeding ? 'Sending…' : collaboratorAlias.trim() ? 'Co-Approve →' : 'Approve →'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>

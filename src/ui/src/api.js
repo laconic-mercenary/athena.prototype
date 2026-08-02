@@ -45,11 +45,15 @@ export async function getArtifact(runId, name) {
   return resp.text()
 }
 
-export async function planReview(runId, action) {
+export async function planReview(runId, action, collaborator, planText) {
   return _json(await fetch(`${BASE}/engagements/${runId}/plan-review`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({
+      action,
+      collaborator: collaborator || null,
+      plan_text: planText || null,
+    }),
   }))
 }
 

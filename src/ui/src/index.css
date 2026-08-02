@@ -901,6 +901,50 @@ html, body, #root {
 }
 .brief-action-buttons .plan-review-btn { flex: 1; }
 
+/* ── Briefing: collaborator co-approval ── */
+.brief-collab-row {
+  padding: 0 0 4px;
+}
+.brief-collab-input {
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.brief-collab-input::placeholder { color: #334155; }
+.brief-collab-input:focus { border-color: #8b5cf6; }
+.brief-collab-input:disabled { opacity: 0.4; cursor: not-allowed; }
+.brief-collab-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 6px;
+  font-size: 11px;
+  color: #a78bfa;
+}
+.brief-collab-pending-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8b5cf6;
+  flex-shrink: 0;
+  animation: collab-pulse 1.6s ease-in-out infinite;
+}
+.brief-collab-pending-time {
+  color: #475569;
+  font-size: 10px;
+}
+@keyframes collab-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
 /* PlanPreview scroll region inside the plan pane */
 .brief-plan-scroll {
   flex: 1;

@@ -47,6 +47,7 @@ function createInitialState() {
   latestGateDecision: null,
   pendingLeaderQuestions: {},
   pendingOrchestratorQuestion: null,
+  collaboratorPending: null,   // { alias, sentAt } while waiting for email co-approval
   agents: {},
   agentReplies: {},
   dialogMessages: [],
@@ -173,7 +174,17 @@ function reducer(state, action) {
   if (type === 'ENGAGEMENT_APPROVED' || type === 'GATE_RESOLVED') {
     return {
       ...state,
+      collaboratorPending: null,
       engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
+    }
+  }
+
+  if (type === 'COLLABORATOR_PENDING') {
+    const ev = { kind: 'collab', text: `Co-approval sent · awaiting @${payload.alias}`, color: '#8b5cf6', ts: Date.now() }
+    return {
+      ...state,
+      collaboratorPending: { alias: payload.alias, sentAt: payload.sent_at },
+      eventLog: appendLog(state, ev),
     }
   }
 
@@ -563,7 +574,12 @@ export default function App() {
     if (topic === 'engagement.rejected')     dispatch({ type: 'ENGAGEMENT_REJECTED', payload })
     if (topic === 'engagement.plan_ready')   dispatch({ type: 'PLAN_READY', payload })
     if (topic === 'gate.awaiting_approval')  dispatch({ type: 'GATE_AWAITING_APPROVAL', payload })
-    if (topic === 'engagement.approved')     dispatch({ type: 'ENGAGEMENT_APPROVED', payload })
+    if (topic === 'engagement.approved') {
+      dispatch({ type: 'ENGAGEMENT_APPROVED', payload })
+      // Navigate to dashboard on approval — covers both normal and collaborator paths.
+      // Normal flow already navigated in handleProceed; dispatching again is a no-op.
+      dispatch({ type: 'NAVIGATE', payload: 'dashboard' })
+    }
     if (topic === 'committee.started')       dispatch({ type: 'COMMITTEE_STARTED', payload })
     if (topic === 'committee.completed')     dispatch({ type: 'COMMITTEE_COMPLETED', payload })
     if (topic === 'step.started')            dispatch({ type: 'STEP_STARTED', payload })
@@ -585,6 +601,7 @@ export default function App() {
     if (topic === 'orchestrator.answer')      dispatch({ type: 'ORCHESTRATOR_ANSWERED', payload })
     if (topic === 'orchestrator.message')     dispatch({ type: 'ORCHESTRATOR_MESSAGE', payload })
     if (topic === 'engagement.plan_revision') dispatch({ type: 'PLAN_REVISION', payload })
+    if (topic === 'engagement.collaborator_pending') dispatch({ type: 'COLLABORATOR_PENDING', payload })
   }, [])
 
   useEvents(state.engagement.run_id, handleEvent)
