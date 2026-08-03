@@ -21,5 +21,8 @@ returns: >
   Object with `stdout` (raw nmap output), `returncode` (int), and `open_ports`
   (list of {port, protocol, service, version}).
 notes: >
-  Requires nmap to be installed on the harness machine. Typical HTB scan:
-  ports="1-65535", flags="-sV -sC -T4". For a fast initial sweep use ports="1-1000".
+  Requires nmap installed on the harness machine. Scan in two phases: (1) fast discovery —
+  ports="1-65535", flags="--min-rate 1000 -T4" (NO -sV/-sC) to find open ports quickly;
+  (2) targeted — flags="-sV -sC -T4" on ONLY the discovered ports. Custom ranges (e.g. a
+  known dev-server port) are fine. NEVER use -T0/-T1/-T2 (too slow, will time out) or -O
+  (OS detection needs root; unavailable in the container).

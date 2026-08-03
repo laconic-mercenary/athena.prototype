@@ -1,0 +1,55 @@
+redteam_htb — Live engagement against a Hack The Box machine
+============================================================
+
+Purpose
+-------
+Run the redteamv1 ensemble end-to-end against a real HTB target over OpenVPN:
+recon (nmap / web enum / searchsploit), MITRE-mapped planning, exploitation via
+reverse shell, and reporting. The operator-approval gate fires between planning
+and exploitation.
+
+Authorisation
+-------------
+Only run this against a machine assigned to YOUR Hack The Box account. HTB is an
+authorised, intentionally-vulnerable practice platform. Do not point it at any
+host you are not explicitly authorised to test. The exploit committee's leader
+can refuse_start() if the plan is unusable or the target is unreachable.
+
+Network model (Option B — host networking)
+------------------------------------------
+OpenVPN runs on the HOST. The athena_web container uses network_mode: host, so
+it shares the host network namespace and sees tun0 directly:
+
+  - recon/exploit traffic egresses the VPN
+  - the get_shell reverse-shell listener binds your tun0 IP (lhost), so the HTB
+    target can connect back to it
+
+The control UI binds 127.0.0.1:8002 only, so it is NOT exposed on tun0 to the
+HTB network. Host networking otherwise removes container network isolation —
+acceptable for a single-operator engagement on your own machine.
+
+Prerequisites
+-------------
+- Docker Engine + Compose v2
+- .env populated (ANTHROPIC_API_KEY; OLLAMA_API_KEY + Modal Foundation-Sec
+  endpoint for the recon threat_analyst and the Foundation-Sec planner)
+- OpenVPN CONNECTED on the host before ./run.sh:
+      sudo openvpn --config ~/htb.ovpn
+  (run.sh refuses to start if tun0 is absent)
+
+Starting
+--------
+  ./run.sh
+
+Builds the image (installs pwntools via tests/ensembles/redteamv1/requirements.txt),
+starts athena_web, and prints your tun0 IP to use as lhost.
+
+Engagement parameters (enter in the UI when prompted)
+------------------------------------------------------
+  target   : <HTB machine IP>     (from the HTB machine page, e.g. 10.10.11.x)
+  lhost    : <your tun0 IP>       (printed by run.sh)
+  lport    : 4444                 (or any free port on the host)
+
+Stopping
+--------
+  ./stop.sh

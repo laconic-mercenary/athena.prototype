@@ -11,10 +11,18 @@ parameters:
     type: string
     description: >
       Shell command to execute (e.g. "id", "whoami", "cat /etc/passwd",
-      "find / -perm /4000 2>/dev/null"). Avoid interactive commands.
+      "find / -name user.txt 2>/dev/null"). The shell is a dumb pipe, not a TTY —
+      commands that prompt interactively (a bare "sudo", "su", "ssh") will hang.
+      For a password prompt, use "sudo -S ..." together with the stdin field below.
   timeout:
     type: integer
     description: Seconds to wait for command output. Default 15.
+    required: false
+  stdin:
+    type: string
+    description: >
+      Optional input piped to the command's stdin — no TTY required. Use for
+      password prompts, e.g. cmd="sudo -S cat /root/root.txt" with stdin="<password>".
     required: false
 returns: >
   Object with `session_id`, `output` (command stdout/stderr), and optionally `error`.

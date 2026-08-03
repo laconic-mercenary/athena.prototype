@@ -44,7 +44,9 @@ async def plan_review(run_id: str, body: PlanReviewRequest) -> PlanReviewRespons
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'")
 
     if action == "approve" and body.collaborator and collaboration.COLLABORATION_ENABLED:
-        alias = body.collaborator.lstrip("@").strip()
+        alias = collaboration.extract_alias(body.collaborator)
+        if not alias:
+            raise HTTPException(status_code=400, detail="No collaborator alias provided")
         email = collaboration.resolve_alias(alias)
         if email is None:
             raise HTTPException(status_code=400, detail=f"Unknown collaborator alias: @{alias}")
@@ -54,6 +56,7 @@ async def plan_review(run_id: str, body: PlanReviewRequest) -> PlanReviewRespons
                 alias=alias,
                 to_email=email,
                 plan_text=body.plan_text or "",
+                note=body.collaborator or "",
             )
         except Exception:
             _log.exception("failed to send collaboration email for %r", run_id)

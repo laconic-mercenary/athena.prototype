@@ -360,6 +360,20 @@ function reducer(state, action) {
     }
   }
 
+  if (type === 'AGENT_FAILED') {
+    // A compare-mode specialist raised and was dropped from the comparison. Mark its box
+    // failed and stash the error so the graph can flag it (red border + warning tooltip).
+    const { agent_id, error } = payload
+    if (!state.agents[agent_id]) return state
+    const ev = { kind: 'failed', text: `${state.agents[agent_id].title} failed`, color: '#ef4444', committee: payload.committee, ts: Date.now() }
+    return {
+      ...state,
+      agents: { ...state.agents, [agent_id]: { ...state.agents[agent_id], status: 'failed', error: error || 'Specialist failed' } },
+      latestEvent: ev,
+      eventLog: appendLog(state, ev),
+    }
+  }
+
   if (type === 'AGENT_TOOL_CALLED') {
     const { agent_id, tool, input_summary, call_id } = payload
     if (!state.agents[agent_id]) return state
@@ -589,6 +603,7 @@ export default function App() {
     if (topic === 'committee.operator_replied') dispatch({ type: 'LEADER_QUESTION_ANSWERED', payload })
     if (topic === 'agent.spawned')           dispatch({ type: 'AGENT_SPAWNED', payload })
     if (topic === 'agent.spun_down')         dispatch({ type: 'AGENT_SPUN_DOWN', payload })
+    if (topic === 'agent.failed')            dispatch({ type: 'AGENT_FAILED', payload })
     if (topic === 'agent.tool_called')       dispatch({ type: 'AGENT_TOOL_CALLED', payload })
     if (topic === 'agent.tool_result')       dispatch({ type: 'AGENT_TOOL_RESULT', payload })
     if (topic === 'agent.model_text')        dispatch({ type: 'AGENT_MODEL_TEXT', payload })

@@ -166,6 +166,8 @@ def _apply_step_gate(
 # Specialist agents run tight, bounded loops — they have a single well-scoped task.
 SPECIALIST_MAX_ITERATIONS = 30
 SPECIALIST_MAX_TOKENS = 4_096
+# Truncation for the error string carried on an agent.failed event (compare mode).
+AGENT_FAILED_ERROR_MAX_LEN = 300
 # Hard cap on how many real skill calls a single specialist may EXECUTE per run.
 # Prevents models from calling the same skill twice to "verify" results. A denied
 # tool call does NOT count against this (see SPECIALIST_MAX_TOOL_ATTEMPTS).
@@ -533,32 +535,67 @@ def _run_compare(
     compare_sink: dict[str, dict] | None = None,
     loop_gate_hooks: "LoopGateHooks | None" = None,
 ) -> str:
-    """Run all specialists in parallel and return labeled variant output for leader judgement."""
+    """Run all specialists in parallel and return labeled variant output for leader judgement.
+
+    Fault-tolerant: a specialist that raises (e.g. a model that exhausts its max_tokens
+    ceiling) is dropped from the comparison rather than aborting the whole element — that
+    is the redundancy compare mode exists to provide. The leader then selects among the
+    survivors, and an 'agent.failed' event is published so the UI can flag the failed
+    variant. The element only fails outright if EVERY specialist fails.
+    """
     all_models = [s.model for s in element.specialists]
     # Precompute labels so the same string is used for display, sink keys, and agent.spawned.
     variant_labels = [_variant_label(s, i, all_models) for i, s in enumerate(element.specialists)]
 
-    def run_variant(args: tuple[int, LoadedSpecialist]) -> str:
+    def run_variant(args: tuple[int, LoadedSpecialist]) -> tuple[str | None, str | None]:
         idx, specialist = args
         agent_id = f"{run_id}.{committee_name}.{element.id}.v{idx + 1}"
-        return _run_one_specialist(
-            specialist, task_brief, skills_map,
-            committee_name, run_id, make_backend, agent_id,
-            element_id=element.id,
-            element_label=element.label,
-            variant_label=variant_labels[idx],
-            loop_gate_hooks=loop_gate_hooks,
-        )
+        try:
+            output = _run_one_specialist(
+                specialist, task_brief, skills_map,
+                committee_name, run_id, make_backend, agent_id,
+                element_id=element.id,
+                element_label=element.label,
+                variant_label=variant_labels[idx],
+                loop_gate_hooks=loop_gate_hooks,
+            )
+            return output, None
+        except Exception as exc:
+            # Drop this variant and let the leader choose among the survivors; flag it for
+            # the UI. A single flaky specialist must not sink a multi-specialist element.
+            error = str(exc) or exc.__class__.__name__
+            _log.warning("compare variant %s failed: %s", agent_id, error)
+            pub.sendMessage(
+                "agent.failed",
+                run_id=run_id,
+                committee=committee_name,
+                agent_id=agent_id,
+                error=error[:AGENT_FAILED_ERROR_MAX_LEN],
+            )
+            return None, error
 
     with ThreadPoolExecutor(max_workers=len(element.specialists)) as pool:
         # pool.map preserves input order in its results.
-        outputs = list(pool.map(run_variant, enumerate(element.specialists)))
+        results = list(pool.map(run_variant, enumerate(element.specialists)))
 
+    survivors = [
+        (label, spec, out)
+        for label, spec, (out, err) in zip(variant_labels, element.specialists, results)
+        if err is None
+    ]
+    if not survivors:
+        # Every specialist failed — the element genuinely produced nothing to select.
+        raise RuntimeError(
+            f"All {len(element.specialists)} specialists in element {element.id!r} failed"
+        )
+
+    # Only survivors are selectable; failed variants are surfaced via agent.failed alone
+    # (kept out of the sink so winner selection and the element gate never see them).
     if compare_sink is not None:
-        for label, specialist, output in zip(variant_labels, element.specialists, outputs):
+        for label, specialist, output in survivors:
             compare_sink[label] = {"output": output, "title": specialist.title}
 
-    parts = [f"[{label}]\n{output}" for label, output in zip(variant_labels, outputs)]
+    parts = [f"[{label}]\n{output}" for label, _spec, output in survivors]
     return (
         "\n\n---\n\n".join(parts)
         + "\n\n[Select the variant that best meets the task objective. "

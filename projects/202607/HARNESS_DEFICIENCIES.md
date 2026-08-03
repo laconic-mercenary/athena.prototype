@@ -192,6 +192,43 @@ Tests in `tests/test_loop_gate.py` (terminal-replay). **Note:** intermediate eve
 during a disconnect gap are still not replayed (bus.py is non-persistent) — only terminal
 state is reconciled; full replay/`Last-Event-ID` is a larger future item.
 
+### H23 — Long blocking tool call + non-replayed SSE gap → operator flew blind · PARTIAL
+Live (HTB recon): the model ran `nmap_scan(ports=1-65535, flags=-sV -sC -T2 -O)` — a scan
+that takes hours; the skill's 300s `subprocess` timeout bounded each run, but during that
+300s the worker is blocked and emits **no events**. The SSE stream dropped in that window and
+reconnected (H22), but the `agent.tool_result` and `committee.ask_operator` events fired
+**in the gap** and were lost (bus.py is non-persistent — H22's known residual), so the UI
+stayed frozen on the `agent.tool_called` ("nmap running") frame and the leader's question
+never appeared. With no `--verbose`, the server logs showed only healthcheck `GET /`, so the
+operator had no view either. Messaging the leader/orchestrator produced no *visible* result.
+
+**Important correction:** this was NOT a routing/channel bug. Committee `ask_operator` delivery
+works (blocks on `operator_queue.get` = `leader_queues[committee]`, fed by `/chat/{committee}`)
+and display works (`committee.ask_operator` → `LEADER_QUESTION` renders on the leader's chat).
+The failure was purely **observability**: a non-replayed SSE gap + suppressed logs.
+
+**Addressed:** (1) nmap two-phase guidance in `recon/leader.yml` + `nmap_scan/skill.yml` —
+forbids `-T0/-T1/-T2` and `-O`, mandates a fast `--min-rate 1000 -T4` discovery pass before
+`-sV -sC`, shrinking the blocking window; (2) `--verbose` added to both redteam composes.
+**Still open:** intermediate-event replay / `Last-Event-ID` (same root as H22's residual) —
+a client reconnecting mid-run still misses gap events; only terminal state is reconciled.
+
+**Cleanup noted:** the `ask_operator_handler(question)` fallback at
+[committee_runner.py:889](../../src/athena/harness/committee_runner.py) is dead code —
+`operator_queue` is always the committee queue in the workflow path — and it caused a
+misdiagnosis. Worth deleting or commenting so the two ask channels aren't confused
+(committee → queue; orchestrator → `pending_question`/`reply_event`).
+
+### H24 — No SSE intermediate-event replay on reconnect · OPEN
+`bus.py` is non-persistent: it has no event log, so events published while an `EventSource`
+is disconnected are lost. The H22 fix stops *permanent* deafness (auto-reconnect restored)
+and reconciles *terminal* state on connect, but a client that reconnects mid-run still misses
+every event that fired during the gap — as in H23, where `agent.tool_result` and
+`committee.ask_operator` were lost during a long blocking scan and the UI stayed frozen.
+**Fix (future):** give the bus a small per-run ring buffer of recent events with monotonic
+ids, honour the SSE `Last-Event-ID` header on reconnect, and replay anything newer. Makes the
+UI fully self-heal mid-run instead of only at terminal state. Larger item than H22.
+
 ### H21 — `run_briefing` is an unbounded `while True` · OPEN
 [orchestrator.py:302](../../src/athena/harness/orchestrator.py) loops until `submit_plan`
 succeeds with no iteration cap (violates the no-infinite-loops standard). If the orchestrator

@@ -84,23 +84,37 @@ Lost on server restart — acceptable for demo.
 - Emit `engagement.collaborator_pending` SSE event (alias + sent_at).
 - Return 202 — gate is now pending, not resolved.
 
-**New:** `POST /webhooks/inbound-email`
-- Receives Resend inbound payload.
-- Extracts `run_id` from the `To` address (`<run_id>@reply.openintel.to`).
-- Looks up `CollabState` in `pending_collabs`.
-- Scans reply body (case-insensitive) for `approve` or `deny`.
-- Puts the decision into the gate queue.
-- Removes entry from `pending_collabs`.
-- Returns 200.
+**Implemented:** `POST /webhooks/inbound-email` (Resend `email.received` webhook)
+- Verifies the Svix signature over the raw body (`svix-id`/`svix-timestamp`/`svix-signature`,
+  HMAC-SHA256 with `RESEND_WEBHOOK_SECRET`). Unverified → 401. No secret configured → refuse.
+- Extracts `run_id` from the recipient (`<run_id>@<COLLAB_REPLY_DOMAIN>`) via the per-run
+  `reply_to`. Wrong/absent domain → 200 ignore.
+- The webhook carries **metadata only** — fetches the body separately via
+  `GET https://api.resend.com/emails/receiving/{email_id}` (`text`, falls back to
+  tag-stripped `html`).
+- Parses the reply for `approve` / `deny` (or `reject`), scanning **only the text above the
+  first quoted-original marker** so "reply APPROVE or DENY" in the quoted email can't
+  false-match. Ambiguous (both / neither) → 200, gate stays parked.
+- On a clear decision: `pop()` the `CollabState` (only then — an ambiguous reply leaves the
+  re-reply/link path intact), then `runner.resolve_approval(approved=...)`.
+- Returns 200 for intentional no-ops (wrong event, no run_id, no decision, already resolved)
+  so Resend doesn't retry; 500 only on a transient body-fetch failure worth retrying.
 
 ### Email (Resend)
 
 **Outbound**
-- To: collaborator email
-- Subject: `[Athena] Co-approval requested (@alias)`
-- Body (HTML): plan summary + two clickable buttons — **✓ Approve** and **✗ Deny**
-- Each button links to `GET {ATHENA_BASE_URL}/webhooks/collab/{run_id}/approve` (or `/deny`)
-- No inbound email or MX records required — the decision arrives as a browser GET request
+- To: collaborator email · Subject: `[Athena] Co-approval requested (@alias)`
+- **Primary path — reply-in-email:** when `COLLAB_REPLY_DOMAIN` is set, the email leads with
+  "reply with APPROVE or DENY" and carries `reply_to: <run_id>@<COLLAB_REPLY_DOMAIN>`. The
+  collaborator just hits Reply — no link click needed (dodges clients that mangle links).
+- **Operator's message** (the text they `@`-mentioned the collaborator in) renders in a
+  highlighted quote block at the top — the "why".
+- **Attachment:** `plan-briefing.txt` — the plan rendered as readable prose (not raw JSON),
+  base64-encoded via Resend's `attachments` field.
+- **Fallback:** the `GET .../approve` and `/deny` links remain below the reply CTA. When
+  `COLLAB_REPLY_DOMAIN` is unset, no `reply_to` is added and the links are the only path.
+- Reply-in-email uses the **Resend-managed receiving domain** (`<id>.resend.app`) — no
+  MX/DNS setup; Resend receives every local-part at that domain, giving per-run addressing.
 
 **Approve / deny endpoints**
 - `GET /webhooks/collab/{run_id}/approve` — releases the gate with approved=True, returns a confirmation page
@@ -113,6 +127,58 @@ Lost on server restart — acceptable for demo.
 - Gate input: detect `@word` pattern; visual hint that collaboration mode will be triggered
 - On `engagement.collaborator_pending` event: replace the gate panel with an **"Awaiting @alias"** view showing alias, email, and sent timestamp
 - Operator retains a cancel/retract option (TBD — not in scope for demo)
+
+---
+
+## Committee-gate collaboration (demo focus)
+
+The shipped feature co-approves the **plan** gate. The demo extends the same mechanism to
+the **committee gate** (the between-committee operator gate, Accept / Redo). Design:
+
+### Shared gate textbox, routed by button
+
+The committee gate has one operator textbox, shared by both actions. Where the text goes
+depends on which button is pressed — routing is by the **button, not the box**:
+
+| Button | Text contains `@`? | Destination |
+|---|---|---|
+| **Redo** | (ignored) | The leader, as redo feedback — operator input to a model (allowed) |
+| **Approve** | yes | First `@token` → collaborator alias; remaining text → human note in the email |
+| **Approve** | no | Discarded — an accept has nothing to feed |
+
+Approve text only ever reaches a *human* (the email) or is dropped; it never reaches a
+model. Only Redo text reaches a model, and that is operator-authored (allowed).
+
+### Two approvals to advance
+
+Advancing past the gate takes two approvals: the operator's (implicit in clicking Approve
+with an `@alias`) and the collaborator's (the email link click). Clicking Approve with an
+alias does **not** resolve the gate — it records the operator's approval and parks as
+`collaborator_pending`; the collaborator's link click is the second approval, which calls
+`resolve_gate_decision(action="accept")`. Redo advances nothing, so it stays single-party
+(operator only). A collaborator Deny releases the gate as a feedback-less Redo (see
+Known deficiencies).
+
+### Context delivered to the collaborator
+
+Enough to make a real decision — objective (the "why") plus the digest (the "what"):
+
+- **Email body:** the engagement objective (one line, from `ctx.orchestrator`'s plan) +
+  the operator's note + the Approve / Deny buttons.
+- **Attachment:** `engagement-summary.txt` — the full committee **digest**
+  (`artifact.render_digest()`, the same string the operator approves) plus the objective.
+  Plain text, base64-encoded via Resend's `attachments` field. Keeps the body short.
+
+### State & dispatch
+
+- `CollabState` gains a **gate-kind discriminator** (`"plan"` | `"committee"`) so the link
+  handler dispatches to `resolve_approval` (plan) vs
+  `resolve_gate_decision(action="accept" | "redo")` (committee).
+- Confirmation-page copy is neutralized (`Approved` / `Denied`, not `Plan approved`).
+- The "Awaiting @alias" pending view is replicated on the committee-gate surface — a
+  different component than the plan gate.
+- One pending collaboration per run at a time (single `_pending[run_id]` slot); fine for
+  sequential gates (see Known deficiencies).
 
 ---
 
@@ -131,8 +197,10 @@ Lost on server restart — acceptable for demo.
 |---|---|---|
 | `COLLABORATION_ENABLED` | No | Set to `true` to enable the feature. Any other value (or absent) disables it — `@alias` mentions at gates are ignored and the endpoints return 404. |
 | `COLLABORATOR_ALIASES` | If enabled | Comma-separated `alias:email` pairs. e.g. `alice:alice@co.com,bob:bob@co.com` |
-| `RESEND_API_KEY` | If enabled | Resend API key for sending outbound email. |
-| `ATHENA_BASE_URL` | If enabled | Public base URL of the Athena server, e.g. `https://athena.openintel.to`. Used to build the approve/deny links in the email. |
+| `RESEND_API_KEY` | If enabled | Resend API key. Used for both sending outbound email and fetching inbound reply bodies (`/emails/receiving/{id}`). |
+| `ATHENA_BASE_URL` | If enabled | Public base URL of the Athena server, e.g. `https://athena.openintel.to`. Used to build the approve/deny fallback links. |
+| `COLLAB_REPLY_DOMAIN` | For reply-in-email | Resend-managed receiving domain, e.g. `cool-hedgehog.resend.app`. Enables the reply-in-email path (`reply_to: <run_id>@<domain>`). Unset → link-only fallback, no MX needed. |
+| `RESEND_WEBHOOK_SECRET` | For reply-in-email | Svix signing secret (`whsec_…`) shown when the `email.received` webhook is created. Verifies inbound webhook authenticity; without it inbound replies are refused. |
 
 ---
 
@@ -202,6 +270,30 @@ ATHENA_BASE_URL=https://athena.openintel.to
 Send a test engagement, enter `@alice` in the collaborator field, and click Co-Approve. Check that the email arrives at the collaborator's inbox with working approve/deny buttons.
 
 ---
+
+## Known deficiencies (demo)
+
+These are accepted shortcuts for the demo, to be revisited.
+
+- **Committee-gate collaborator Deny is a feedback-less Redo.** The committee gate's
+  negative action is *Redo*, not *reject*, and a collaborator has no text channel — so a
+  collaborator Deny releases the gate as `redo` with no suggestion. The committee re-runs
+  blind, but the leader typically asks a clarifying question shortly, which makes the
+  redo interactive. This reuses the existing `redo` action (no new reject/halt path).
+  Ideal: let the collaborator attach a reason to the Redo.
+- **Only the Accept/advance path is co-approved; Redo is single-party.** "Two approvals
+  to progress" applies to advancement only. Redo does not advance the workflow (it loops
+  back), so the operator may Redo unilaterally without a second approval. The "ask a
+  collaborator to sign off on a Redo" case is real but out of scope.
+- **One collaboration per run at a time.** Pending collaborations are stored keyed by
+  `run_id` (single slot). Since gates occur sequentially, only one can be pending at a
+  time — acceptable for the demo, but two concurrent collaborations on one run would
+  collide.
+- **Approve-note text is discarded when no `@` is present.** The shared gate textbox
+  routes by button: Redo text → the leader (model); Approve text with an `@` → the
+  collaborator email (human); Approve text with no `@` → silently dropped (an accept has
+  nothing to feed). An operator who types a note on a plain Approve won't see it go
+  anywhere.
 
 ## Open items
 
