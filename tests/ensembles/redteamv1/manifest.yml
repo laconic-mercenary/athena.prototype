@@ -54,6 +54,12 @@ committees:
     model: claude-sonnet-4-6
     max_steps: 8
     elements:
+      - id: os_check
+        label: OS Fingerprint
+        specialists:
+          - elements/os_check/checker.yml
+        skills: [nmap_scan, http_get]
+
       - id: port_scan
         label: Port Scanner
         specialists:

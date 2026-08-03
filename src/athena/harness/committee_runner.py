@@ -525,6 +525,51 @@ def _variant_label(specialist: LoadedSpecialist, idx: int, all_models: list[str]
     return f"{specialist.title}{suffix}"
 
 
+def _resolve_winner(
+    winner_id: str, sinks: dict[str, dict[str, dict]]
+) -> tuple[str, str] | None:
+    """Resolve a leader-supplied winner_id to (element_id, canonical_label).
+
+    The leader echoes the label as free text and frequently drops the verbose
+    "(t=…, model=…)" meta suffix or changes case — so exact-string matching against
+    labels like 'Exploit Planner A (t=0.3, model=claude-haiku-4-5-20251001)' fails
+    and the winner never gets flagged. Match progressively looser: exact →
+    case-insensitive → title (portion before " (") → unique substring. Returns None
+    only when nothing matches or a loose match is ambiguous across variants.
+    """
+    raw = (winner_id or "").strip()
+    if not raw:
+        return None
+    low = raw.lower()
+
+    # 1. exact label
+    for eid, sink in sinks.items():
+        if raw in sink:
+            return eid, raw
+    # 2. case-insensitive exact
+    for eid, sink in sinks.items():
+        for label in sink:
+            if label.lower() == low:
+                return eid, label
+    # 3. title match — label up to the " (" meta suffix, either direction
+    for eid, sink in sinks.items():
+        for label in sink:
+            title = label.split(" (")[0].strip().lower()
+            if title and (title == low or title == low.split(" (")[0].strip()):
+                return eid, label
+    # 4. unique substring (leader named a fragment, or added stray words)
+    matches: list[tuple[str, str]] = []
+    for eid, sink in sinks.items():
+        for label in sink:
+            title = label.split(" (")[0].strip().lower()
+            ll = label.lower()
+            if low in ll or ll in low or (title and title in low):
+                matches.append((eid, label))
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _run_compare(
     element: LoadedElement,
     task_brief: str,
@@ -795,24 +840,33 @@ def run_committee_with_ensemble(
             return f"Step {step_id} completed.{suffix}\n\n{combined}"
 
         if name == "select_result":
-            winner_id = params.get("winner_id", "")
+            raw_winner_id = params.get("winner_id", "")
             rationale = params.get("rationale", "")
             winner_output = ""
             winner_title = ""
             matched_element = ""
             variants: list[dict] = []
             matched_sink: dict[str, dict] | None = None
-            for eid, sink in _element_compare_outputs.items():
-                if winner_id in sink:
-                    winner_output = sink[winner_id]["output"]
-                    winner_title = sink[winner_id]["title"]
-                    matched_element = eid
-                    matched_sink = sink
-                    variants = [
-                        {"label": lbl, "title": info["title"], "output": info["output"][:TOOL_RESULT_MAX_LEN]}
-                        for lbl, info in sink.items()
-                    ]
-                    break
+            # Resolve the (often imperfect) label the leader echoed to a canonical sink
+            # key, so the winner is reliably matched and the UI flags the right card.
+            resolved = _resolve_winner(raw_winner_id, _element_compare_outputs)
+            if resolved is None:
+                # Nothing matched — tell the leader the exact valid labels and let it
+                # call select_result again rather than silently recording no winner.
+                valid = [lbl for sink in _element_compare_outputs.values() for lbl in sink]
+                return (
+                    f"No variant matches winner_id={raw_winner_id!r}. "
+                    f"Call select_result again with one of these EXACT labels: {valid}."
+                )
+            matched_element, winner_id = resolved
+            sink = _element_compare_outputs[matched_element]
+            winner_output = sink[winner_id]["output"]
+            winner_title = sink[winner_id]["title"]
+            matched_sink = sink
+            variants = [
+                {"label": lbl, "title": info["title"], "output": info["output"][:TOOL_RESULT_MAX_LEN]}
+                for lbl, info in sink.items()
+            ]
 
             # Operator element gate (in-loop): confirm the winner, override it, or ask
             # the leader to re-select. No-op unless the "element" gate is armed.

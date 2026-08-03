@@ -182,7 +182,7 @@ function StatusTicker({ event, latestGateDecision, engagementStatus }) {
 const COMMITTEE_ORDER_FROM_STATE = (committees) => Object.keys(committees)
 
 export function Dashboard({ state, dispatch }) {
-  const { engagement, committees, agents, chat, latestEvent, latestGateDecision, loopGate } = state
+  const { engagement, committees, agents, chat, latestEvent, latestGateDecision, loopGate, collaboratorPending } = state
   const [graphTab, setGraphTab] = useState('agent')
   const [showArtifacts, setShowArtifacts] = useState(false)
   const [openReport, setOpenReport] = useState(null)
@@ -456,10 +456,16 @@ export function Dashboard({ state, dispatch }) {
           subtitle="Accept to advance, or Redo to re-run this committee"
           body={committees[engagement.awaitingCommittee]?.digest}
           redoAvailable={engagement.awaitingRedoAvailable}
-          onAccept={async () => {
-            await gateDecision(engagement.run_id, 'accept')
-            setPlanReviewOpen(false)
-            dispatch({ type: 'GATE_RESOLVED', payload: {} })
+          collaboratorEnabled
+          collaboratorPending={collaboratorPending}
+          onAccept={async (_selectedId, collaborator) => {
+            const resp = await gateDecision(engagement.run_id, 'accept', null, collaborator)
+            // Co-approval: keep the modal open showing "Awaiting @alias" (driven by the
+            // engagement.collaborator_pending SSE event); the collaborator's reply closes it.
+            if (resp.action !== 'collaborator_pending') {
+              setPlanReviewOpen(false)
+              dispatch({ type: 'GATE_RESOLVED', payload: {} })
+            }
           }}
           onRedo={async (suggestion) => {
             await gateDecision(engagement.run_id, 'redo', suggestion)

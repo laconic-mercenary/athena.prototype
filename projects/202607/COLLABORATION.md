@@ -130,10 +130,31 @@ Lost on server restart — acceptable for demo.
 
 ---
 
-## Committee-gate collaboration (demo focus)
+## Committee-gate collaboration (demo focus) — IMPLEMENTED
 
-The shipped feature co-approves the **plan** gate. The demo extends the same mechanism to
-the **committee gate** (the between-committee operator gate, Accept / Redo). Design:
+Co-approval now covers **both** the plan gate and the **committee gate** (the between-committee
+Accept / Redo gate). As built:
+- `CollabState.kind` ("plan" | "committee") discriminates which gate a co-approval releases.
+  `routes/collaboration.py::_dispatch_decision` routes the collaborator's decision: committee →
+  `runner.resolve_gate_decision(action="accept"|"redo")`, plan → `runner.resolve_approval`.
+  Both the link handler and the inbound-email reply share this dispatcher.
+- `POST /engagements/{run_id}/gate-decision` accepts a `collaborator` field. `Accept` + text
+  containing `@` → extract alias, email the collaborator, `register(kind="committee")`, publish
+  `engagement.collaborator_pending`, return `action="collaborator_pending"` (gate stays parked).
+  `Accept` with no `@` → the text is discarded and the gate advances normally.
+- The email attaches the committee digest as `engagement-summary.txt` (from `ctx.gate_digest`,
+  stashed by the gate handler) and quotes the operator's message; context noun is
+  "<committee> committee result".
+- UI: `OperatorDecisionModal` gained `collaboratorEnabled` (the `@alias` field) and
+  `collaboratorPending` (the "Awaiting @alias" view). The `GATE_DECISION` reducer clears the
+  awaiting/pending state so the modal closes when the collaborator's co-approval releases the gate.
+
+Original design notes below.
+
+### Shared gate textbox, routed by button
+
+The committee gate has one operator textbox, shared by both actions. Where the text goes
+depends on which button is pressed — routing is by the **button, not the box**:
 
 ### Shared gate textbox, routed by button
 

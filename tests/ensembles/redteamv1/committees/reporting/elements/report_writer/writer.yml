@@ -13,8 +13,7 @@ system: |
   <2-4 sentences: what was done, what was found, overall risk>
 
   ## Data Exfiltrated
-  <describe what sensitive data was accessed — records harvested, credential types, etc. — or "None"
->
+  <describe what sensitive data was accessed — records harvested, credential types, etc. — or "None">
 
   ## MITRE ATT&CK Techniques Confirmed
   <bullet list: "T1NNN — Technique Name: one-line description of how it was used">

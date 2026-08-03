@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from athena.ensemble.types import LoadedElement, LoadedSpecialist
-from athena.harness.committee_runner import _run_element, _variant_label
+from athena.harness.committee_runner import _resolve_winner, _run_element, _variant_label
 from athena.model_backend import FakeBackend, ModelResponse
 
 
@@ -44,6 +44,46 @@ def _thread_safe_factory(backends: list[FakeBackend]):
 # ---------------------------------------------------------------------------
 # Single-specialist path (backward compat)
 # ---------------------------------------------------------------------------
+
+def _planning_sinks() -> dict:
+    # Mirrors the Planning committee: mixed models → verbose "model=" suffix labels.
+    return {
+        "exploit_planner": {
+            "Exploit Planner A (t=0.3, model=claude-haiku-4-5-20251001)": {"output": "a", "title": "Exploit Planner A"},
+            "Exploit Planner B (t=0.7, model=claude-haiku-4-5-20251001)": {"output": "b", "title": "Exploit Planner B"},
+            "Foundation-Sec Planner (model=foundation-sec-8b)": {"output": "f", "title": "Foundation-Sec Planner"},
+        }
+    }
+
+
+def test_resolve_winner_exact() -> None:
+    sinks = _planning_sinks()
+    label = "Exploit Planner B (t=0.7, model=claude-haiku-4-5-20251001)"
+    assert _resolve_winner(label, sinks) == ("exploit_planner", label)
+
+
+def test_resolve_winner_title_only_dropped_meta() -> None:
+    # The common LLM failure: it echoes just the title, no "(t=…, model=…)" suffix.
+    sinks = _planning_sinks()
+    assert _resolve_winner("Exploit Planner A", sinks) == (
+        "exploit_planner",
+        "Exploit Planner A (t=0.3, model=claude-haiku-4-5-20251001)",
+    )
+
+
+def test_resolve_winner_case_insensitive() -> None:
+    sinks = _planning_sinks()
+    assert _resolve_winner("foundation-sec planner", sinks) == (
+        "exploit_planner",
+        "Foundation-Sec Planner (model=foundation-sec-8b)",
+    )
+
+
+def test_resolve_winner_unknown_returns_none() -> None:
+    sinks = _planning_sinks()
+    assert _resolve_winner("Some Other Variant", sinks) is None
+    assert _resolve_winner("", sinks) is None
+
 
 def test_single_specialist_returns_output() -> None:
     backend = FakeBackend([_end("result text")])

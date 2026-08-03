@@ -118,13 +118,27 @@ async def inbound_email(request: Request) -> Response:
         return Response(status_code=200)
 
     try:
-        runner.resolve_approval(run_id, approved=decision)
+        _dispatch_decision(state, approved=decision)
     except KeyError:
         _log.warning("inbound-email: engagement %r not found or already resolved", run_id)
 
     verb = "approve" if decision else "deny"
-    _log.info("collaboration for %r resolved via email reply: %s by %s", run_id, verb, state.email)
+    _log.info("collaboration (%s) for %r resolved via email reply: %s by %s", state.kind, run_id, verb, state.email)
     return Response(status_code=200)
+
+
+def _dispatch_decision(state: collaboration.CollabState, *, approved: bool) -> None:
+    """Release the gate this co-approval was parked on, per its kind. A committee-gate
+    Deny releases as a feedback-less redo (a collaborator has no text channel — see
+    COLLABORATION.md 'Known deficiencies')."""
+    if state.kind == "committee":
+        runner.resolve_gate_decision(
+            state.run_id,
+            action="accept" if approved else "redo",
+            suggestion=None,
+        )
+    else:
+        runner.resolve_approval(state.run_id, approved=approved)
 
 
 def _resolve(run_id: str, *, approved: bool) -> HTMLResponse:
@@ -134,13 +148,13 @@ def _resolve(run_id: str, *, approved: bool) -> HTMLResponse:
         return _already_used_page()
 
     try:
-        runner.resolve_approval(run_id, approved=approved)
+        _dispatch_decision(state, approved=approved)
     except KeyError:
         _log.warning("collab link for %r: engagement not found or already resolved", run_id)
 
     decision = "approve" if approved else "deny"
-    _log.info("collaboration for %r resolved: %s by %s", run_id, decision, state.email)
+    _log.info("collaboration (%s) for %r resolved: %s by %s", state.kind, run_id, decision, state.email)
 
     if approved:
-        return _page("Plan approved", "Plan approved", "#22c55e")
-    return _page("Plan denied", "Plan denied", "#ef4444")
+        return _page("Approved", "Approved", "#22c55e")
+    return _page("Declined", "Declined", "#ef4444")

@@ -986,9 +986,18 @@ const edgeTypes = { gate: GateEdge, flow: FlowEdge }
 
 const ORCH_POS  = { x: 0, y: 0 }
 const COMM_Y    = 115            // committee-label row (below orchestrator)
-const COMM_GAP  = 280            // horizontal gap between committee columns
+// Wide enough for two element sub-columns (see SUBCOL_W) side-by-side without a
+// committee's cards overlapping its neighbour. Committees that have only one element
+// simply leave the extra width empty — fitView/zoom absorbs it.
+const COMM_GAP  = 470            // horizontal gap between committee columns
 const COMM_LABEL_HEIGHT = 62     // committee label → first leader
 const NODE_V_GAP = 36            // vertical gap between stacked leader/element nodes
+
+// Element grid: stack element nodes up to SUBCOL_MAX_ROWS deep, then wrap into a new
+// sub-column to the right — so a committee with many elements reads as a compact grid
+// instead of one column that runs off the bottom of the screen. The leader stays on top.
+const SUBCOL_MAX_ROWS = 3
+const SUBCOL_W = 236             // horizontal spacing between element sub-columns (CARD_W + gap)
 const FINDING_GAP    = 88
 const FINDING_INIT_Y = 0
 
@@ -1168,17 +1177,25 @@ export function CommitteeGraph({ state, dispatch, onCommitteeResults }) {
       })
 
       const elementEntries = Object.entries(byElement)
-      elementEntries.forEach(([eid, elementAgents]) => {
+      // Grid layout: SUBCOL_MAX_ROWS-deep columns, wrapping rightward. Each sub-column
+      // keeps its own running Y cursor so variable-height elements never collide, and
+      // the whole grid is centred under the leader.
+      const numSubcols = Math.max(1, Math.ceil(elementEntries.length / SUBCOL_MAX_ROWS))
+      const gridLeftX = colX - ((numSubcols - 1) * SUBCOL_W) / 2
+      const subcolY = new Array(numSubcols).fill(cursorY)
+      elementEntries.forEach(([eid, elementAgents], idx) => {
+        const subcol = Math.floor(idx / SUBCOL_MAX_ROWS)
         const elementResult = committees[committee]?.elementResults?.[eid] || null
         const nodeId = `element-${committee}-${eid}`
         const elementLabel = elementAgents[0]?.element_label || eid
-        const elementY = cursorY
-        cursorY += estimateElementHeight(elementAgents.length, !!elementResult) + NODE_V_GAP
+        const elementX = gridLeftX + subcol * SUBCOL_W
+        const elementY = subcolY[subcol]
+        subcolY[subcol] += estimateElementHeight(elementAgents.length, !!elementResult) + NODE_V_GAP
         elements.push({
           id: nodeId,
           type: 'element',
           position: {
-            x: colX,
+            x: elementX,
             y: elementY,
           },
           zIndex: Z_ELEMENT,

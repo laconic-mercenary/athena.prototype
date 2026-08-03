@@ -65,6 +65,10 @@ class CollabState:
     alias: str
     email: str
     sent_at: datetime
+    # Which gate this co-approval releases: "plan" → runner.resolve_approval;
+    # "committee" → runner.resolve_gate_decision(action="accept"|"redo"). The inbound
+    # link/email handlers dispatch on this so one mechanism serves both gates.
+    kind: str
 
 
 _pending: dict[str, CollabState] = {}
@@ -95,12 +99,13 @@ def resolve_alias(alias: str) -> str | None:
     return _ALIASES.get(alias.lstrip("@"))
 
 
-def register(run_id: str, alias: str, email: str) -> CollabState:
+def register(run_id: str, alias: str, email: str, kind: str) -> CollabState:
     state = CollabState(
         run_id=run_id,
         alias=alias,
         email=email,
         sent_at=datetime.now(timezone.utc),
+        kind=kind,
     )
     _pending[run_id] = state
     return state
@@ -115,7 +120,9 @@ async def send_approval_request(
     alias: str,
     to_email: str,
     plan_text: str,
-    note: str = "",
+    note: str,
+    context_noun: str,
+    attachment_name: str,
 ) -> None:
     approve_url = f"{_BASE_URL}/webhooks/collab/{run_id}/approve"
     deny_url = f"{_BASE_URL}/webhooks/collab/{run_id}/deny"
@@ -150,9 +157,9 @@ async def send_approval_request(
         else "Review it, then use one of the links below."
     )
     html_body = (
-        "<p>You have been requested to co-approve an Athena engagement plan.</p>"
+        f"<p>You have been requested to co-approve an Athena {html.escape(context_noun)}.</p>"
         f"{note_block}"
-        "<p>The engagement briefing is attached as <strong>plan-briefing.txt</strong>.</p>"
+        f"<p>The engagement summary is attached as <strong>{html.escape(attachment_name)}</strong>.</p>"
         f"{reply_block}"
         f"<p>{links_intro}</p>"
         f'<p style="margin:18px 0">✓ <strong>Approve</strong>:<br>'
@@ -169,7 +176,7 @@ async def send_approval_request(
         "subject": f"[Athena] Co-approval requested (@{alias})",
         "html": html_body,
         "attachments": [
-            {"filename": "plan-briefing.txt", "content": attachment}
+            {"filename": attachment_name, "content": attachment}
         ],
     }
     if reply_configured:

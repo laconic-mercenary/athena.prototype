@@ -72,6 +72,10 @@ class EngagementContext:
     # the plan-approval channel above — a committee gate never overlaps briefing.
     gate_decision_action: str | None = None       # "accept" | "redo"
     gate_decision_suggestion: str | None = None   # operator's Redo note
+    # Committee + digest of the gate currently awaiting a decision — None when no gate is
+    # pending. Read by the gate-decision route to build the collaborator co-approval email.
+    gate_committee: str | None = None
+    gate_digest: str | None = None
     # In-loop gate decision: {"action": ..., **kind-specific fields}.
     loop_gate_decision: dict | None = None
     # Set True by abort_engagement(); handlers raise EngagementAborted after their wait
@@ -146,6 +150,8 @@ def start_engagement(instructions: str) -> str:
         ctx.await_phase = AWAIT_COMMITTEE_GATE
         ctx.gate_decision_action = None
         ctx.gate_decision_suggestion = None
+        ctx.gate_committee = committee
+        ctx.gate_digest = digest
         ctx.gate_decision_event.clear()
         pub.sendMessage(
             "gate.awaiting_approval",
@@ -156,6 +162,8 @@ def start_engagement(instructions: str) -> str:
         )
         ctx.gate_decision_event.wait()
         ctx.await_phase = AWAIT_NONE
+        ctx.gate_committee = None
+        ctx.gate_digest = None
         if ctx.cancelled:
             raise EngagementAborted()
         return (ctx.gate_decision_action or "accept", ctx.gate_decision_suggestion)

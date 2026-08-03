@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import importlib
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -121,3 +122,24 @@ def test_verify_signature_accepts_multiple_versions(collab):
     # Prepend an unrelated version tuple; any match should pass.
     headers["svix-signature"] = "v1,deadbeef " + headers["svix-signature"]
     assert collab.verify_webhook_signature(body, headers) is True
+
+
+# --- gate-kind dispatch (_dispatch_decision) -------------------------------
+
+def test_dispatch_decision_routes_by_kind(monkeypatch):
+    from athena.server.routes import collaboration as routes
+    calls: list[tuple] = []
+    monkeypatch.setattr(routes.runner, "resolve_gate_decision",
+                        lambda run_id, *, action, suggestion: calls.append(("gate", run_id, action, suggestion)))
+    monkeypatch.setattr(routes.runner, "resolve_approval",
+                        lambda run_id, *, approved: calls.append(("plan", run_id, approved)))
+
+    routes._dispatch_decision(SimpleNamespace(run_id="r1", kind="committee"), approved=True)
+    routes._dispatch_decision(SimpleNamespace(run_id="r2", kind="committee"), approved=False)
+    routes._dispatch_decision(SimpleNamespace(run_id="r3", kind="plan"), approved=True)
+
+    assert calls == [
+        ("gate", "r1", "accept", None),   # committee + approve → advance
+        ("gate", "r2", "redo", None),     # committee + deny → feedback-less redo
+        ("plan", "r3", True),             # plan → resolve_approval
+    ]

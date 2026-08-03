@@ -297,12 +297,17 @@ function reducer(state, action) {
     if (attempt) text += ` (${attempt})`
     if (rationale) text += `  ·  ${rationale.slice(0, 80)}`
     const ev = { kind: 'gate', text, color: GATE_COLORS[decision] || '#94a3b8', ts: Date.now() }
+    // A gate decision means the gate is no longer awaiting — clear the awaiting/pending
+    // state so the committee-gate modal closes, including when a collaborator's co-approval
+    // (not the operator's own click) is what released it.
     return {
       ...state,
       gateDecisions: [...state.gateDecisions, entry],
       latestGateDecision: entry,
       latestEvent: ev,
       eventLog: appendLog(state, ev),
+      collaboratorPending: null,
+      engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
     }
   }
 

@@ -99,6 +99,34 @@ function deriveArmSwitches(armedGates) {
   }
 }
 
+// Small "(?)" affordance with a hover tooltip — explains what a gate switch does
+// without cluttering the row. Styled to match the dark briefing panel.
+function InfoTip({ text }) {
+  const [show, setShow] = useState(false)
+  return (
+    <span
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+      style={{ position: 'relative', display: 'inline-flex', marginLeft: 6, cursor: 'help', verticalAlign: 'middle' }}
+    >
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 13, height: 13, borderRadius: '50%', fontSize: 9, fontWeight: 700,
+        border: '1px solid #3b5270', color: '#64748b', lineHeight: 1,
+      }}>?</span>
+      {show && (
+        <span style={{
+          position: 'absolute', bottom: 'calc(100% + 6px)', left: '50%', transform: 'translateX(-50%)',
+          width: 230, zIndex: 60, background: '#0f172a', border: '1px solid #1e3050',
+          borderRadius: 6, padding: '9px 11px', boxShadow: '0 6px 22px rgba(0,0,0,0.7)',
+          fontSize: 10, fontWeight: 400, color: '#94a3b8', lineHeight: 1.55,
+          textAlign: 'left', whiteSpace: 'normal', textTransform: 'none', letterSpacing: 0,
+        }}>{text}</span>
+      )}
+    </span>
+  )
+}
+
 function BriefSwitchPanel({ plan, armedGates, disabled, armDisabled, onToggle }) {
   const d = deriveSwitches(plan)
   const a = deriveArmSwitches(armedGates)
@@ -106,10 +134,14 @@ function BriefSwitchPanel({ plan, armedGates, disabled, armDisabled, onToggle })
   // (routed through the orchestrator, panel locks during the round-trip). "arm" switches
   // toggle in-loop operator review at runtime (armed directly, no orchestrator, instant).
   const rows = [
-    { key: 'everyCommittee', label: 'Approve at every committee transition', on: d.everyCommittee, kind: 'plan' },
-    { key: 'beforeFinal', label: 'Approve before the final report', on: d.beforeFinal, kind: 'plan' },
-    { key: 'preAction', label: 'Operator review — before each action', on: a.preAction, kind: 'arm', note: 'approve or deny each specialist tool call' },
-    { key: 'postAction', label: 'Operator review — after each step', on: a.postAction, kind: 'arm', note: 'accept, redo, or skip each step' },
+    { key: 'everyCommittee', label: 'Approve at every committee transition', on: d.everyCommittee, kind: 'plan',
+      tip: 'Adds an operator-approval gate after each committee except the last. The engagement pauses at every transition until you approve, reject, or request changes. Baked into the plan.' },
+    { key: 'beforeFinal', label: 'Approve before the final report', on: d.beforeFinal, kind: 'plan',
+      tip: 'Adds an operator-approval gate after the final committee, so you review and approve before the report is delivered. Baked into the plan.' },
+    { key: 'preAction', label: 'Operator review — before each action', on: a.preAction, kind: 'arm', note: 'approve or deny each specialist tool call',
+      tip: 'Runtime gate: pauses before each specialist tool call so you can approve or deny it. Armed instantly — does not change the plan.' },
+    { key: 'postAction', label: 'Operator review — after each step', on: a.postAction, kind: 'arm', note: 'accept, redo, or skip each step',
+      tip: 'Runtime gate: pauses after each committee step so you can accept it, request a redo, or skip it. Armed instantly — does not change the plan.' },
   ]
   return (
     <div className="brief-switches">
@@ -122,7 +154,10 @@ function BriefSwitchPanel({ plan, armedGates, disabled, armDisabled, onToggle })
         return (
           <div key={r.key} className="brief-switch">
             <span className="brief-switch-label">
-              {r.label}
+              <span>
+                {r.label}
+                {r.tip && <InfoTip text={r.tip} />}
+              </span>
               {r.note && <span className="brief-switch-note">{r.note}</span>}
             </span>
             <button
