@@ -84,23 +84,37 @@ Lost on server restart — acceptable for demo.
 - Emit `engagement.collaborator_pending` SSE event (alias + sent_at).
 - Return 202 — gate is now pending, not resolved.
 
-**New:** `POST /webhooks/inbound-email`
-- Receives Resend inbound payload.
-- Extracts `run_id` from the `To` address (`<run_id>@reply.openintel.to`).
-- Looks up `CollabState` in `pending_collabs`.
-- Scans reply body (case-insensitive) for `approve` or `deny`.
-- Puts the decision into the gate queue.
-- Removes entry from `pending_collabs`.
-- Returns 200.
+**Implemented:** `POST /webhooks/inbound-email` (Resend `email.received` webhook)
+- Verifies the Svix signature over the raw body (`svix-id`/`svix-timestamp`/`svix-signature`,
+  HMAC-SHA256 with `RESEND_WEBHOOK_SECRET`). Unverified → 401. No secret configured → refuse.
+- Extracts `run_id` from the recipient (`<run_id>@<COLLAB_REPLY_DOMAIN>`) via the per-run
+  `reply_to`. Wrong/absent domain → 200 ignore.
+- The webhook carries **metadata only** — fetches the body separately via
+  `GET https://api.resend.com/emails/receiving/{email_id}` (`text`, falls back to
+  tag-stripped `html`).
+- Parses the reply for `approve` / `deny` (or `reject`), scanning **only the text above the
+  first quoted-original marker** so "reply APPROVE or DENY" in the quoted email can't
+  false-match. Ambiguous (both / neither) → 200, gate stays parked.
+- On a clear decision: `pop()` the `CollabState` (only then — an ambiguous reply leaves the
+  re-reply/link path intact), then `runner.resolve_approval(approved=...)`.
+- Returns 200 for intentional no-ops (wrong event, no run_id, no decision, already resolved)
+  so Resend doesn't retry; 500 only on a transient body-fetch failure worth retrying.
 
 ### Email (Resend)
 
 **Outbound**
-- To: collaborator email
-- Subject: `[Athena] Co-approval requested (@alias)`
-- Body (HTML): plan summary + two clickable buttons — **✓ Approve** and **✗ Deny**
-- Each button links to `GET {ATHENA_BASE_URL}/webhooks/collab/{run_id}/approve` (or `/deny`)
-- No inbound email or MX records required — the decision arrives as a browser GET request
+- To: collaborator email · Subject: `[Athena] Co-approval requested (@alias)`
+- **Primary path — reply-in-email:** when `COLLAB_REPLY_DOMAIN` is set, the email leads with
+  "reply with APPROVE or DENY" and carries `reply_to: <run_id>@<COLLAB_REPLY_DOMAIN>`. The
+  collaborator just hits Reply — no link click needed (dodges clients that mangle links).
+- **Operator's message** (the text they `@`-mentioned the collaborator in) renders in a
+  highlighted quote block at the top — the "why".
+- **Attachment:** `plan-briefing.txt` — the plan rendered as readable prose (not raw JSON),
+  base64-encoded via Resend's `attachments` field.
+- **Fallback:** the `GET .../approve` and `/deny` links remain below the reply CTA. When
+  `COLLAB_REPLY_DOMAIN` is unset, no `reply_to` is added and the links are the only path.
+- Reply-in-email uses the **Resend-managed receiving domain** (`<id>.resend.app`) — no
+  MX/DNS setup; Resend receives every local-part at that domain, giving per-run addressing.
 
 **Approve / deny endpoints**
 - `GET /webhooks/collab/{run_id}/approve` — releases the gate with approved=True, returns a confirmation page
@@ -183,8 +197,10 @@ Enough to make a real decision — objective (the "why") plus the digest (the "w
 |---|---|---|
 | `COLLABORATION_ENABLED` | No | Set to `true` to enable the feature. Any other value (or absent) disables it — `@alias` mentions at gates are ignored and the endpoints return 404. |
 | `COLLABORATOR_ALIASES` | If enabled | Comma-separated `alias:email` pairs. e.g. `alice:alice@co.com,bob:bob@co.com` |
-| `RESEND_API_KEY` | If enabled | Resend API key for sending outbound email. |
-| `ATHENA_BASE_URL` | If enabled | Public base URL of the Athena server, e.g. `https://athena.openintel.to`. Used to build the approve/deny links in the email. |
+| `RESEND_API_KEY` | If enabled | Resend API key. Used for both sending outbound email and fetching inbound reply bodies (`/emails/receiving/{id}`). |
+| `ATHENA_BASE_URL` | If enabled | Public base URL of the Athena server, e.g. `https://athena.openintel.to`. Used to build the approve/deny fallback links. |
+| `COLLAB_REPLY_DOMAIN` | For reply-in-email | Resend-managed receiving domain, e.g. `cool-hedgehog.resend.app`. Enables the reply-in-email path (`reply_to: <run_id>@<domain>`). Unset → link-only fallback, no MX needed. |
+| `RESEND_WEBHOOK_SECRET` | For reply-in-email | Svix signing secret (`whsec_…`) shown when the `email.received` webhook is created. Verifies inbound webhook authenticity; without it inbound replies are refused. |
 
 ---
 
