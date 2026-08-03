@@ -15,7 +15,7 @@ This committee is a **single Step** followed by `finish()`.
 The writer's brief should include everything they need to produce a complete report.
 
 **Step 1:** Submit one task for `report_writer` with a brief that includes:
-- Full ExploitOutput contents (shell obtained, user, flags, techniques, commands)
+- Full ExploitOutput contents (shell obtained, user, techniques, data harvested, commands)
 - Relevant recon context if available (open ports, CVEs)
 - Attack plan context if available (which vectors were attempted)
 
@@ -25,10 +25,10 @@ The writer's brief should include everything they need to produce a complete rep
 
 | Outcome | Rating |
 |---------|--------|
-| Root shell + root.txt captured | Critical |
-| User shell + user.txt captured, no root | High |
-| Partial access (shell but no flags) | Medium |
-| No shell, information disclosure only | Low |
+| Root access obtained and/or sensitive data exfiltrated | Critical |
+| Unprivileged shell obtained, no escalation or data access | High |
+| Partial access (information disclosure only) | Medium |
+| No access obtained | Low |
 
 ## Adequacy
 

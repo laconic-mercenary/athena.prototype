@@ -8,13 +8,13 @@ import httpx
 
 _BUILTIN_WORDLIST = [
     "/", "/.env", "/.git/HEAD", "/.htaccess", "/admin", "/admin/", "/api",
-    "/api/v1", "/api/v2", "/backup", "/cgi-bin/", "/config", "/console",
-    "/dashboard", "/db", "/debug", "/docs", "/download", "/favicon.ico",
+    "/api/v1", "/api/v2", "/api/parse-config", "/backup", "/cgi-bin/", "/config",
+    "/console", "/dashboard", "/db", "/debug", "/docs", "/download", "/favicon.ico",
     "/health", "/images", "/includes", "/index.php", "/info", "/info.php",
     "/js", "/login", "/login.php", "/logout", "/phpmyadmin", "/register",
-    "/robots.txt", "/server-status", "/sitemap.xml", "/static", "/status",
-    "/swagger", "/swagger-ui.html", "/test", "/upload", "/uploads", "/user",
-    "/users", "/wp-admin", "/wp-login.php", "/xmlrpc.php",
+    "/requirements.txt", "/robots.txt", "/server-status", "/sitemap.xml", "/static",
+    "/status", "/swagger", "/swagger-ui.html", "/test", "/upload", "/uploads",
+    "/user", "/users", "/wp-admin", "/wp-login.php", "/xmlrpc.php",
 ]
 
 _TIMEOUT = 5.0

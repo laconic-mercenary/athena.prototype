@@ -28,6 +28,9 @@ dev = [
     "pytest>=8.0,<9",
     "ruff>=0.5,<1",
 ]
+redteam = [
+    "pwntools>=4.9,<5",
+]
 
 [project.scripts]
 athena = "athena.main:main"

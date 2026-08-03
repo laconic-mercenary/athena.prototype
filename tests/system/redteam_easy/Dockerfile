@@ -23,6 +23,6 @@ RUN apt-get update \
 WORKDIR /app
 COPY . .
 COPY --from=ui-builder /ui/dist /app/src/ui/dist
-RUN pip install --no-cache-dir -e ".[dev]"
+RUN pip install --no-cache-dir -e ".[dev,redteam]"
 
 CMD ["athena"]
