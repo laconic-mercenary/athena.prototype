@@ -116,6 +116,58 @@ Lost on server restart — acceptable for demo.
 
 ---
 
+## Committee-gate collaboration (demo focus)
+
+The shipped feature co-approves the **plan** gate. The demo extends the same mechanism to
+the **committee gate** (the between-committee operator gate, Accept / Redo). Design:
+
+### Shared gate textbox, routed by button
+
+The committee gate has one operator textbox, shared by both actions. Where the text goes
+depends on which button is pressed — routing is by the **button, not the box**:
+
+| Button | Text contains `@`? | Destination |
+|---|---|---|
+| **Redo** | (ignored) | The leader, as redo feedback — operator input to a model (allowed) |
+| **Approve** | yes | First `@token` → collaborator alias; remaining text → human note in the email |
+| **Approve** | no | Discarded — an accept has nothing to feed |
+
+Approve text only ever reaches a *human* (the email) or is dropped; it never reaches a
+model. Only Redo text reaches a model, and that is operator-authored (allowed).
+
+### Two approvals to advance
+
+Advancing past the gate takes two approvals: the operator's (implicit in clicking Approve
+with an `@alias`) and the collaborator's (the email link click). Clicking Approve with an
+alias does **not** resolve the gate — it records the operator's approval and parks as
+`collaborator_pending`; the collaborator's link click is the second approval, which calls
+`resolve_gate_decision(action="accept")`. Redo advances nothing, so it stays single-party
+(operator only). A collaborator Deny releases the gate as a feedback-less Redo (see
+Known deficiencies).
+
+### Context delivered to the collaborator
+
+Enough to make a real decision — objective (the "why") plus the digest (the "what"):
+
+- **Email body:** the engagement objective (one line, from `ctx.orchestrator`'s plan) +
+  the operator's note + the Approve / Deny buttons.
+- **Attachment:** `engagement-summary.txt` — the full committee **digest**
+  (`artifact.render_digest()`, the same string the operator approves) plus the objective.
+  Plain text, base64-encoded via Resend's `attachments` field. Keeps the body short.
+
+### State & dispatch
+
+- `CollabState` gains a **gate-kind discriminator** (`"plan"` | `"committee"`) so the link
+  handler dispatches to `resolve_approval` (plan) vs
+  `resolve_gate_decision(action="accept" | "redo")` (committee).
+- Confirmation-page copy is neutralized (`Approved` / `Denied`, not `Plan approved`).
+- The "Awaiting @alias" pending view is replicated on the committee-gate surface — a
+  different component than the plan gate.
+- One pending collaboration per run at a time (single `_pending[run_id]` slot); fine for
+  sequential gates (see Known deficiencies).
+
+---
+
 ## Constraints
 
 - Collaborator decision content is never passed to any model. Only the approve/deny link click is consumed.
@@ -202,6 +254,30 @@ ATHENA_BASE_URL=https://athena.openintel.to
 Send a test engagement, enter `@alice` in the collaborator field, and click Co-Approve. Check that the email arrives at the collaborator's inbox with working approve/deny buttons.
 
 ---
+
+## Known deficiencies (demo)
+
+These are accepted shortcuts for the demo, to be revisited.
+
+- **Committee-gate collaborator Deny is a feedback-less Redo.** The committee gate's
+  negative action is *Redo*, not *reject*, and a collaborator has no text channel — so a
+  collaborator Deny releases the gate as `redo` with no suggestion. The committee re-runs
+  blind, but the leader typically asks a clarifying question shortly, which makes the
+  redo interactive. This reuses the existing `redo` action (no new reject/halt path).
+  Ideal: let the collaborator attach a reason to the Redo.
+- **Only the Accept/advance path is co-approved; Redo is single-party.** "Two approvals
+  to progress" applies to advancement only. Redo does not advance the workflow (it loops
+  back), so the operator may Redo unilaterally without a second approval. The "ask a
+  collaborator to sign off on a Redo" case is real but out of scope.
+- **One collaboration per run at a time.** Pending collaborations are stored keyed by
+  `run_id` (single slot). Since gates occur sequentially, only one can be pending at a
+  time — acceptable for the demo, but two concurrent collaborations on one run would
+  collide.
+- **Approve-note text is discarded when no `@` is present.** The shared gate textbox
+  routes by button: Redo text → the leader (model); Approve text with an `@` → the
+  collaborator email (human); Approve text with no `@` → silently dropped (an accept has
+  nothing to feed). An operator who types a note on a plain Approve won't see it go
+  anywhere.
 
 ## Open items
 

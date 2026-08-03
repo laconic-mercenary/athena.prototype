@@ -41,12 +41,12 @@ def _already_used_page() -> HTMLResponse:
     return HTMLResponse("""<!doctype html>
 <html><head><title>Athena — Link already used</title>
 <style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:Menlo,Monaco,Consolas,monospace;background:#0b1120;color:#e2e8f0;
-     display:flex;align-items:center;justify-content:center;min-height:100vh}}
-.card{{border:1px solid #334155;border-radius:8px;padding:40px 48px;text-align:center;max-width:420px}}
-h1{{color:#64748b;font-size:18px;letter-spacing:1px;margin-bottom:12px}}
-p{{color:#475569;font-size:12px;line-height:1.6}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Menlo,Monaco,Consolas,monospace;background:#0b1120;color:#e2e8f0;
+     display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{border:1px solid #334155;border-radius:8px;padding:40px 48px;text-align:center;max-width:420px}
+h1{color:#64748b;font-size:18px;letter-spacing:1px;margin-bottom:12px}
+p{color:#475569;font-size:12px;line-height:1.6}
 </style></head>
 <body><div class="card">
 <h1>Already recorded</h1>

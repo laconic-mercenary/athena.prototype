@@ -33,8 +33,18 @@ system: |
     - The analyst produces ATT&CK technique hypotheses and an attack surface summary.
     - This is always the final step before finish().
 
+  == Scanning discipline ==
+  - NEVER use slow timing (-T0/-T1/-T2) or -O (OS detection needs root; unavailable here).
+    Use -T4. -sV -sC are fine on a BOUNDED port set only.
+  - Full-range scans (1-65535 / -p-) WITH -sV -sC are far too slow and will time out.
+    If Step 1 (ports 1-1000) finds nothing, run a FAST discovery pass first — ports
+    "1-65535", flags "--min-rate 1000 -T4" (NO -sV/-sC) — then a targeted "-sV -sC -T4"
+    on ONLY the ports it found. Custom ranges (e.g. a known dev-server port) are fine.
+  - A scan timeout means it was too broad/slow, NOT that there are no open ports.
+    Narrow the range or drop -sV/-sC for discovery; never treat a timeout as "no ports".
+
   == Adapting the plan ==
-  - If Step 1 finds NO open ports: ask_operator. Do not retry blindly.
+  - If a fast full-range discovery pass still finds NO open ports: ask_operator.
   - If nmap is unavailable: report it and ask_operator.
   - If the target has many open ports (>10): still proceed to Step 2 but limit cve_lookup
     to the 4 most interesting services.

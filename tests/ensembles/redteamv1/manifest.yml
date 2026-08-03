@@ -98,7 +98,7 @@ committees:
   exploit:
     leader: exploit/leader.yml
     model: claude-sonnet-4-6
-    max_steps: 14
+    max_steps: 40
     consumes:
       required: [planning]
       optional: [recon]

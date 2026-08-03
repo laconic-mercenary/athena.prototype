@@ -1,0 +1,39 @@
+# Red team engagement against a LIVE Hack The Box machine over OpenVPN.
+#
+# Network model (Option B — host networking): OpenVPN runs on the HOST; this container
+# shares the host network namespace (network_mode: host), so it sees tun0 directly. All
+# recon/exploit traffic egresses the VPN, and the get_shell listener binds the host tun0
+# IP (lhost) so the HTB target can call back. Host networking removes the container's
+# network isolation — acceptable for a single-operator engagement on your own machine.
+#
+# The control UI is bound to 127.0.0.1 (not 0.0.0.0) so host networking does NOT expose it
+# on tun0 to the HTB network. The reverse-shell listener binds lhost separately.
+#
+# Prereqs: OpenVPN connected on the host (tun0 up) BEFORE ./run.sh. There is no local
+# target here — the target is the remote HTB box (see instructions.txt).
+
+services:
+  athena_web:
+    build:
+      context: ../../..
+      dockerfile: tests/system/redteam_htb/Dockerfile
+    network_mode: host          # share host netns → see tun0 from host OpenVPN
+    command:
+      - python
+      - server.py
+      - --host
+      - 127.0.0.1               # control UI stays off tun0 (host mode exposes 0.0.0.0 everywhere)
+      - --port
+      - "8002"                  # distinct from redteam_easy (8001) so both can coexist
+      - --verbose               # DEBUG logging: tool calls, model responses, gate/ask activity
+    volumes:
+      - ../../../artifacts:/app/artifacts
+      - ../../ensembles/redteamv1:/app/ensemble:ro
+    env_file: ../../../.env
+    environment:
+      - ENSEMBLE_PATH=/app/ensemble
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12

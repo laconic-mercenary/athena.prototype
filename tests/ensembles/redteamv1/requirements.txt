@@ -1,0 +1,8 @@
+# Python dependencies for THIS ensemble's skills (tool definitions).
+#
+# Kept with the ensemble, not in the core harness pyproject: the core does not need these;
+# only ensembles whose skills import them do. A system-test image that runs this ensemble
+# installs this file (see tests/system/redteam_htb/Dockerfile).
+#
+# pwntools — reverse-shell listener + payload delivery in skills/get_shell/impl.py
+pwntools>=4.11

@@ -1,6 +1,11 @@
 title: Threat Analyst
 provider: ollama
 model: foundation-sec-8b
+# Foundation-Sec-8B-Reasoning emits a chain-of-thought trace *before* its answer, so the
+# default SPECIALIST_MAX_TOKENS (4096) gets exhausted mid-reasoning → finish_reason
+# "length" → hard RuntimeError that halts the engagement. Give reasoning + answer room.
+# Server context window is 32768 (--max-model-len), so this leaves ample room for input.
+max_tokens: 16000
 system: |
   You are a red team threat analyst with deep knowledge of MITRE ATT&CK, CVEs, and
   offensive security. You receive a structured recon summary and produce:

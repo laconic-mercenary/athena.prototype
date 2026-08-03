@@ -6,6 +6,55 @@ marked.setOptions({ breaks: true })
 
 const ORCH = 'athena.orchestrator'
 
+// Render the EngagementPlan as a plain-text briefing for the co-approval email
+// attachment. A raw JSON blob is unreadable in an inbox; the collaborator wants
+// prose. Mirrors the EngagementPlan shape (operator_instructions, committees with
+// objective/constraints/emphasis, gates). See src/athena/engagement_plan.py.
+function buildPlanBriefing(plan) {
+  const rule = '='.repeat(64)
+  const sub = '-'.repeat(64)
+  const out = ['ATHENA ENGAGEMENT PLAN', rule]
+  if (plan.engagement_id) out.push(`Engagement: ${plan.engagement_id}`)
+  out.push('')
+
+  if (plan.operator_instructions) {
+    out.push('OPERATOR INSTRUCTIONS', sub, plan.operator_instructions.trim(), '')
+  }
+
+  const committees = plan.committees || {}
+  const names = Object.keys(committees)
+  if (names.length) {
+    out.push('COMMITTEES', sub)
+    for (const name of names) {
+      const c = committees[name] || {}
+      out.push('', `▸ ${name}`)
+      const objective = c.objective || []
+      if (objective.length) {
+        out.push('  Objectives:')
+        objective.forEach((o, i) => out.push(`    ${i + 1}. ${o}`))
+      }
+      if ((c.constraints || []).length) {
+        out.push('  Constraints:')
+        c.constraints.forEach(x => out.push(`    - ${x}`))
+      }
+      if ((c.emphasis || []).length) {
+        out.push('  Emphasis:')
+        c.emphasis.forEach(x => out.push(`    - ${x}`))
+      }
+    }
+    out.push('')
+  }
+
+  const gates = plan.gates || []
+  if (gates.length) {
+    out.push('APPROVAL GATES', sub)
+    gates.forEach(g => out.push(`  - after ${g.after}: ${g.type}`))
+    out.push('')
+  }
+
+  return out.join('\n')
+}
+
 // Fallback for a toggle whose revised plan never arrives (orchestrator answered
 // conversationally, was slow, or the response dropped). Long enough not to fire during a
 // normal LLM revision round-trip; short enough that the panel never wedges for long.
@@ -333,7 +382,7 @@ export function OrchestratorDialog({ state, dispatch }) {
     setError(null)
     try {
       const alias = collaboratorAlias.trim() || null
-      const planText = alias && plan ? JSON.stringify(plan, null, 2) : null
+      const planText = alias && plan ? buildPlanBriefing(plan) : null
       const resp = await planReview(engagement.run_id, 'approve', alias, planText)
       if (resp.action !== 'collaborator_pending') {
         dispatch({ type: 'NAVIGATE', payload: 'dashboard' })

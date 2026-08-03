@@ -17,6 +17,7 @@ def _specialist(id_: str, model: str = "test-model", temperature: float | None =
     return LoadedSpecialist(
         id=id_, title=id_, system="you are a test specialist",
         model=model, provider="fake", temperature=temperature, skill_ids=[],
+        max_tokens=None,
     )
 
 
@@ -101,6 +102,48 @@ def test_compare_mode_output_contains_selection_note() -> None:
     element = _element([_specialist("s1"), _specialist("s2")], mode="compare")
     result = _run_element(element, "task", {}, "comm", "run1", "t1", factory)
     assert "Select the variant" in result
+
+
+# ---------------------------------------------------------------------------
+# Compare mode: fault tolerance (one specialist failing must not sink the element)
+# ---------------------------------------------------------------------------
+
+def _max_tokens() -> ModelResponse:
+    # run_agent raises RuntimeError when a model stops on max_tokens — simulates a
+    # specialist (e.g. Foundation-Sec) exhausting its output budget.
+    return ModelResponse(stop_reason="max_tokens", text=None)
+
+
+def test_compare_mode_survives_one_specialist_failure() -> None:
+    # One specialist raises, the other succeeds. Which backend each parallel worker
+    # receives is race-dependent, but exactly one survives and its output must come back.
+    good = FakeBackend([_end("survivor output")])
+    bad = FakeBackend([_max_tokens()])
+    factory = _thread_safe_factory([good, bad])
+    element = _element([_specialist("s1"), _specialist("s2")], mode="compare")
+
+    failures: list[dict] = []
+    from pubsub import pub
+    # Named params (not **kwargs) so pubsub infers a matching arg spec for the topic.
+    def _on_failed(run_id=None, committee=None, agent_id=None, error=None):
+        failures.append({"run_id": run_id, "committee": committee, "agent_id": agent_id, "error": error})
+    pub.subscribe(_on_failed, "agent.failed")
+    try:
+        result = _run_element(element, "task", {}, "comm", "run1", "t1", factory)
+    finally:
+        pub.unsubscribe(_on_failed, "agent.failed")
+
+    assert "survivor output" in result          # survivor kept
+    assert "Select the variant" in result       # still a valid compare prompt
+    assert len(failures) == 1                    # exactly one agent.failed emitted
+    assert failures[0].get("error")              # carries an error string
+
+
+def test_compare_mode_all_specialists_fail_raises() -> None:
+    factory = _thread_safe_factory([FakeBackend([_max_tokens()]), FakeBackend([_max_tokens()])])
+    element = _element([_specialist("s1"), _specialist("s2")], mode="compare")
+    with pytest.raises(RuntimeError, match="failed"):
+        _run_element(element, "task", {}, "comm", "run1", "t1", factory)
 
 
 def test_compare_mode_single_specialist_returns_plain_output() -> None:

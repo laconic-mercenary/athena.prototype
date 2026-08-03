@@ -10,6 +10,7 @@ services:
       - 0.0.0.0
       - --port
       - "8001"
+      - --verbose               # DEBUG logging: tool calls, model responses, gate/ask activity
     volumes:
       - ../../../artifacts:/app/artifacts
       - ../../ensembles/redteamv1:/app/ensemble:ro
