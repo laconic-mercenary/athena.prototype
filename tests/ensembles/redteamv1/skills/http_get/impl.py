@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import httpx
 
-_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; redteam-probe/1.0)"}
+# Realistic browser UA — a bot-signature UA gets challenged by WAFs/Cloudflare on the way
+# to OSINT targets, returning a challenge page instead of the real content.
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    )
+}
 
 
 def http_get(
