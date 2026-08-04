@@ -91,6 +91,23 @@ def test_parse_reply_stops_at_quote_marker(collab):
     assert collab.parse_reply_decision(reply) is True
 
 
+# --- reply_message (collaborator's words shown in chat) ---------------------
+
+def test_reply_message_strips_quoted_original(collab):
+    reply = (
+        "APPROVE — looks good, nice work\n\n"
+        "On Mon, Aug 4, 2026 Athena <athena@openintel.to> wrote:\n"
+        "> the engagement summary is attached"
+    )
+    assert collab.reply_message(reply) == "APPROVE — looks good, nice work"
+
+
+def test_reply_message_keeps_comment_without_decision(collab):
+    reply = "what does this exploit actually touch?\n\n> quoted original"
+    assert collab.reply_message(reply) == "what does this exploit actually touch?"
+    assert collab.parse_reply_decision(reply) is None  # stays parked, but message shows
+
+
 # --- verify_webhook_signature ----------------------------------------------
 
 def _sign(body: bytes, svix_id: str, svix_ts: str) -> dict[str, str]:

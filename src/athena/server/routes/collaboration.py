@@ -12,6 +12,7 @@ import logging
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse
+from pubsub import pub
 
 from athena import collaboration
 from athena.server import runner
@@ -99,6 +100,13 @@ async def inbound_email(request: Request) -> Response:
         _log.warning("inbound-email: %r had no email_id — cannot fetch body", run_id)
         return Response(status_code=200)
 
+    # Peek (don't consume): we surface the collaborator's message even when the reply
+    # carries no clear decision, and only consume+resolve when it does.
+    state = collaboration.get(run_id)
+    if state is None:
+        _log.info("inbound-email: %r already resolved or unknown — ignoring", run_id)
+        return Response(status_code=200)
+
     try:
         text = await collaboration.fetch_received_email_text(email_id)
     except Exception:
@@ -106,24 +114,33 @@ async def inbound_email(request: Request) -> Response:
         return Response(status_code=500)  # transient — let Resend retry
 
     decision = collaboration.parse_reply_decision(text)
+    message = collaboration.reply_message(text)
+    kw = "approve" if decision is True else "deny" if decision is False else "comment"
+
+    # Always surface the collaborator's message to the chat. "comment" replies (no clear
+    # keyword) show up too, so a collaborator's question is visible while the gate stays parked.
+    pub.sendMessage(
+        "collaborator.replied",
+        run_id=run_id,
+        alias=state.alias,
+        kind=state.kind,
+        committee=state.committee,
+        decision=kw,
+        message=message,
+    )
+
     if decision is None:
-        _log.info("inbound-email: no clear approve/deny in reply for %r — gate stays parked", run_id)
+        _log.info("inbound-email: comment (no approve/deny) from %s for %r — gate stays parked", state.email, run_id)
         return Response(status_code=200)
 
-    # Only consume the pending state once we have an actionable decision, so an
-    # ambiguous reply leaves the links/re-reply path intact.
-    state = collaboration.pop(run_id)
-    if state is None:
-        _log.info("inbound-email: %r already resolved or unknown — ignoring", run_id)
-        return Response(status_code=200)
-
+    # Actionable decision — consume the pending state and release the gate.
+    collaboration.pop(run_id)
     try:
         _dispatch_decision(state, approved=decision)
     except KeyError:
         _log.warning("inbound-email: engagement %r not found or already resolved", run_id)
 
-    verb = "approve" if decision else "deny"
-    _log.info("collaboration (%s) for %r resolved via email reply: %s by %s", state.kind, run_id, verb, state.email)
+    _log.info("collaboration (%s) for %r resolved via email reply: %s by %s", state.kind, run_id, kw, state.email)
     return Response(status_code=200)
 
 

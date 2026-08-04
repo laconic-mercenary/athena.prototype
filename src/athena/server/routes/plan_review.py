@@ -63,7 +63,7 @@ async def plan_review(run_id: str, body: PlanReviewRequest) -> PlanReviewRespons
         except Exception:
             _log.exception("failed to send collaboration email for %r", run_id)
             raise HTTPException(status_code=502, detail="Failed to send collaboration email")
-        state = collaboration.register(run_id, alias, email, kind="plan")
+        state = collaboration.register(run_id, alias, email, kind="plan", committee=None)
         pub.sendMessage(
             "engagement.collaborator_pending",
             run_id=run_id,

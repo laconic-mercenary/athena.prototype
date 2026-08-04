@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { CommitteeGraph } from '../components/CommitteeGraph'
 import { SystemView } from '../components/SystemView'
 import { ArtifactTable } from '../components/ArtifactTable'
@@ -182,7 +182,7 @@ function StatusTicker({ event, latestGateDecision, engagementStatus }) {
 const COMMITTEE_ORDER_FROM_STATE = (committees) => Object.keys(committees)
 
 export function Dashboard({ state, dispatch }) {
-  const { engagement, committees, agents, chat, latestEvent, latestGateDecision, loopGate, collaboratorPending } = state
+  const { engagement, committees, agents, chat, latestEvent, latestGateDecision, loopGate, collaboratorPending, collaboratorReply } = state
   const [graphTab, setGraphTab] = useState('agent')
   const [showArtifacts, setShowArtifacts] = useState(false)
   const [openReport, setOpenReport] = useState(null)
@@ -191,6 +191,19 @@ export function Dashboard({ state, dispatch }) {
   const [loopGateOpen, setLoopGateOpen] = useState(false)
   const [armBusy, setArmBusy] = useState(false)
   const [reportChatOpen, setReportChatOpen] = useState(false)
+
+  // A collaborator's APPROVE/DENY has already resolved the gate on the backend; hold the
+  // modal open ~5s so the operator can read the reply, then close it and clear the reply.
+  // "comment" replies (no decision) leave the gate parked, so no auto-close.
+  useEffect(() => {
+    if (!collaboratorReply || collaboratorReply.kind !== 'committee') return
+    if (collaboratorReply.decision !== 'approve' && collaboratorReply.decision !== 'deny') return
+    const t = setTimeout(() => {
+      setPlanReviewOpen(false)
+      dispatch({ type: 'CLEAR_COLLAB_REPLY' })
+    }, 5000)
+    return () => clearTimeout(t)
+  }, [collaboratorReply, dispatch])
 
   // In-loop gate arming (runtime observation mode — arms/disarms all committees at
   // once; forward-only). Not routed through the orchestrator. See HARNESS.md §7.
@@ -450,7 +463,7 @@ export function Dashboard({ state, dispatch }) {
         <ReportChat runId={engagement.run_id} onClose={() => setReportChatOpen(false)} />
       )}
 
-      {planReviewOpen && engagement.awaitingApproval && (
+      {planReviewOpen && (engagement.awaitingApproval || (collaboratorReply && collaboratorReply.kind === 'committee')) && (
         <OperatorDecisionModal
           title={`${engagement.awaitingCommittee || 'Gate'} · Review`}
           subtitle="Accept to advance, or Redo to re-run this committee"
@@ -458,6 +471,7 @@ export function Dashboard({ state, dispatch }) {
           redoAvailable={engagement.awaitingRedoAvailable}
           collaboratorEnabled
           collaboratorPending={collaboratorPending}
+          collaboratorReply={collaboratorReply && collaboratorReply.kind === 'committee' ? collaboratorReply : null}
           onAccept={async (_selectedId, collaborator) => {
             const resp = await gateDecision(engagement.run_id, 'accept', null, collaborator)
             // Co-approval: keep the modal open showing "Awaiting @alias" (driven by the

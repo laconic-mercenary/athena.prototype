@@ -68,6 +68,9 @@ class CollabState:
     # "committee" → runner.resolve_gate_decision(action="accept"|"redo"). The inbound
     # link/email handlers dispatch on this so one mechanism serves both gates.
     kind: str
+    # Committee being gated (committee kind) so a collaborator's reply routes to that
+    # leader's chat. None for the plan gate, which routes to the orchestrator chat.
+    committee: str | None
 
 
 _pending: dict[str, CollabState] = {}
@@ -98,16 +101,23 @@ def resolve_alias(alias: str) -> str | None:
     return _ALIASES.get(alias.lstrip("@"))
 
 
-def register(run_id: str, alias: str, email: str, kind: str) -> CollabState:
+def register(run_id: str, alias: str, email: str, kind: str, committee: str | None) -> CollabState:
     state = CollabState(
         run_id=run_id,
         alias=alias,
         email=email,
         sent_at=datetime.now(timezone.utc),
         kind=kind,
+        committee=committee,
     )
     _pending[run_id] = state
     return state
+
+
+def get(run_id: str) -> CollabState | None:
+    """Peek at the pending state without consuming it — used to surface a collaborator's
+    message even when their reply carries no clear decision (the gate stays parked)."""
+    return _pending.get(run_id)
 
 
 def pop(run_id: str) -> CollabState | None:
@@ -129,7 +139,7 @@ async def send_approval_request(
         'background:#f1f5f9;border-radius:4px">'
         '<div style="font-size:12px;font-weight:700;color:#334155;'
         'text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">'
-        "Message from the operator"
+        "Message"
         "</div>"
         f'<div style="font-size:15px;color:#0f172a;white-space:pre-wrap">'
         f"{html.escape(note)}</div>"
@@ -289,3 +299,14 @@ def _reply_top(text: str) -> str:
             break
         kept.append(line)
     return "\n".join(kept)
+
+
+# Cap the collaborator message we surface in the UI so a giant reply (or a mail
+# client that fails to quote its original) can't flood the chat.
+_REPLY_MESSAGE_MAX_LEN = 1000
+
+
+def reply_message(text: str) -> str:
+    """The collaborator's own words to show in the chat — the reply above any quoted
+    original, trimmed. Empty string when the reply is only quoted text / blank."""
+    return _reply_top(text).strip()[:_REPLY_MESSAGE_MAX_LEN]

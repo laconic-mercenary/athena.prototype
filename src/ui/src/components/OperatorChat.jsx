@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { sendChat } from '../api'
+import { FeedbackModal, ReportButton } from './FeedbackModal'
 
 const CLASSIFICATION_COLOR = {
   signal_critical: '#ef4444',
@@ -19,6 +20,7 @@ export function OperatorChat({ runId, agentId, committeeId, agentTitle, findings
   const [sending, setSending]   = useState(false)
   const [queued, setQueued]     = useState(false)
   const [error, setError]       = useState(null)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
   const threadRef = useRef(null)
 
   // Operator messages come from the agent's persistent log (via OPERATOR_MESSAGE),
@@ -113,19 +115,29 @@ export function OperatorChat({ runId, agentId, committeeId, agentTitle, findings
                   Messages sent here are injected into this agent's queue during its run.
                 </div>
               )}
-              {thread.map((m, i) => (
-                <div key={i} className={`chat-msg${m.role === 'agent' ? ' chat-msg--agent' : ''}`}>
-                  <div className="chat-msg-meta">
-                    <span className={`chat-msg-role${m.role === 'agent' ? ' chat-msg-role--agent' : ''}`}>
-                      {m.role === 'agent' ? agentTitle : 'Operator'}
-                    </span>
-                    <span className="chat-msg-time">
-                      {new Date(m.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </span>
+              {thread.map((m, i) => {
+                const isCollab = m.role === 'collaborator'
+                const roleLabel = isCollab
+                  ? `@${m.alias} · collaborator`
+                  : m.role === 'agent' ? agentTitle : 'Operator'
+                return (
+                  <div key={i} className={`chat-msg${m.role === 'agent' ? ' chat-msg--agent' : ''}`}>
+                    <div className="chat-msg-meta">
+                      <span
+                        className={`chat-msg-role${m.role === 'agent' ? ' chat-msg-role--agent' : ''}`}
+                        style={isCollab ? { color: '#a78bfa' } : undefined}
+                      >
+                        {roleLabel}
+                      </span>
+                      <span className="chat-msg-time">
+                        {new Date(m.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                      {m.role === 'agent' && <ReportButton onClick={() => setFeedbackOpen(true)} />}
+                    </div>
+                    <div className="chat-msg-body">{m.text}</div>
                   </div>
-                  <div className="chat-msg-body">{m.text}</div>
-                </div>
-              ))}
+                )
+              })}
             </div>
 
             <form onSubmit={handleSend} className="chat-form">
@@ -150,6 +162,7 @@ export function OperatorChat({ runId, agentId, committeeId, agentTitle, findings
           </>
         )}
 
+        <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
       </div>
     </div>
   )

@@ -79,7 +79,7 @@ async def gate_decision(run_id: str, body: GateDecisionRequest) -> GateDecisionR
         except Exception:
             _log.exception("failed to send committee-gate collaboration email for %r", run_id)
             raise HTTPException(status_code=502, detail="Failed to send collaboration email")
-        state = collaboration.register(run_id, alias, email, kind="committee")
+        state = collaboration.register(run_id, alias, email, kind="committee", committee=committee)
         pub.sendMessage(
             "engagement.collaborator_pending",
             run_id=run_id,

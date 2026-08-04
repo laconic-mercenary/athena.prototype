@@ -48,6 +48,7 @@ function createInitialState() {
   pendingLeaderQuestions: {},
   pendingOrchestratorQuestion: null,
   collaboratorPending: null,   // { alias, sentAt } while waiting for email co-approval
+  collaboratorReply: null,     // { alias, decision, message, ts } — collaborator's latest reply
   agents: {},
   agentReplies: {},
   dialogMessages: [],
@@ -105,6 +106,8 @@ function reducer(state, action) {
       agents: {},
       agentReplies: {},
       dialogMessages: [],
+      collaboratorPending: null,
+      collaboratorReply: null,
       latestEvent: null,
       eventLog: [],
     }
@@ -186,6 +189,42 @@ function reducer(state, action) {
       collaboratorPending: { alias: payload.alias, sentAt: payload.sent_at },
       eventLog: appendLog(state, ev),
     }
+  }
+
+  if (type === 'COLLABORATOR_REPLIED') {
+    // The collaborator answered by email. Show their words in the relevant chat
+    // (committee-gate → that leader's chat; plan-gate → orchestrator chat), and stash
+    // the reply so the gate modal can display the decision and self-close after a beat.
+    const { alias, kind, committee, decision, message } = payload
+    const label = decision === 'comment' ? 'message' : decision
+    const ev = { kind: 'collab', text: `@${alias} · ${label}`, color: '#8b5cf6', ts: Date.now() }
+    const chatMsg = { text: message || `(${label})`, ts: Date.now(), role: 'collaborator', alias, decision }
+
+    let agentReplies = state.agentReplies
+    let dialogMessages = state.dialogMessages
+    if (kind === 'committee' && committee) {
+      const leaderId = Object.keys(state.agents).find(
+        id => state.agents[id].committee === committee && state.agents[id].role === 'leader'
+      )
+      if (leaderId) {
+        agentReplies = { ...agentReplies, [leaderId]: [...(agentReplies[leaderId] || []), chatMsg] }
+      }
+    } else {
+      dialogMessages = [...dialogMessages, { role: 'collab', text: message || `(${label})`, ts: Date.now(), alias }]
+      agentReplies = { ...agentReplies, [ORCHESTRATOR_AGENT_ID]: [...(agentReplies[ORCHESTRATOR_AGENT_ID] || []), chatMsg] }
+    }
+    return {
+      ...state,
+      agentReplies,
+      dialogMessages,
+      collaboratorReply: { alias, decision, message, kind, committee, ts: Date.now() },
+      latestEvent: ev,
+      eventLog: appendLog(state, ev),
+    }
+  }
+
+  if (type === 'CLEAR_COLLAB_REPLY') {
+    return { ...state, collaboratorReply: null }
   }
 
   if (type === 'LOOP_GATE_AWAITING') {
@@ -622,6 +661,7 @@ export default function App() {
     if (topic === 'orchestrator.message')     dispatch({ type: 'ORCHESTRATOR_MESSAGE', payload })
     if (topic === 'engagement.plan_revision') dispatch({ type: 'PLAN_REVISION', payload })
     if (topic === 'engagement.collaborator_pending') dispatch({ type: 'COLLABORATOR_PENDING', payload })
+    if (topic === 'collaborator.replied')             dispatch({ type: 'COLLABORATOR_REPLIED', payload })
   }, [])
 
   useEvents(state.engagement.run_id, handleEvent)

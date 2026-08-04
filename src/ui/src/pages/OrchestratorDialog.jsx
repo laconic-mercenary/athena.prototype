@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { marked } from 'marked'
 import { sendChat, planReview, loopGateArm, abortEngagement } from '../api'
+import { FeedbackModal, ReportButton } from '../components/FeedbackModal'
 
 marked.setOptions({ breaks: true })
 
@@ -322,6 +323,7 @@ export function OrchestratorDialog({ state, dispatch }) {
   const [collaboratorAlias, setCollaboratorAlias] = useState('')
   const [error, setError] = useState(null)
   const [panelLocked, setPanelLocked] = useState(false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
   const messagesRef = useRef(null)
   const textareaRef = useRef(null)
   const lockTimer = useRef(null)
@@ -481,17 +483,23 @@ export function OrchestratorDialog({ state, dispatch }) {
             )}
             {dialogMessages.map((msg, i) => {
               const isOrch = msg.role === 'orch' || msg.role === 'orch-msg'
+              const isCollab = msg.role === 'collab'
+              const roleName = isOrch ? 'Orchestrator' : isCollab ? `@${msg.alias} · collaborator` : 'Operator'
               return (
                 <div key={i} className={`dialog-msg dialog-msg--${isOrch ? 'orch' : msg.role}`}>
                   <div className="dialog-msg-meta">
-                    <span className={`dialog-msg-role dialog-msg-role--${isOrch ? 'orch' : msg.role}`}>
-                      {isOrch ? 'Orchestrator' : 'Operator'}
+                    <span
+                      className={`dialog-msg-role dialog-msg-role--${isOrch ? 'orch' : msg.role}`}
+                      style={isCollab ? { color: '#a78bfa' } : undefined}
+                    >
+                      {roleName}
                     </span>
                     <span className="dialog-msg-time">
                       {new Date(msg.ts).toLocaleTimeString('en-GB', {
                         hour: '2-digit', minute: '2-digit', second: '2-digit',
                       })}
                     </span>
+                    {isOrch && <ReportButton onClick={() => setFeedbackOpen(true)} />}
                   </div>
                   {isOrch ? (
                     <div
@@ -590,6 +598,8 @@ export function OrchestratorDialog({ state, dispatch }) {
           </div>
         </div>
       </div>
+
+      <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
     </div>
   )
 }

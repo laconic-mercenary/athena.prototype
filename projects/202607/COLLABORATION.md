@@ -149,6 +149,22 @@ Accept / Redo gate). As built:
   `collaboratorPending` (the "Awaiting @alias" view). The `GATE_DECISION` reducer clears the
   awaiting/pending state so the modal closes when the collaborator's co-approval releases the gate.
 
+### Collaborator messages in the chat (back-channel)
+
+Every inbound reply — not just APPROVE/DENY — is surfaced. The webhook peeks the pending
+state (`collaboration.get`, no consume), extracts the collaborator's words
+(`reply_message` = the reply above any quoted original), and publishes `collaborator.replied`
+(`alias`, `kind`, `committee`, `decision` ∈ approve|deny|comment, `message`). The UI drops it
+into the relevant chat — committee-gate → that leader's chat, plan-gate → orchestrator chat —
+labelled `@alias · collaborator`.
+
+- **APPROVE / DENY**: resolves the gate immediately (backend), and the committee-gate modal
+  shows the decision + message and self-closes after ~5s (UI-side convenience; the decision
+  is already final). `CollabState.committee` routes the message to the right chat.
+- **comment** (no keyword): the gate stays parked and the message shows anyway, so a
+  collaborator can ask a question and the operator sees it while awaiting a real decision.
+  The parked state persists, so a later APPROVE still resolves it.
+
 Original design notes below.
 
 ### Shared gate textbox, routed by button
