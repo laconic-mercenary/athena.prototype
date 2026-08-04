@@ -34,6 +34,11 @@ services:
     hostname: target
     ports:
       - "5000:5000"
+    environment:
+      # Leftover datastore config — visible to `env` post-RCE so the attacker DISCOVERS the
+      # Redis host. The password is NOT here; it stays in /root/.redis_password behind privesc.
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     networks:
       engagement-net:
         ipv4_address: 10.10.20.30    # static "sandbox" IP leaked via meridian-client-x git history

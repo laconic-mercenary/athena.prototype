@@ -54,6 +54,18 @@ committees:
     model: claude-sonnet-4-6
     max_steps: 8
     elements:
+      - id: web_osint
+        label: OSINT Specialist
+        specialists:
+          - elements/web_osint/analyst.yml
+        skills: [http_get]
+
+      - id: github_recon
+        label: GitHub Specialist
+        specialists:
+          - elements/github_recon/analyst.yml
+        skills: [github_commits]
+
       - id: os_check
         label: OS Fingerprint
         specialists:
@@ -78,14 +90,6 @@ committees:
           - elements/cve_lookup/researcher.yml
         skills: [searchsploit]
 
-      - id: threat_analyst
-        label: Threat Analyst
-        provider: ollama
-        model: foundation-sec-8b
-        specialists:
-          - elements/threat_analyst/analyst.yml
-        skills: []
-
   planning:
     leader: planning/leader.yml
     model: claude-sonnet-4-6
@@ -109,11 +113,17 @@ committees:
       required: [planning]
       optional: [recon]
     elements:
-      - id: web_exploiter
-        label: Web Exploiter
+      - id: flask_exploiter
+        label: Flask Exploitation Specialist
         specialists:
-          - elements/web_exploiter/exploiter.yml
+          - elements/flask_exploiter/exploiter.yml
         skills: [http_get, http_post, get_shell]
+
+      - id: redis_operator
+        label: Redis Specialist
+        specialists:
+          - elements/redis_operator/operator.yml
+        skills: [http_post]
 
       - id: shell_operator
         label: Shell Operator
@@ -154,6 +164,10 @@ skills:
   - id: http_get
     definition: skills/http_get/skill.yml
     impl: skills/http_get/impl.py::http_get
+
+  - id: github_commits
+    definition: skills/github_commits/skill.yml
+    impl: skills/github_commits/impl.py::github_commits
 
   - id: http_post
     definition: skills/http_post/skill.yml
