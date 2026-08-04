@@ -21,12 +21,16 @@ export function OperatorDecisionModal({
   redoLabel = 'Redo',
   redoIcon = '↻',
   redoPlaceholder = 'What should change on the redo? (optional)',
+  collaboratorEnabled = false,   // show a "@alias" co-approval field on the accept path
+  collaboratorPending = null,    // { alias, sentAt } while awaiting a collaborator's co-approval
+  collaboratorReply = null,      // { alias, decision, message } — collaborator's latest reply
 }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState(null)
   const [redoOpen, setRedoOpen] = useState(false)
   const [suggestion, setSuggestion] = useState('')
   const [selected, setSelected] = useState(defaultChoiceId)
+  const [collaborator, setCollaborator] = useState('')
 
   const hasChoices = Array.isArray(choices) && choices.length > 0
   const overriding = hasChoices && selected !== defaultChoiceId
@@ -135,6 +139,47 @@ export function OperatorDecisionModal({
           </div>
         )}
 
+        {collaboratorReply && (collaboratorReply.decision === 'approve' || collaboratorReply.decision === 'deny') ? (
+          <div className="chat-actions plan-review-actions" style={{ padding: '12px 16px', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: collaboratorReply.decision === 'approve' ? '#22c55e' : '#ef4444' }}>
+              {collaboratorReply.decision === 'approve' ? '✓' : '✗'} @{collaboratorReply.alias} {collaboratorReply.decision === 'approve' ? 'approved' : 'denied'}
+            </span>
+            {collaboratorReply.message && (
+              <div style={{ fontSize: 12, color: '#94a3b8', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{collaboratorReply.message}</div>
+            )}
+          </div>
+        ) : collaboratorPending ? (
+          <div className="chat-actions plan-review-actions" style={{ padding: '12px 16px', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#a78bfa' }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#8b5cf6', boxShadow: '0 0 6px #8b5cf6' }} />
+              Awaiting @{collaboratorPending.alias}
+              {collaboratorPending.sentAt && (
+                <span style={{ color: '#64748b' }}>
+                  · sent {new Date(collaboratorPending.sentAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
+            </span>
+            {collaboratorReply && collaboratorReply.decision === 'comment' && collaboratorReply.message && (
+              <div style={{ fontSize: 12, color: '#a78bfa', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                @{collaboratorReply.alias}: <span style={{ color: '#94a3b8' }}>{collaboratorReply.message}</span>
+              </div>
+            )}
+          </div>
+        ) : (
+        <>
+        {collaboratorEnabled && !redoOpen && (
+          <div style={{ padding: '0 16px 4px' }}>
+            <input
+              type="text"
+              className="dialog-textarea"
+              placeholder="@alias — co-approve this advance (optional)"
+              value={collaborator}
+              onChange={e => setCollaborator(e.target.value)}
+              style={{ width: '100%' }}
+            />
+          </div>
+        )}
+
         <div className="chat-actions plan-review-actions" style={{ padding: '12px 16px', gap: 8 }}>
           {error && <span className="chat-error">{error}</span>}
 
@@ -197,11 +242,16 @@ export function OperatorDecisionModal({
             type="button"
             className="plan-review-btn plan-review-btn--approve"
             disabled={pending}
-            onClick={() => run(() => onAccept(selected))}
+            onClick={() => run(() => onAccept(selected, collaborator.trim()))}
           >
-            {pending ? 'Processing…' : overriding ? 'Confirm Override →' : acceptLabel}
+            {pending ? 'Processing…'
+              : overriding ? 'Confirm Override →'
+              : (collaboratorEnabled && collaborator.trim()) ? 'Co-Approve →'
+              : acceptLabel}
           </button>
         </div>
+        </>
+        )}
 
       </div>
     </div>

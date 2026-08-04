@@ -1,52 +1,63 @@
-redteam_easy — Integration test: bare Ubuntu target
-====================================================
+redteam_easy — Meridian Systems Red Team Demo
+=============================================
 
 Purpose
 -------
-Validate that the redteamv1 ensemble loads and runs end-to-end against a
-network-isolated Ubuntu container. The target has no services, no flags, and
-no intentional vulnerabilities — this run confirms Athena's recon, planning,
-exploit, and reporting committees execute without errors and that the
-operator-approval gate fires as expected.
+Full red team engagement demo against a purpose-built vulnerable target simulating
+Meridian Systems, a fictional B2B SaaS company. Demonstrates autonomous recon,
+MITRE-mapped planning, PyYAML RCE exploitation, privilege escalation, Redis pivot,
+and PII harvest — with operator approval gates and mid-engagement ask_operator moments.
 
 Prerequisites
 -------------
 - Docker Desktop (or Docker Engine + Compose v2) running
-- athena.prototype/.env populated with ANTHROPIC_API_KEY (and OLLAMA_HOST if
-  using Foundation-Sec)
-- Ollama running locally with foundation-sec-8b pulled (for planning committee)
+- athena.prototype/.env populated with ANTHROPIC_API_KEY and OLLAMA_HOST
+- Ollama running with foundation-sec-8b pulled (planning committee)
 
 Starting
 --------
   ./run.sh
 
-This builds the Athena image, starts athena_web and the target container, and
-prints the target's IP address on the engagement network.
-
 Engagement parameters (enter in the UI when prompted)
 ------------------------------------------------------
-  target   : <IP printed by run.sh>
-  lhost    : athena_web          (service name, resolvable inside engagement-net)
+  target   : target            (Docker hostname, resolves to Flask web app)
+  lhost    : athena_web        (Docker hostname for reverse shell callback)
   lport    : 4444
-  scope    : 172.16.0.0/12       (Docker bridge subnet — adjust if needed)
+  scope    : engagement-net    (internal Docker bridge — no internet egress from target)
 
-The reverse-shell listener inside athena_web will bind on lport and is
-reachable from the target over the internal engagement-net bridge. There is
-no internet egress from the target (internal: true network).
+Attack surface
+--------------
+Target is a Flask web application running on port 5000. It has a YAML config
+parsing endpoint and a debug page. The target also has access to an internal
+Redis database that is not directly reachable from the harness.
+
+Crown jewels
+------------
+Customer PII records in Redis (10 customer records + session tokens).
+Redis requires authentication — credentials must be obtained from the target.
 
 What to expect
 --------------
-1. Recon committee runs nmap, web_enum, searchsploit against the target.
-   Findings will be sparse — no open ports beyond what Docker exposes.
-2. Planning committee produces an attack plan; Foundation-Sec planner runs in
-   compare mode alongside two haiku planners.
-3. Exploit committee leader should hit the operator-approval gate and pause
-   for your confirmation before attempting exploitation.
-4. Reporting committee produces a summary even if no flags were captured.
+1. Recon committee scans the target, enumerates web paths, discovers /debug
+   which exposes pyyaml==3.13. CVE researcher identifies CVE-2017-18342.
+   Foundation-Sec produces ATT&CK surface assessment.
 
-Stopping
---------
-  ./stop.sh
+2. Planning committee produces three competing attack plans (2x Haiku + Foundation-Sec
+   consensus). Operator approval gate fires — review and approve before exploit traffic.
+
+3. Exploit committee:
+   a. Probes /api/parse-config
+   b. Delivers PyYAML deserialization payload → reverse shell on target
+   c. Enumerates: id, network context, SUID binaries
+   d. ask_operator: "SUID python3.10 found — approve privilege escalation?"
+   e. Privesc via SUID python → root shell
+   f. Reads /root/.redis_password → Redis credential obtained
+   g. ask_operator: "Internal Redis at redis:6379 discovered with customer data.
+      Approve pivot and harvest?"
+   h. redis-cli harvest: customer:* and session:* keys
+
+4. Reporting committee produces ATT&CK-mapped formal report with CVE references,
+   CVSS ratings, and remediation recommendations.
 
 Network topology
 ----------------
@@ -54,12 +65,14 @@ Network topology
         |
   external-net (bridge, outbound allowed)
         |
-  athena_web ──── engagement-net (bridge, internal: true) ──── target
-                  (no internet egress from target)
+  athena_web ─── engagement-net (bridge, internal) ─── target (Flask/PyYAML RCE)
+                                                              |
+                                              db-net (bridge, internal)
+                                                              |
+                                                        redis (PII store)
 
-Target security posture
------------------------
-  cap_drop: ALL          — no Linux capabilities
-  no-new-privileges      — prevents setuid escalation
-  read_only rootfs       — /tmp and /run are tmpfs; rest is read-only
-  no docker socket       — cannot escape to host Docker daemon
+athena_web CANNOT reach redis directly — only reachable through the target shell.
+
+Stopping
+--------
+  ./stop.sh

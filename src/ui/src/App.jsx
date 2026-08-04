@@ -47,6 +47,8 @@ function createInitialState() {
   latestGateDecision: null,
   pendingLeaderQuestions: {},
   pendingOrchestratorQuestion: null,
+  collaboratorPending: null,   // { alias, sentAt } while waiting for email co-approval
+  collaboratorReply: null,     // { alias, decision, message, ts } — collaborator's latest reply
   agents: {},
   agentReplies: {},
   dialogMessages: [],
@@ -104,6 +106,8 @@ function reducer(state, action) {
       agents: {},
       agentReplies: {},
       dialogMessages: [],
+      collaboratorPending: null,
+      collaboratorReply: null,
       latestEvent: null,
       eventLog: [],
     }
@@ -173,8 +177,54 @@ function reducer(state, action) {
   if (type === 'ENGAGEMENT_APPROVED' || type === 'GATE_RESOLVED') {
     return {
       ...state,
+      collaboratorPending: null,
       engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
     }
+  }
+
+  if (type === 'COLLABORATOR_PENDING') {
+    const ev = { kind: 'collab', text: `Co-approval sent · awaiting @${payload.alias}`, color: '#8b5cf6', ts: Date.now() }
+    return {
+      ...state,
+      collaboratorPending: { alias: payload.alias, sentAt: payload.sent_at },
+      eventLog: appendLog(state, ev),
+    }
+  }
+
+  if (type === 'COLLABORATOR_REPLIED') {
+    // The collaborator answered by email. Show their words in the relevant chat
+    // (committee-gate → that leader's chat; plan-gate → orchestrator chat), and stash
+    // the reply so the gate modal can display the decision and self-close after a beat.
+    const { alias, kind, committee, decision, message } = payload
+    const label = decision === 'comment' ? 'message' : decision
+    const ev = { kind: 'collab', text: `@${alias} · ${label}`, color: '#8b5cf6', ts: Date.now() }
+    const chatMsg = { text: message || `(${label})`, ts: Date.now(), role: 'collaborator', alias, decision }
+
+    let agentReplies = state.agentReplies
+    let dialogMessages = state.dialogMessages
+    if (kind === 'committee' && committee) {
+      const leaderId = Object.keys(state.agents).find(
+        id => state.agents[id].committee === committee && state.agents[id].role === 'leader'
+      )
+      if (leaderId) {
+        agentReplies = { ...agentReplies, [leaderId]: [...(agentReplies[leaderId] || []), chatMsg] }
+      }
+    } else {
+      dialogMessages = [...dialogMessages, { role: 'collab', text: message || `(${label})`, ts: Date.now(), alias }]
+      agentReplies = { ...agentReplies, [ORCHESTRATOR_AGENT_ID]: [...(agentReplies[ORCHESTRATOR_AGENT_ID] || []), chatMsg] }
+    }
+    return {
+      ...state,
+      agentReplies,
+      dialogMessages,
+      collaboratorReply: { alias, decision, message, kind, committee, ts: Date.now() },
+      latestEvent: ev,
+      eventLog: appendLog(state, ev),
+    }
+  }
+
+  if (type === 'CLEAR_COLLAB_REPLY') {
+    return { ...state, collaboratorReply: null }
   }
 
   if (type === 'LOOP_GATE_AWAITING') {
@@ -286,12 +336,17 @@ function reducer(state, action) {
     if (attempt) text += ` (${attempt})`
     if (rationale) text += `  ·  ${rationale.slice(0, 80)}`
     const ev = { kind: 'gate', text, color: GATE_COLORS[decision] || '#94a3b8', ts: Date.now() }
+    // A gate decision means the gate is no longer awaiting — clear the awaiting/pending
+    // state so the committee-gate modal closes, including when a collaborator's co-approval
+    // (not the operator's own click) is what released it.
     return {
       ...state,
       gateDecisions: [...state.gateDecisions, entry],
       latestGateDecision: entry,
       latestEvent: ev,
       eventLog: appendLog(state, ev),
+      collaboratorPending: null,
+      engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
     }
   }
 
@@ -346,6 +401,20 @@ function reducer(state, action) {
     return {
       ...state,
       agents: { ...state.agents, [agent_id]: { ...state.agents[agent_id], status: 'spun_down' } },
+    }
+  }
+
+  if (type === 'AGENT_FAILED') {
+    // A compare-mode specialist raised and was dropped from the comparison. Mark its box
+    // failed and stash the error so the graph can flag it (red border + warning tooltip).
+    const { agent_id, error } = payload
+    if (!state.agents[agent_id]) return state
+    const ev = { kind: 'failed', text: `${state.agents[agent_id].title} failed`, color: '#ef4444', committee: payload.committee, ts: Date.now() }
+    return {
+      ...state,
+      agents: { ...state.agents, [agent_id]: { ...state.agents[agent_id], status: 'failed', error: error || 'Specialist failed' } },
+      latestEvent: ev,
+      eventLog: appendLog(state, ev),
     }
   }
 
@@ -563,7 +632,12 @@ export default function App() {
     if (topic === 'engagement.rejected')     dispatch({ type: 'ENGAGEMENT_REJECTED', payload })
     if (topic === 'engagement.plan_ready')   dispatch({ type: 'PLAN_READY', payload })
     if (topic === 'gate.awaiting_approval')  dispatch({ type: 'GATE_AWAITING_APPROVAL', payload })
-    if (topic === 'engagement.approved')     dispatch({ type: 'ENGAGEMENT_APPROVED', payload })
+    if (topic === 'engagement.approved') {
+      dispatch({ type: 'ENGAGEMENT_APPROVED', payload })
+      // Navigate to dashboard on approval — covers both normal and collaborator paths.
+      // Normal flow already navigated in handleProceed; dispatching again is a no-op.
+      dispatch({ type: 'NAVIGATE', payload: 'dashboard' })
+    }
     if (topic === 'committee.started')       dispatch({ type: 'COMMITTEE_STARTED', payload })
     if (topic === 'committee.completed')     dispatch({ type: 'COMMITTEE_COMPLETED', payload })
     if (topic === 'step.started')            dispatch({ type: 'STEP_STARTED', payload })
@@ -573,6 +647,7 @@ export default function App() {
     if (topic === 'committee.operator_replied') dispatch({ type: 'LEADER_QUESTION_ANSWERED', payload })
     if (topic === 'agent.spawned')           dispatch({ type: 'AGENT_SPAWNED', payload })
     if (topic === 'agent.spun_down')         dispatch({ type: 'AGENT_SPUN_DOWN', payload })
+    if (topic === 'agent.failed')            dispatch({ type: 'AGENT_FAILED', payload })
     if (topic === 'agent.tool_called')       dispatch({ type: 'AGENT_TOOL_CALLED', payload })
     if (topic === 'agent.tool_result')       dispatch({ type: 'AGENT_TOOL_RESULT', payload })
     if (topic === 'agent.model_text')        dispatch({ type: 'AGENT_MODEL_TEXT', payload })
@@ -585,6 +660,8 @@ export default function App() {
     if (topic === 'orchestrator.answer')      dispatch({ type: 'ORCHESTRATOR_ANSWERED', payload })
     if (topic === 'orchestrator.message')     dispatch({ type: 'ORCHESTRATOR_MESSAGE', payload })
     if (topic === 'engagement.plan_revision') dispatch({ type: 'PLAN_REVISION', payload })
+    if (topic === 'engagement.collaborator_pending') dispatch({ type: 'COLLABORATOR_PENDING', payload })
+    if (topic === 'collaborator.replied')             dispatch({ type: 'COLLABORATOR_REPLIED', payload })
   }, [])
 
   useEvents(state.engagement.run_id, handleEvent)

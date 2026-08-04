@@ -10,6 +10,7 @@ services:
       - 0.0.0.0
       - --port
       - "8001"
+      - --verbose               # DEBUG logging: tool calls, model responses, gate/ask activity
     volumes:
       - ../../../artifacts:/app/artifacts
       - ../../ensembles/redteamv1:/app/ensemble:ro
@@ -28,24 +29,47 @@ services:
       - engagement-net
 
   target:
-    image: ubuntu:24.04
+    build:
+      context: meridian
     hostname: target
-    command: ["sleep", "infinity"]
-    cap_drop:
-      - ALL
-    security_opt:
-      - "no-new-privileges:true"
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /run
+    ports:
+      - "5000:5000"
     networks:
       - engagement-net
+      - db-net
+
+  redis:
+    image: redis:7-alpine
+    hostname: redis
+    command: redis-server --requirepass Meridian2024! --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "Meridian2024!", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    networks:
+      - db-net
+
+  redis_seeder:
+    image: redis:7-alpine
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./redis/seed.sh:/seed.sh:ro
+    command: sh /seed.sh
+    networks:
+      - db-net
+    restart: "no"
 
 networks:
   external-net:
     driver: bridge
 
   engagement-net:
+    driver: bridge
+    internal: true
+
+  db-net:
     driver: bridge
     internal: true

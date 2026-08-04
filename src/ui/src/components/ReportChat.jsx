@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect } from 'react'
 import { reportChat } from '../api'
+import { FeedbackModal, ReportButton } from './FeedbackModal'
 
 export function ReportChat({ runId, onClose }) {
   const [thread, setThread]   = useState([])
   const [input, setInput]     = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError]     = useState(null)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
   const threadRef = useRef(null)
 
   useEffect(() => {
@@ -57,6 +59,7 @@ export function ReportChat({ runId, onClose }) {
                 <span className="chat-msg-time">
                   {new Date(m.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                 </span>
+                {m.role === 'agent' && <ReportButton onClick={() => setFeedbackOpen(true)} />}
               </div>
               <div className="chat-msg-body">{m.text}</div>
             </div>
@@ -87,6 +90,7 @@ export function ReportChat({ runId, onClose }) {
           </div>
         </form>
 
+        <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
       </div>
     </div>
   )

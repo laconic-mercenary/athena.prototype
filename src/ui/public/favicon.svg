@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="#005a99" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- ear tufts / brows -->
+  <path d="M12 22 Q22 7 33 18"/>
+  <path d="M31 18 Q42 7 52 22"/>
+  <!-- eyes -->
+  <circle cx="22.5" cy="24" r="11"/>
+  <circle cx="41.5" cy="24" r="11"/>
+  <!-- pupils -->
+  <circle cx="25.5" cy="23" r="3.3" fill="#005a99" stroke="none"/>
+  <circle cx="38.5" cy="23" r="3.3" fill="#005a99" stroke="none"/>
+  <!-- beak -->
+  <path d="M29 30 L35 30 L32 37 Z"/>
+  <!-- belly -->
+  <path d="M12.5 30 C10 46 20 58 32 58 C44 58 54 46 51.5 30"/>
+  <!-- feet -->
+  <path d="M28 57 l-1.5 4 M32 58.5 l0 4 M36 57 l1.5 4"/>
+</svg>

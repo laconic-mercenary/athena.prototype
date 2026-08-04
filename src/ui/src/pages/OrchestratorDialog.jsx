@@ -1,10 +1,60 @@
 import { useState, useRef, useEffect } from 'react'
 import { marked } from 'marked'
 import { sendChat, planReview, loopGateArm, abortEngagement } from '../api'
+import { FeedbackModal, ReportButton } from '../components/FeedbackModal'
 
 marked.setOptions({ breaks: true })
 
 const ORCH = 'athena.orchestrator'
+
+// Render the EngagementPlan as a plain-text briefing for the co-approval email
+// attachment. A raw JSON blob is unreadable in an inbox; the collaborator wants
+// prose. Mirrors the EngagementPlan shape (operator_instructions, committees with
+// objective/constraints/emphasis, gates). See src/athena/engagement_plan.py.
+function buildPlanBriefing(plan) {
+  const rule = '='.repeat(64)
+  const sub = '-'.repeat(64)
+  const out = ['ATHENA ENGAGEMENT PLAN', rule]
+  if (plan.engagement_id) out.push(`Engagement: ${plan.engagement_id}`)
+  out.push('')
+
+  if (plan.operator_instructions) {
+    out.push('OPERATOR INSTRUCTIONS', sub, plan.operator_instructions.trim(), '')
+  }
+
+  const committees = plan.committees || {}
+  const names = Object.keys(committees)
+  if (names.length) {
+    out.push('COMMITTEES', sub)
+    for (const name of names) {
+      const c = committees[name] || {}
+      out.push('', `▸ ${name}`)
+      const objective = c.objective || []
+      if (objective.length) {
+        out.push('  Objectives:')
+        objective.forEach((o, i) => out.push(`    ${i + 1}. ${o}`))
+      }
+      if ((c.constraints || []).length) {
+        out.push('  Constraints:')
+        c.constraints.forEach(x => out.push(`    - ${x}`))
+      }
+      if ((c.emphasis || []).length) {
+        out.push('  Emphasis:')
+        c.emphasis.forEach(x => out.push(`    - ${x}`))
+      }
+    }
+    out.push('')
+  }
+
+  const gates = plan.gates || []
+  if (gates.length) {
+    out.push('APPROVAL GATES', sub)
+    gates.forEach(g => out.push(`  - after ${g.after}: ${g.type}`))
+    out.push('')
+  }
+
+  return out.join('\n')
+}
 
 // Fallback for a toggle whose revised plan never arrives (orchestrator answered
 // conversationally, was slow, or the response dropped). Long enough not to fire during a
@@ -50,6 +100,34 @@ function deriveArmSwitches(armedGates) {
   }
 }
 
+// Small "(?)" affordance with a hover tooltip — explains what a gate switch does
+// without cluttering the row. Styled to match the dark briefing panel.
+function InfoTip({ text }) {
+  const [show, setShow] = useState(false)
+  return (
+    <span
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+      style={{ position: 'relative', display: 'inline-flex', marginLeft: 6, cursor: 'help', verticalAlign: 'middle' }}
+    >
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 13, height: 13, borderRadius: '50%', fontSize: 9, fontWeight: 700,
+        border: '1px solid #3b5270', color: '#64748b', lineHeight: 1,
+      }}>?</span>
+      {show && (
+        <span style={{
+          position: 'absolute', bottom: 'calc(100% + 6px)', left: '50%', transform: 'translateX(-50%)',
+          width: 230, zIndex: 60, background: '#0f172a', border: '1px solid #1e3050',
+          borderRadius: 6, padding: '9px 11px', boxShadow: '0 6px 22px rgba(0,0,0,0.7)',
+          fontSize: 10, fontWeight: 400, color: '#94a3b8', lineHeight: 1.55,
+          textAlign: 'left', whiteSpace: 'normal', textTransform: 'none', letterSpacing: 0,
+        }}>{text}</span>
+      )}
+    </span>
+  )
+}
+
 function BriefSwitchPanel({ plan, armedGates, disabled, armDisabled, onToggle }) {
   const d = deriveSwitches(plan)
   const a = deriveArmSwitches(armedGates)
@@ -57,10 +135,14 @@ function BriefSwitchPanel({ plan, armedGates, disabled, armDisabled, onToggle })
   // (routed through the orchestrator, panel locks during the round-trip). "arm" switches
   // toggle in-loop operator review at runtime (armed directly, no orchestrator, instant).
   const rows = [
-    { key: 'everyCommittee', label: 'Approve at every committee transition', on: d.everyCommittee, kind: 'plan' },
-    { key: 'beforeFinal', label: 'Approve before the final report', on: d.beforeFinal, kind: 'plan' },
-    { key: 'preAction', label: 'Operator review — before each action', on: a.preAction, kind: 'arm', note: 'approve or deny each specialist tool call' },
-    { key: 'postAction', label: 'Operator review — after each step', on: a.postAction, kind: 'arm', note: 'accept, redo, or skip each step' },
+    { key: 'everyCommittee', label: 'Approve at every committee transition', on: d.everyCommittee, kind: 'plan',
+      tip: 'Adds an operator-approval gate after each committee except the last. The engagement pauses at every transition until you approve, reject, or request changes. Baked into the plan.' },
+    { key: 'beforeFinal', label: 'Approve before the final report', on: d.beforeFinal, kind: 'plan',
+      tip: 'Adds an operator-approval gate after the final committee, so you review and approve before the report is delivered. Baked into the plan.' },
+    { key: 'preAction', label: 'Operator review — before each action', on: a.preAction, kind: 'arm', note: 'approve or deny each specialist tool call',
+      tip: 'Runtime gate: pauses before each specialist tool call so you can approve or deny it. Armed instantly — does not change the plan.' },
+    { key: 'postAction', label: 'Operator review — after each step', on: a.postAction, kind: 'arm', note: 'accept, redo, or skip each step',
+      tip: 'Runtime gate: pauses after each committee step so you can accept it, request a redo, or skip it. Armed instantly — does not change the plan.' },
   ]
   return (
     <div className="brief-switches">
@@ -73,7 +155,10 @@ function BriefSwitchPanel({ plan, armedGates, disabled, armDisabled, onToggle })
         return (
           <div key={r.key} className="brief-switch">
             <span className="brief-switch-label">
-              {r.label}
+              <span>
+                {r.label}
+                {r.tip && <InfoTip text={r.tip} />}
+              </span>
               {r.note && <span className="brief-switch-note">{r.note}</span>}
             </span>
             <button
@@ -230,13 +315,15 @@ function PlanPreview({ plan, planReady }) {
 }
 
 export function OrchestratorDialog({ state, dispatch }) {
-  const { engagement, dialogMessages, planReady, plan, armedGates } = state
+  const { engagement, dialogMessages, planReady, plan, armedGates, collaboratorPending } = state
 
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [proceeding, setProceeding] = useState(false)
+  const [collaboratorAlias, setCollaboratorAlias] = useState('')
   const [error, setError] = useState(null)
   const [panelLocked, setPanelLocked] = useState(false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
   const messagesRef = useRef(null)
   const textareaRef = useRef(null)
   const lockTimer = useRef(null)
@@ -327,14 +414,21 @@ export function OrchestratorDialog({ state, dispatch }) {
   }
 
   async function handleProceed() {
-    if (!planReady || proceeding) return
+    if (!planReady || proceeding || collaboratorPending) return
     setProceeding(true)
     setError(null)
     try {
-      await planReview(engagement.run_id, 'approve')
-      dispatch({ type: 'NAVIGATE', payload: 'dashboard' })
+      const alias = collaboratorAlias.trim() || null
+      const planText = alias && plan ? buildPlanBriefing(plan) : null
+      const resp = await planReview(engagement.run_id, 'approve', alias, planText)
+      if (resp.action !== 'collaborator_pending') {
+        dispatch({ type: 'NAVIGATE', payload: 'dashboard' })
+      }
+      // Collaboration path: SSE engagement.collaborator_pending drives UI,
+      // SSE engagement.approved drives navigation — nothing more to do here.
     } catch (err) {
       setError(err.message)
+    } finally {
       setProceeding(false)
     }
   }
@@ -389,17 +483,23 @@ export function OrchestratorDialog({ state, dispatch }) {
             )}
             {dialogMessages.map((msg, i) => {
               const isOrch = msg.role === 'orch' || msg.role === 'orch-msg'
+              const isCollab = msg.role === 'collab'
+              const roleName = isOrch ? 'Orchestrator' : isCollab ? `@${msg.alias} · collaborator` : 'Operator'
               return (
                 <div key={i} className={`dialog-msg dialog-msg--${isOrch ? 'orch' : msg.role}`}>
                   <div className="dialog-msg-meta">
-                    <span className={`dialog-msg-role dialog-msg-role--${isOrch ? 'orch' : msg.role}`}>
-                      {isOrch ? 'Orchestrator' : 'Operator'}
+                    <span
+                      className={`dialog-msg-role dialog-msg-role--${isOrch ? 'orch' : msg.role}`}
+                      style={isCollab ? { color: '#a78bfa' } : undefined}
+                    >
+                      {roleName}
                     </span>
                     <span className="dialog-msg-time">
                       {new Date(msg.ts).toLocaleTimeString('en-GB', {
                         hour: '2-digit', minute: '2-digit', second: '2-digit',
                       })}
                     </span>
+                    {isOrch && <ReportButton onClick={() => setFeedbackOpen(true)} />}
                   </div>
                   {isOrch ? (
                     <div
@@ -457,25 +557,49 @@ export function OrchestratorDialog({ state, dispatch }) {
 
           <div className="brief-action-bar">
             {error && <div className="brief-action-error">{error}</div>}
-            <div className="brief-action-buttons">
-              <button
-                className="plan-review-btn plan-review-btn--reject"
-                disabled={proceeding || !planReady}
-                onClick={handleRequestChanges}
-              >
-                Request changes
-              </button>
-              <button
-                className="plan-review-btn plan-review-btn--approve"
-                disabled={proceeding || !planReady}
-                onClick={handleProceed}
-              >
-                {proceeding ? 'Starting…' : 'Approve →'}
-              </button>
-            </div>
+            {collaboratorPending ? (
+              <div className="brief-collab-pending">
+                <span className="brief-collab-pending-dot" />
+                Awaiting @{collaboratorPending.alias}
+                <span className="brief-collab-pending-time">
+                  · sent {new Date(collaboratorPending.sentAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+            ) : (
+              <>
+                <div className="brief-collab-row">
+                  <input
+                    className="brief-collab-input"
+                    type="text"
+                    placeholder="@alias — request co-approval (optional)"
+                    value={collaboratorAlias}
+                    onChange={e => setCollaboratorAlias(e.target.value)}
+                    disabled={proceeding || !planReady}
+                  />
+                </div>
+                <div className="brief-action-buttons">
+                  <button
+                    className="plan-review-btn plan-review-btn--reject"
+                    disabled={proceeding || !planReady}
+                    onClick={handleRequestChanges}
+                  >
+                    Request changes
+                  </button>
+                  <button
+                    className="plan-review-btn plan-review-btn--approve"
+                    disabled={proceeding || !planReady}
+                    onClick={handleProceed}
+                  >
+                    {proceeding ? 'Sending…' : collaboratorAlias.trim() ? 'Co-Approve →' : 'Approve →'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
+
+      <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
     </div>
   )
 }

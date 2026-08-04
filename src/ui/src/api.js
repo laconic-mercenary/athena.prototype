@@ -45,19 +45,23 @@ export async function getArtifact(runId, name) {
   return resp.text()
 }
 
-export async function planReview(runId, action) {
+export async function planReview(runId, action, collaborator, planText) {
   return _json(await fetch(`${BASE}/engagements/${runId}/plan-review`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({
+      action,
+      collaborator: collaborator || null,
+      plan_text: planText || null,
+    }),
   }))
 }
 
-export async function gateDecision(runId, action, suggestion) {
+export async function gateDecision(runId, action, suggestion, collaborator) {
   return _json(await fetch(`${BASE}/engagements/${runId}/gate-decision`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, suggestion: suggestion || null }),
+    body: JSON.stringify({ action, suggestion: suggestion || null, collaborator: collaborator || null }),
   }))
 }
 

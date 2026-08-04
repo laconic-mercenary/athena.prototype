@@ -157,6 +157,19 @@ the codebase. They supplement (and sometimes override) general coding instincts.
 | Phase-level agent | leader | — | Committee Leader |
 | Task-level agent | specialist | — | Specialist |
 
+
+---
+
+## File Structure
+
+Organize all source files in the following order, from top to bottom
+
+1. Constants
+2. Globals
+3. Custom Datatypes (Classes, Structs, typedefs, etc)
+4. Public Functions
+5. Non-Public Functions
+
 ---
 
 ## What NOT to Do

@@ -166,6 +166,8 @@ def _apply_step_gate(
 # Specialist agents run tight, bounded loops — they have a single well-scoped task.
 SPECIALIST_MAX_ITERATIONS = 30
 SPECIALIST_MAX_TOKENS = 4_096
+# Truncation for the error string carried on an agent.failed event (compare mode).
+AGENT_FAILED_ERROR_MAX_LEN = 300
 # Hard cap on how many real skill calls a single specialist may EXECUTE per run.
 # Prevents models from calling the same skill twice to "verify" results. A denied
 # tool call does NOT count against this (see SPECIALIST_MAX_TOOL_ATTEMPTS).
@@ -523,6 +525,51 @@ def _variant_label(specialist: LoadedSpecialist, idx: int, all_models: list[str]
     return f"{specialist.title}{suffix}"
 
 
+def _resolve_winner(
+    winner_id: str, sinks: dict[str, dict[str, dict]]
+) -> tuple[str, str] | None:
+    """Resolve a leader-supplied winner_id to (element_id, canonical_label).
+
+    The leader echoes the label as free text and frequently drops the verbose
+    "(t=…, model=…)" meta suffix or changes case — so exact-string matching against
+    labels like 'Exploit Planner A (t=0.3, model=claude-haiku-4-5-20251001)' fails
+    and the winner never gets flagged. Match progressively looser: exact →
+    case-insensitive → title (portion before " (") → unique substring. Returns None
+    only when nothing matches or a loose match is ambiguous across variants.
+    """
+    raw = (winner_id or "").strip()
+    if not raw:
+        return None
+    low = raw.lower()
+
+    # 1. exact label
+    for eid, sink in sinks.items():
+        if raw in sink:
+            return eid, raw
+    # 2. case-insensitive exact
+    for eid, sink in sinks.items():
+        for label in sink:
+            if label.lower() == low:
+                return eid, label
+    # 3. title match — label up to the " (" meta suffix, either direction
+    for eid, sink in sinks.items():
+        for label in sink:
+            title = label.split(" (")[0].strip().lower()
+            if title and (title == low or title == low.split(" (")[0].strip()):
+                return eid, label
+    # 4. unique substring (leader named a fragment, or added stray words)
+    matches: list[tuple[str, str]] = []
+    for eid, sink in sinks.items():
+        for label in sink:
+            title = label.split(" (")[0].strip().lower()
+            ll = label.lower()
+            if low in ll or ll in low or (title and title in low):
+                matches.append((eid, label))
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _run_compare(
     element: LoadedElement,
     task_brief: str,
@@ -533,32 +580,67 @@ def _run_compare(
     compare_sink: dict[str, dict] | None = None,
     loop_gate_hooks: "LoopGateHooks | None" = None,
 ) -> str:
-    """Run all specialists in parallel and return labeled variant output for leader judgement."""
+    """Run all specialists in parallel and return labeled variant output for leader judgement.
+
+    Fault-tolerant: a specialist that raises (e.g. a model that exhausts its max_tokens
+    ceiling) is dropped from the comparison rather than aborting the whole element — that
+    is the redundancy compare mode exists to provide. The leader then selects among the
+    survivors, and an 'agent.failed' event is published so the UI can flag the failed
+    variant. The element only fails outright if EVERY specialist fails.
+    """
     all_models = [s.model for s in element.specialists]
     # Precompute labels so the same string is used for display, sink keys, and agent.spawned.
     variant_labels = [_variant_label(s, i, all_models) for i, s in enumerate(element.specialists)]
 
-    def run_variant(args: tuple[int, LoadedSpecialist]) -> str:
+    def run_variant(args: tuple[int, LoadedSpecialist]) -> tuple[str | None, str | None]:
         idx, specialist = args
         agent_id = f"{run_id}.{committee_name}.{element.id}.v{idx + 1}"
-        return _run_one_specialist(
-            specialist, task_brief, skills_map,
-            committee_name, run_id, make_backend, agent_id,
-            element_id=element.id,
-            element_label=element.label,
-            variant_label=variant_labels[idx],
-            loop_gate_hooks=loop_gate_hooks,
-        )
+        try:
+            output = _run_one_specialist(
+                specialist, task_brief, skills_map,
+                committee_name, run_id, make_backend, agent_id,
+                element_id=element.id,
+                element_label=element.label,
+                variant_label=variant_labels[idx],
+                loop_gate_hooks=loop_gate_hooks,
+            )
+            return output, None
+        except Exception as exc:
+            # Drop this variant and let the leader choose among the survivors; flag it for
+            # the UI. A single flaky specialist must not sink a multi-specialist element.
+            error = str(exc) or exc.__class__.__name__
+            _log.warning("compare variant %s failed: %s", agent_id, error)
+            pub.sendMessage(
+                "agent.failed",
+                run_id=run_id,
+                committee=committee_name,
+                agent_id=agent_id,
+                error=error[:AGENT_FAILED_ERROR_MAX_LEN],
+            )
+            return None, error
 
     with ThreadPoolExecutor(max_workers=len(element.specialists)) as pool:
         # pool.map preserves input order in its results.
-        outputs = list(pool.map(run_variant, enumerate(element.specialists)))
+        results = list(pool.map(run_variant, enumerate(element.specialists)))
 
+    survivors = [
+        (label, spec, out)
+        for label, spec, (out, err) in zip(variant_labels, element.specialists, results)
+        if err is None
+    ]
+    if not survivors:
+        # Every specialist failed — the element genuinely produced nothing to select.
+        raise RuntimeError(
+            f"All {len(element.specialists)} specialists in element {element.id!r} failed"
+        )
+
+    # Only survivors are selectable; failed variants are surfaced via agent.failed alone
+    # (kept out of the sink so winner selection and the element gate never see them).
     if compare_sink is not None:
-        for label, specialist, output in zip(variant_labels, element.specialists, outputs):
+        for label, specialist, output in survivors:
             compare_sink[label] = {"output": output, "title": specialist.title}
 
-    parts = [f"[{label}]\n{output}" for label, output in zip(variant_labels, outputs)]
+    parts = [f"[{label}]\n{output}" for label, _spec, output in survivors]
     return (
         "\n\n---\n\n".join(parts)
         + "\n\n[Select the variant that best meets the task objective. "
@@ -758,24 +840,33 @@ def run_committee_with_ensemble(
             return f"Step {step_id} completed.{suffix}\n\n{combined}"
 
         if name == "select_result":
-            winner_id = params.get("winner_id", "")
+            raw_winner_id = params.get("winner_id", "")
             rationale = params.get("rationale", "")
             winner_output = ""
             winner_title = ""
             matched_element = ""
             variants: list[dict] = []
             matched_sink: dict[str, dict] | None = None
-            for eid, sink in _element_compare_outputs.items():
-                if winner_id in sink:
-                    winner_output = sink[winner_id]["output"]
-                    winner_title = sink[winner_id]["title"]
-                    matched_element = eid
-                    matched_sink = sink
-                    variants = [
-                        {"label": lbl, "title": info["title"], "output": info["output"][:TOOL_RESULT_MAX_LEN]}
-                        for lbl, info in sink.items()
-                    ]
-                    break
+            # Resolve the (often imperfect) label the leader echoed to a canonical sink
+            # key, so the winner is reliably matched and the UI flags the right card.
+            resolved = _resolve_winner(raw_winner_id, _element_compare_outputs)
+            if resolved is None:
+                # Nothing matched — tell the leader the exact valid labels and let it
+                # call select_result again rather than silently recording no winner.
+                valid = [lbl for sink in _element_compare_outputs.values() for lbl in sink]
+                return (
+                    f"No variant matches winner_id={raw_winner_id!r}. "
+                    f"Call select_result again with one of these EXACT labels: {valid}."
+                )
+            matched_element, winner_id = resolved
+            sink = _element_compare_outputs[matched_element]
+            winner_output = sink[winner_id]["output"]
+            winner_title = sink[winner_id]["title"]
+            matched_sink = sink
+            variants = [
+                {"label": lbl, "title": info["title"], "output": info["output"][:TOOL_RESULT_MAX_LEN]}
+                for lbl, info in sink.items()
+            ]
 
             # Operator element gate (in-loop): confirm the winner, override it, or ask
             # the leader to re-select. No-op unless the "element" gate is armed.

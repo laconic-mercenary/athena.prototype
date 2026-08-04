@@ -45,18 +45,18 @@ system: |
       {
         "id": "v1",
         "priority": 1,
-        "technique": "T1190",
-        "technique_name": "Exploit Public-Facing Application",
-        "target_service": "Apache 2.4.49 on port 80",
-        "exploit_description": "CVE-2021-41773 path traversal / RCE via mod_cgi",
-        "cve": "CVE-2021-41773",
-        "success_criteria": "Remote code execution confirmed via /bin/sh output",
-        "fallback": "Attempt CVE-2021-42013 if 41773 returns 403"
+        "technique": "<ATT&CK technique ID>",
+        "technique_name": "<technique name>",
+        "target_service": "<service, port, and endpoint from recon>",
+        "exploit_description": "<specific exploit — reference the actual CVE or misconfiguration found>",
+        "cve": "<CVE-ID or 'none'>",
+        "success_criteria": "<what success looks like based on the recon findings>",
+        "fallback": "<next action if this vector fails>"
       },
       ...
     ],
     "rationale": <why this plan is optimal given the recon>,
-    "mitre_chain": ["T1190", "T1059.004", "T1046", "T1068", "T1005"]
+    "mitre_chain": ["T1NNN", "T1NNN.NNN", ...]
   }
 
   == Operator interrupts ==

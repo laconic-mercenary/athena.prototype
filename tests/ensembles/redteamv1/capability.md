@@ -1,11 +1,11 @@
 # Capability — redteam-htb
 
 ## What this ensemble does
-Performs a structured red team engagement against an HTB-style Linux target: network
-reconnaissance → MITRE-mapped attack planning → exploitation via reverse shell →
-formal report. Foundation-Sec provides ATT&CK analysis in both recon and planning.
 
-The engagement ends with shell access and flag capture (`user.txt` / `root.txt`).
+Performs a structured red team engagement against a Linux target: network reconnaissance →
+MITRE-mapped attack planning → exploitation via reverse shell → formal report.
+Foundation-Sec provides ATT&CK analysis in both recon and planning.
+
 An operator-approval gate between planning and exploitation ensures no exploit traffic
 reaches the target without the operator reviewing and approving the attack plan.
 
@@ -16,20 +16,24 @@ briefing_required:
   - name: target
     type: string
     example: "10.10.11.5"
-    description: IP address of the HTB target machine.
+    description: >
+      Hostname or IP address of the target. On Docker-based engagements this is
+      typically a service name (e.g. "target"); on VPN-based engagements it is
+      the machine's IP (e.g. "10.10.11.5").
   - name: lhost
     type: string
     example: "10.10.14.5"
     description: >
-      Harness machine's VPN interface IP (tun0) — the address the target will call
-      back to for the reverse shell. Run `ip addr show tun0` to confirm.
+      Address the target will call back to for the reverse shell — either the
+      harness machine's VPN interface IP (e.g. tun0) or a Docker service name
+      resolvable from the target container (e.g. "athena_web").
   - name: lport
     type: integer
     example: 4444
     description: Port to listen on for the reverse shell callback. Must be free.
   - name: scope
     type: string
-    example: "Full compromise — user.txt and root.txt"
+    example: "Full compromise — demonstrate impact and collect evidence of access"
     description: Engagement objective and scope constraints.
 ```
 
@@ -39,13 +43,11 @@ This is mandatory — no exploit traffic reaches the target without operator sig
 ## Committees
 
 ### recon
-- **Input:** target IP, scope (from engagement brief).
+- **Input:** target, lhost, scope (from engagement brief).
 - **Output:** `ReconOutput` — open ports with service/version, web paths, CVE candidates,
   Foundation-Sec ATT&CK hypotheses, and attack surface summary.
-- **Steps:** Step 1 — port_scan + web_enum (run in sequence); Step 2 — cve_lookup
-  (uses service versions from step 1); Step 3 — threat_analyst (Foundation-Sec synthesis).
-- **Adequate when:** at least one open port found, CVE candidates identified or
-  Foundation-Sec has produced a surface assessment.
+- **Adequate when:** at least one open port found and either CVE candidates are identified
+  or Foundation-Sec has produced a surface assessment with technique hypotheses.
 - **Retry if:** nmap returned no open ports (possible timeout — retry with slower scan).
 
 ### planning
@@ -62,22 +64,23 @@ This is mandatory — no exploit traffic reaches the target without operator sig
 
 ### exploit
 - **Consumes:** `planning` (required — full PlanOutput); `recon` (optional).
-- **Output:** `ExploitOutput` — shell status, user achieved, flags found, techniques
-  confirmed, vector-level outcomes.
+- **Output:** `ExploitOutput` — shell status, user achieved, techniques confirmed,
+  data harvested, and vector-level outcomes.
 - **Elements:** `web_exploiter` (http_get, http_post, get_shell) and `shell_operator`
   (run_cmd, close_shell). Leader sequences them across multiple steps.
 - **Operator interaction:** the exploit leader calls `ask_operator` before sensitive
-  operations — privilege escalation, reading flags, or pivoting to unexpected hosts.
-- **Adequate when:** shell obtained and at least one flag captured, OR all planned
-  vectors exhausted and the leader has reported the outcome.
+  operations — privilege escalation, reading sensitive files, or pivoting to
+  unexpected internal hosts.
+- **Adequate when:** engagement objectives achieved or all planned vectors exhausted
+  and the leader has reported the outcome.
 
 ### reporting
 - **Consumes:** `exploit` (required); `recon` and `planning` (optional — read via
   `read_artifact` if the writer needs full context).
-- **Output:** `ReportOutput` — executive summary, flags, confirmed ATT&CK techniques,
-  markdown findings, and remediation recommendations.
-- **Adequate when:** all confirmed techniques are mapped, flags are listed, and
-  remediation covers the primary exploit path.
+- **Output:** `ReportOutput` — executive summary, data exfiltrated, confirmed ATT&CK
+  techniques, markdown findings, and remediation recommendations.
+- **Adequate when:** all confirmed techniques are mapped and remediation covers the
+  primary exploit path.
 
 ## Operator gates
 
@@ -89,14 +92,14 @@ The orchestrator should declare exactly this gate in the EngagementPlan. Additio
 gates (e.g. after `exploit`) may be added at operator discretion during briefing.
 
 ## Ask the operator if
-- The nmap scan times out or returns 0 ports — confirm the target IP and VPN connection.
+- The nmap scan times out or returns 0 ports — confirm the target address and connectivity.
 - The reverse shell does not connect within the timeout — confirm lhost/lport and
-  whether the target's firewall allows outbound TCP.
-- Privilege escalation is available and requires destructive actions.
+  whether the target can make outbound TCP connections.
+- Privilege escalation is available but requires destructive actions.
 - Unexpected hosts are discovered on the internal network (pivot opportunity).
 
 ## Dependencies
-- `nmap` — installed on the harness machine (`apt install nmap`)
-- `pwntools` — installed in the Python environment (`pip install pwntools`)
-- `requests` — standard; used by web_enum, http_get, http_post, get_shell
-- Foundation-Sec — live on Modal, configured via `provider: ollama` in `athena.yml`
+- `nmap` — installed on the harness machine
+- `pwntools` — installed in the Python environment (`pip install -e ".[redteam]"`)
+- `httpx` — HTTP client used by http_get, http_post, get_shell (transitive via anthropic SDK)
+- Foundation-Sec — configured via `provider: ollama` in the ensemble manifest

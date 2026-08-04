@@ -19,23 +19,28 @@ echo "Building images..."
 docker compose build
 
 echo "Starting services..."
-docker compose up -d athena_web target
+docker compose up -d athena_web target redis redis_seeder
 
 wait_for_healthy athena_web
 
-# Resolve the target's IP on the engagement network so it can go in the instructions
+# Resolve key hostnames from within the harness container
 TARGET_IP="$(docker compose exec athena_web \
     sh -c 'getent hosts target | awk "{print \$1}"' 2>/dev/null || true)"
 
 echo ""
-echo "redteam_easy ready"
+echo "redteam_easy (Meridian Systems) ready"
 echo ""
 echo "  UI:        http://localhost:8001"
 echo "  Ensemble:  tests/ensembles/redteamv1"
-echo "  Target IP: ${TARGET_IP:-<resolve via 'docker compose exec athena_web getent hosts target'>}"
+echo "  Target:    ${TARGET_IP:-<resolve with ./print-docker-ips.sh>}"
 echo ""
-echo "  Open the UI and start a new engagement."
-echo "  When prompted, use the target IP above and lhost=athena_web (service name on engagement-net)."
+echo "  Engagement parameters:"
+echo "    target  = target          (Flask app — hostname on engagement-net)"
+echo "    lhost   = athena_web      (reverse shell callback — hostname on engagement-net)"
+echo "    lport   = 4444"
+echo ""
+echo "  Redis is on db-net only — not reachable from harness directly."
+echo "  Credential in /root/.redis_password on target (root-only)."
 echo ""
 echo "Logs:  docker compose logs -f"
 echo "Stop:  ./stop.sh"

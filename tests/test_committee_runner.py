@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from athena.ensemble.types import LoadedElement, LoadedSpecialist
-from athena.harness.committee_runner import _run_element, _variant_label
+from athena.harness.committee_runner import _resolve_winner, _run_element, _variant_label
 from athena.model_backend import FakeBackend, ModelResponse
 
 
@@ -17,6 +17,7 @@ def _specialist(id_: str, model: str = "test-model", temperature: float | None =
     return LoadedSpecialist(
         id=id_, title=id_, system="you are a test specialist",
         model=model, provider="fake", temperature=temperature, skill_ids=[],
+        max_tokens=None,
     )
 
 
@@ -43,6 +44,46 @@ def _thread_safe_factory(backends: list[FakeBackend]):
 # ---------------------------------------------------------------------------
 # Single-specialist path (backward compat)
 # ---------------------------------------------------------------------------
+
+def _planning_sinks() -> dict:
+    # Mirrors the Planning committee: mixed models → verbose "model=" suffix labels.
+    return {
+        "exploit_planner": {
+            "Exploit Planner A (t=0.3, model=claude-haiku-4-5-20251001)": {"output": "a", "title": "Exploit Planner A"},
+            "Exploit Planner B (t=0.7, model=claude-haiku-4-5-20251001)": {"output": "b", "title": "Exploit Planner B"},
+            "Foundation-Sec Planner (model=foundation-sec-8b)": {"output": "f", "title": "Foundation-Sec Planner"},
+        }
+    }
+
+
+def test_resolve_winner_exact() -> None:
+    sinks = _planning_sinks()
+    label = "Exploit Planner B (t=0.7, model=claude-haiku-4-5-20251001)"
+    assert _resolve_winner(label, sinks) == ("exploit_planner", label)
+
+
+def test_resolve_winner_title_only_dropped_meta() -> None:
+    # The common LLM failure: it echoes just the title, no "(t=…, model=…)" suffix.
+    sinks = _planning_sinks()
+    assert _resolve_winner("Exploit Planner A", sinks) == (
+        "exploit_planner",
+        "Exploit Planner A (t=0.3, model=claude-haiku-4-5-20251001)",
+    )
+
+
+def test_resolve_winner_case_insensitive() -> None:
+    sinks = _planning_sinks()
+    assert _resolve_winner("foundation-sec planner", sinks) == (
+        "exploit_planner",
+        "Foundation-Sec Planner (model=foundation-sec-8b)",
+    )
+
+
+def test_resolve_winner_unknown_returns_none() -> None:
+    sinks = _planning_sinks()
+    assert _resolve_winner("Some Other Variant", sinks) is None
+    assert _resolve_winner("", sinks) is None
+
 
 def test_single_specialist_returns_output() -> None:
     backend = FakeBackend([_end("result text")])
@@ -101,6 +142,48 @@ def test_compare_mode_output_contains_selection_note() -> None:
     element = _element([_specialist("s1"), _specialist("s2")], mode="compare")
     result = _run_element(element, "task", {}, "comm", "run1", "t1", factory)
     assert "Select the variant" in result
+
+
+# ---------------------------------------------------------------------------
+# Compare mode: fault tolerance (one specialist failing must not sink the element)
+# ---------------------------------------------------------------------------
+
+def _max_tokens() -> ModelResponse:
+    # run_agent raises RuntimeError when a model stops on max_tokens — simulates a
+    # specialist (e.g. Foundation-Sec) exhausting its output budget.
+    return ModelResponse(stop_reason="max_tokens", text=None)
+
+
+def test_compare_mode_survives_one_specialist_failure() -> None:
+    # One specialist raises, the other succeeds. Which backend each parallel worker
+    # receives is race-dependent, but exactly one survives and its output must come back.
+    good = FakeBackend([_end("survivor output")])
+    bad = FakeBackend([_max_tokens()])
+    factory = _thread_safe_factory([good, bad])
+    element = _element([_specialist("s1"), _specialist("s2")], mode="compare")
+
+    failures: list[dict] = []
+    from pubsub import pub
+    # Named params (not **kwargs) so pubsub infers a matching arg spec for the topic.
+    def _on_failed(run_id=None, committee=None, agent_id=None, error=None):
+        failures.append({"run_id": run_id, "committee": committee, "agent_id": agent_id, "error": error})
+    pub.subscribe(_on_failed, "agent.failed")
+    try:
+        result = _run_element(element, "task", {}, "comm", "run1", "t1", factory)
+    finally:
+        pub.unsubscribe(_on_failed, "agent.failed")
+
+    assert "survivor output" in result          # survivor kept
+    assert "Select the variant" in result       # still a valid compare prompt
+    assert len(failures) == 1                    # exactly one agent.failed emitted
+    assert failures[0].get("error")              # carries an error string
+
+
+def test_compare_mode_all_specialists_fail_raises() -> None:
+    factory = _thread_safe_factory([FakeBackend([_max_tokens()]), FakeBackend([_max_tokens()])])
+    element = _element([_specialist("s1"), _specialist("s2")], mode="compare")
+    with pytest.raises(RuntimeError, match="failed"):
+        _run_element(element, "task", {}, "comm", "run1", "t1", factory)
 
 
 def test_compare_mode_single_specialist_returns_plain_output() -> None:

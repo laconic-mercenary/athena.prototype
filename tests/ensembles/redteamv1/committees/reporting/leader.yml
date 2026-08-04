@@ -28,15 +28,15 @@ system: |
     "target":                  <IP or hostname>,
     "risk_rating":             "Critical" | "High" | "Medium" | "Low",
     "executive_summary":       <2-4 sentence non-technical summary>,
-    "flags_found":             {"user.txt": "<flag>", "root.txt": "<flag>"},
+    "data_exfiltrated":        <description of what sensitive data was accessed or harvested>,
     "techniques_confirmed":    ["T1190 Exploit Public-Facing Application", "T1059.004 Unix Shell", ...],
     "findings_markdown":       <markdown with one section per finding>,
     "recommendations_markdown": <markdown with remediation steps>
   }
 
   Risk rating guidance:
-  - Critical: root access + flags obtained
-  - High: user shell obtained but no root
+  - Critical: root access obtained and/or sensitive data exfiltrated
+  - High: unprivileged shell obtained but no escalation or data access
   - Medium: information disclosure or partial access only
   - Low: no access obtained
 

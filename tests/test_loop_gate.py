@@ -305,7 +305,7 @@ def _skill(executed: list) -> LoadedSkill:
 def _specialist_with(skill: LoadedSkill) -> LoadedSpecialist:
     return LoadedSpecialist(
         id="s1", title="S1", system="sys", model="m", provider="fake",
-        temperature=None, skill_ids=[skill.id],
+        temperature=None, skill_ids=[skill.id], max_tokens=None,
     )
 
 

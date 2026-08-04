@@ -31,7 +31,7 @@ def get_shell(
         return {"error": "pwntools not installed — run: pip install pwntools", "connected": False}
 
     try:
-        listener = listen(lport, bindaddr=lhost, timeout=timeout)
+        listener = listen(lport, bindaddr="0.0.0.0", timeout=timeout)
     except Exception as e:
         return {"error": f"Could not bind listener on {lhost}:{lport}: {e}", "connected": False}
 

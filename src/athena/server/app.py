@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from athena.server import bus
 from athena.server.routes import artifacts, chat, engagements, events, gate_decision, loop_gate, plan_review, report_chat
+from athena import collaboration
 
 _UI_DIST = Path(__file__).parent.parent.parent.parent / "src" / "ui" / "dist"
 
@@ -51,6 +52,10 @@ def create_app() -> FastAPI:
     app.include_router(gate_decision.router)
     app.include_router(loop_gate.router)
     app.include_router(report_chat.router)
+
+    if collaboration.COLLABORATION_ENABLED:
+        from athena.server.routes import collaboration as _collab_routes
+        app.include_router(_collab_routes.router)
 
     # Serve the built React app when dist/ exists (production mode).
     if _UI_DIST.is_dir():

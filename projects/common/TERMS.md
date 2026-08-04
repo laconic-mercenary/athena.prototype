@@ -172,6 +172,7 @@ engagement.started
 engagement.completed
 engagement.rejected
 engagement.awaiting_approval
+engagement.collaborator_pending
 
 committee.started
 committee.completed
@@ -186,5 +187,7 @@ agent.operator_reply
 orchestrator.question
 orchestrator.answer
 ```
+
+`engagement.collaborator_pending` fields: `alias` (string, without `@`) and `sent_at` (ISO 8601 UTC datetime string). Emitted when the plan review gate is handed off to an external collaborator. The gate stays blocked until the collaborator replies via email. Cleared when `engagement.approved` fires.
 
 `agent.finding` classification values: `signal_critical` | `signal_warn` | `signal_info` | `noise` | `unknown`
