@@ -28,7 +28,6 @@ COLLABORATION_ENABLED = os.environ.get("COLLABORATION_ENABLED", "").strip().lowe
 
 _RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 _FROM_ADDRESS = "athena@openintel.to"
-_BASE_URL = os.environ.get("ATHENA_BASE_URL", "").rstrip("/")
 
 # Inbound reply-in-email support. Collaborators reply to a per-run address
 # (<run_id>@<REPLY_DOMAIN>); Resend receives it and POSTs an email.received
@@ -124,11 +123,6 @@ async def send_approval_request(
     context_noun: str,
     attachment_name: str,
 ) -> None:
-    approve_url = f"{_BASE_URL}/webhooks/collab/{run_id}/approve"
-    deny_url = f"{_BASE_URL}/webhooks/collab/{run_id}/deny"
-    # The operator's own message (the text they @-mentioned the collaborator in) is
-    # the most important context — it often says WHY approval is being sought. Render
-    # it up top in a highlighted quote block so it can't be missed.
     note = (note or "").strip()
     note_block = (
         '<div style="margin:16px 0;padding:14px 16px;border-left:4px solid #3b82f6;'
@@ -141,33 +135,13 @@ async def send_approval_request(
         f"{html.escape(note)}</div>"
         "</div>"
     ) if note else ""
-    # Primary path is reply-in-email: the recipient just replies with APPROVE or DENY.
-    # This dodges the email client stripping/mangling links entirely. The reply is
-    # addressed to a per-run address so the inbound webhook can correlate it back to
-    # this engagement. The click links stay below as a fallback (and cover the case
-    # where reply-in-email isn't configured — no _REPLY_DOMAIN → no reply_to header).
-    reply_configured = bool(_REPLY_DOMAIN)
-    reply_block = (
-        '<p style="margin:18px 0;font-size:15px">To record your decision, simply '
-        '<strong>reply to this email</strong> with the word '
-        '<strong>APPROVE</strong> or <strong>DENY</strong>.</p>'
-    ) if reply_configured else ""
-    links_intro = (
-        "Or use a link below:" if reply_configured
-        else "Review it, then use one of the links below."
-    )
     html_body = (
         f"<p>You have been requested to co-approve an Athena {html.escape(context_noun)}.</p>"
         f"{note_block}"
         f"<p>The engagement summary is attached as <strong>{html.escape(attachment_name)}</strong>.</p>"
-        f"{reply_block}"
-        f"<p>{links_intro}</p>"
-        f'<p style="margin:18px 0">✓ <strong>Approve</strong>:<br>'
-        f'<a href="{approve_url}">{html.escape(approve_url)}</a></p>'
-        f'<p style="margin:18px 0">✗ <strong>Deny</strong>:<br>'
-        f'<a href="{deny_url}">{html.escape(deny_url)}</a></p>'
-        '<p style="color:#64748b;font-size:12px">If a link is not clickable, copy the '
-        "full URL into your browser.</p>"
+        '<p style="margin:18px 0;font-size:15px">To record your decision, simply '
+        '<strong>reply to this email</strong> with the word '
+        '<strong>APPROVE</strong> or <strong>DENY</strong>.</p>'
     )
     attachment = base64.b64encode(plan_text.encode("utf-8")).decode("ascii")
     payload = {
@@ -179,7 +153,7 @@ async def send_approval_request(
             {"filename": attachment_name, "content": attachment}
         ],
     }
-    if reply_configured:
+    if _REPLY_DOMAIN:
         payload["reply_to"] = f"{run_id}@{_REPLY_DOMAIN}"
     async with httpx.AsyncClient() as client:
         resp = await client.post(
