@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Migrating our config service to Python &amp; Flask — Meridian Systems</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+           color: #1a2332; background: #f7f9fc; line-height: 1.7; }
+    header { background: #0b2545; color: #fff; padding: 18px 32px; display: flex;
+             align-items: center; justify-content: space-between; }
+    header .brand { font-weight: 700; font-size: 20px; letter-spacing: 0.5px; }
+    header nav a { color: #cfe0ff; text-decoration: none; margin-left: 24px; font-size: 14px; }
+    header nav a:hover { color: #fff; }
+    article { max-width: 720px; margin: 0 auto; padding: 56px 32px 72px; }
+    .kicker { text-transform: uppercase; letter-spacing: 1.5px; font-size: 12px;
+              color: #1c6dd0; font-weight: 700; margin-bottom: 12px; }
+    article h1 { font-size: 32px; line-height: 1.2; color: #0b2545; margin-bottom: 10px; }
+    .byline { color: #8593a8; font-size: 14px; margin-bottom: 28px; }
+    article p { margin-bottom: 18px; color: #33425a; }
+    article h2 { font-size: 20px; color: #0b2545; margin: 28px 0 10px; }
+    a { color: #1c6dd0; }
+    .repo { background: #fff; border: 1px solid #e3e9f2; border-left: 4px solid #1c6dd0;
+            border-radius: 6px; padding: 16px 18px; margin: 24px 0; font-size: 15px; }
+    code { font-family: SFMono-Regular, Menlo, Consolas, monospace; background: #eef2f8;
+           padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+    footer { border-top: 1px solid #e3e9f2; padding: 28px 32px; text-align: center;
+             color: #8593a8; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="brand">Meridian Systems</span>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/news">News</a>
+      <a href="#">Platform</a>
+      <a href="#">Contact</a>
+    </nav>
+  </header>
+
+  <article>
+    <div class="kicker">Engineering</div>
+    <h1>Migrating our configuration service to Python and Flask</h1>
+    <div class="byline">By the Meridian Platform Team · July 2026</div>
+
+    <p>Over the last quarter we rebuilt Meridian's internal configuration portal on a modern
+       Python stack. The new service is a lightweight <strong>Flask</strong> application that
+       accepts configuration documents, validates them, and applies them across environments —
+       replacing the aging Java service our customers' platform teams had outgrown.</p>
+
+    <p>Moving to Python let us iterate faster and lean on the ecosystem our engineers already
+       know. The portal parses submitted YAML configuration server-side and returns a normalized
+       result, which made the migration path for existing customers straightforward.</p>
+
+    <h2>Open client tooling</h2>
+    <p>As part of the rollout we've published an open-source client library so customer platform
+       teams can integrate the config portal into their own pipelines. It wraps the portal's
+       submission API and ships with example environment definitions.</p>
+
+    <div class="repo">
+      📦 <strong>meridian-client-x</strong> — our Python client for the config portal.<br>
+      Source: <a href="https://github.com/laconic-mercenary/meridian-client-x">github.com/laconic-mercenary/meridian-client-x</a>
+    </div>
+
+    <p>We'll continue hardening the platform as we scale. If you're a customer and want early
+       access to upcoming features, reach out to your account team.</p>
+  </article>
+
+  <footer>
+    &copy; 2026 Meridian Systems, Inc. &nbsp;·&nbsp; Engineering news &nbsp;·&nbsp; Careers
+  </footer>
+</body>
+</html>
