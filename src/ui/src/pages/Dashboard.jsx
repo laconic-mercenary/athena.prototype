@@ -362,9 +362,9 @@ export function Dashboard({ state, dispatch, onToggleSpecialist }) {
           <button
             className="dash-restart-btn"
             onClick={handleRestart}
-            title="Abandon this engagement and return to the start screen"
+            title="Kill switch — halt the harness threads and abandon this engagement"
           >
-            ↺ Restart
+            ⏻ KILL SWITCH
           </button>
         </div>
       </header>

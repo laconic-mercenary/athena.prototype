@@ -232,6 +232,7 @@ def verify_webhook_signature(body: bytes, headers: dict[str, str]) -> bool:
     caller can decide; callers should refuse to act on unverified webhooks.
     """
     if not _WEBHOOK_SECRET:
+        _log.warning("verify: no RESEND_WEBHOOK_SECRET configured")
         return False
     # Header names arrive lower-cased from Starlette; be tolerant anyway. Resend uses
     # the "svix-*" names; the Standard Webhooks spec (which Svix also emits) uses the
@@ -241,6 +242,10 @@ def verify_webhook_signature(body: bytes, headers: dict[str, str]) -> bool:
     svix_ts = lower.get("svix-timestamp") or lower.get("webhook-timestamp")
     svix_sig = lower.get("svix-signature") or lower.get("webhook-signature")
     if not (svix_id and svix_ts and svix_sig):
+        _log.warning(
+            "verify: missing signing headers (id=%s ts=%s sig=%s); headers seen=%s",
+            bool(svix_id), bool(svix_ts), bool(svix_sig), sorted(lower.keys()),
+        )
         return False
     secret = _WEBHOOK_SECRET
     if secret.startswith("whsec_"):
@@ -248,14 +253,26 @@ def verify_webhook_signature(body: bytes, headers: dict[str, str]) -> bool:
     try:
         key = base64.b64decode(secret)
     except Exception:
+        _log.warning("verify: secret is not valid base64 after the whsec_ prefix")
         return False
     signed = f"{svix_id}.{svix_ts}.".encode("utf-8") + body
     expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
-    # svix-signature: "v1,<sig> v1,<sig2> ..." — accept any matching version.
+    # svix-signature: "v1,<sig> v1,<sig2> ...". Take the part after the version comma; if a
+    # provider sends a bare signature with no "v1," prefix, fall back to the whole token.
+    candidates = []
     for part in svix_sig.split():
-        _, _, sig = part.partition(",")
+        _, comma, sig = part.partition(",")
+        candidates.append(sig if comma else part)
+    for sig in candidates:
         if sig and hmac.compare_digest(sig, expected):
             return True
+    # Signature mismatch — the headers are present but the HMAC didn't match. Log enough to tell
+    # apart "wrong secret" from "body was altered in transit" (a proxy re-encoding the JSON is a
+    # classic cause) without leaking anything sensitive: lengths + short digest prefixes only.
+    _log.warning(
+        "verify: signature mismatch (body_len=%d, key_len=%d, expected=%s…, received=%s)",
+        len(body), len(key), expected[:12], [c[:12] for c in candidates],
+    )
     return False
 
 
