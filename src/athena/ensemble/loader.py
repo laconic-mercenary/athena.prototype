@@ -157,6 +157,8 @@ def _load_specialist(
         temperature=temperature,
         skill_ids=skill_ids,
         max_tokens=max_tokens,
+        base_url=raw.get("ollama_base_url"),
+        auth_headers_env=raw.get("auth_headers_env"),
     )
 
 
@@ -196,6 +198,7 @@ def _load_element(
         instances=instances,
         specialists=specialists,
         skill_ids=skill_ids,
+        max_tool_calls=int(element_raw.get("max_tool_calls", 1)),
     )
 
 

@@ -7,6 +7,7 @@ import { OperatorDecisionModal } from '../components/OperatorDecisionModal'
 import { ReportChat } from '../components/ReportChat'
 import { ReportModal } from '../components/ReportModal'
 import { CommitteeResultsModal } from '../components/CommitteeResultsModal'
+import { EngagementInfoModal } from '../components/EngagementInfoModal'
 import { formatToolSummary } from '../App'
 import { gateDecision, loopGateDecision, loopGateArm, abortEngagement } from '../api'
 
@@ -191,6 +192,10 @@ export function Dashboard({ state, dispatch }) {
   const [loopGateOpen, setLoopGateOpen] = useState(false)
   const [armBusy, setArmBusy] = useState(false)
   const [reportChatOpen, setReportChatOpen] = useState(false)
+  const [infoOpen, setInfoOpen] = useState(false)
+
+  // Current phase = the committee currently active, for the Engagement Info dialog.
+  const activePhase = Object.entries(committees).find(([, c]) => c.status === 'active')?.[0] || null
 
   // A collaborator's APPROVE/DENY has already resolved the gate on the backend; hold the
   // modal open ~5s so the operator can read the reply, then close it and clear the reply.
@@ -346,7 +351,13 @@ export function Dashboard({ state, dispatch }) {
           <span className="dash-status" style={{ color: STATUS_COLOR[engagement.status] }}>
             {STATUS_LABEL[engagement.status] || engagement.status}
           </span>
-          <span className="dash-run-id">{engagement.run_id}</span>
+          <button
+            className="dash-info-btn"
+            onClick={() => setInfoOpen(true)}
+            title="Engagement info"
+          >
+            ⓘ Info
+          </button>
           <button
             className="dash-restart-btn"
             onClick={handleRestart}
@@ -461,6 +472,15 @@ export function Dashboard({ state, dispatch }) {
 
       {reportChatOpen && (
         <ReportChat runId={engagement.run_id} onClose={() => setReportChatOpen(false)} />
+      )}
+
+      {infoOpen && (
+        <EngagementInfoModal
+          engagement={engagement}
+          phase={activePhase}
+          committeeCount={Object.keys(committees).length}
+          onClose={() => setInfoOpen(false)}
+        />
       )}
 
       {planReviewOpen && (engagement.awaitingApproval || (collaboratorReply && collaboratorReply.kind === 'committee')) && (

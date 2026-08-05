@@ -1,0 +1,12 @@
+name: windows_rdp_check
+description: >
+  Fingerprint a host for Windows remote-management services by probing RDP / WinRM (ports 3389,
+  5985) with nmap service detection. Open RDP/WinRM strongly indicates Windows.
+side_effect: touches_target
+parameters:
+  target:
+    type: string
+    description: IP address or hostname to fingerprint.
+returns: >
+  Object with `check`, `family`, `target`, `ports_scanned`, `open_ports`
+  (list of {port, protocol, service, version}), `signal` (human-readable verdict), and `stdout`.

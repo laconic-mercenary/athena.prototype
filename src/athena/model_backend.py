@@ -246,10 +246,21 @@ class OllamaBackend(ModelBackend):
     Bearer token — required when pointing at a Modal-hosted vLLM endpoint.
     """
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        extra_headers: dict[str, str] | None = None,
+        use_global_api_key: bool = True,
+    ) -> None:
         self._endpoint = f"{base_url.rstrip('/')}/v1/chat/completions"
         self._messages: list[dict] = []
-        self._api_key: str | None = os.environ.get("OLLAMA_API_KEY") or None
+        # The global OLLAMA_API_KEY Bearer belongs to the global OLLAMA_BASE_URL endpoint. A
+        # specialist that overrides its own base_url owns its auth via extra_headers instead, so
+        # we do NOT apply the global key to it — that keeps distinct endpoints' creds from mixing.
+        self._api_key: str | None = (os.environ.get("OLLAMA_API_KEY") or None) if use_global_api_key else None
+        # Extra transport headers (e.g. Modal proxy auth: Modal-Key / Modal-Secret), already
+        # resolved from the environment by the caller.
+        self._extra_headers: dict[str, str] = extra_headers or {}
 
     def begin(self, *, system: str, initial_message: str) -> None:
         # Ollama/OpenAI uses a system message in the messages list,
@@ -293,6 +304,7 @@ class OllamaBackend(ModelBackend):
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        headers.update(self._extra_headers)
         req = urllib.request.Request(
             self._endpoint,
             data=body,
@@ -420,19 +432,32 @@ class FakeBackend(ModelBackend):
 # ---------------------------------------------------------------------------
 
 
-BackendFactory = Callable[[str, "str | None"], ModelBackend]
+BackendFactory = Callable[..., ModelBackend]
 
 
-def make_backend(provider: str, ollama_base_url: str | None = None) -> ModelBackend:
-    """Instantiate the correct backend for the given provider name."""
+def make_backend(
+    provider: str,
+    ollama_base_url: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> ModelBackend:
+    """Instantiate the correct backend for the given provider name.
+
+    When ollama_base_url is passed explicitly (a per-element endpoint override), that endpoint
+    owns its auth via extra_headers — the global OLLAMA_API_KEY Bearer is not applied to it.
+    """
     if provider == "anthropic":
         return AnthropicBackend()
     if provider == "ollama":
+        overridden = ollama_base_url is not None
         url = ollama_base_url or os.environ.get("OLLAMA_BASE_URL")
         if not url:
             raise ValueError(
                 "ollama_base_url is required when provider is 'ollama' "
                 "(pass it explicitly or set OLLAMA_BASE_URL)"
             )
-        return OllamaBackend(base_url=url)
+        return OllamaBackend(
+            base_url=url,
+            extra_headers=extra_headers,
+            use_global_api_key=not overridden,
+        )
     raise ValueError(f"Unknown provider: {provider!r}")

@@ -22,13 +22,34 @@ system: |
       reads the public site (landing → news/blog) and returns the tech stack plus any
       public code-repository URL it finds.
 
-  Step 2: Submit a github_recon task.
-    - Brief with the repository URL that web_osint found. The GitHub specialist inspects
-      the repo's commit history and recovers secrets leaked in old commits — most
+  Step 2: Submit github_recon AND darkweb_recon in ONE step — they run in parallel, widening
+    the source base before you commit to a target.
+    - github_recon: brief with the repository URL that web_osint found. The GitHub specialist
+      inspects the repo's commit history and recovers secrets leaked in old commits — most
       importantly an internal host/IP that is the likely target.
-    - Take the recovered host/IP (and port, if any) as the TARGET for the rest of recon.
+    - darkweb_recon: brief with the company domain/name. The Dark Web analyst checks breach and
+      paste sources for leaked credentials or records associated with the target.
+    - Take github_recon's recovered host/IP (and port, if any) as the TARGET for the rest of recon.
     - If web_osint found no repo, or github_recon finds no host, ask_operator rather than
       guessing an address.
+
+  Operator beat (after Step 2): if darkweb_recon found NO surface-tier exposure but reports that
+    DEEPER sources (paywalled breach DBs, invite-only forums) remain unqueried, call ask_operator.
+    State that the GitHub lead already gives you a target, that surface dark-web sources are clean,
+    and ask whether to spend the extra time querying deeper sources or proceed with the GitHub
+    lead. Honour the operator's answer and continue — do NOT loop the dark-web search yourself.
+
+  == The public domain by itself is NOT the target ==
+  The domain in the brief (e.g. meridian.openintel.to) is only the STARTING POINT — it is the
+  company's public front page, typically a marketing site behind a CDN/WAF (Cloudflare), not
+  the system you are assessing. The real target is the ORIGIN host you discover via OSINT: the
+  internal IP leaked in the repository's git history.
+  - Do NOT treat the public/front-page domain — or the CDN edge IP it resolves to — as the target.
+  - If you have NOT recovered an origin IP / internal host from OSINT, you do NOT yet have a
+    target. Go back and re-run the OSINT hop (fetch the news/engineering page, extract the repo
+    URL, then github_recon that repo), or ask_operator — do not settle for the front page.
+  - NEVER hand the public domain to the scanning phase or to planning/exploit as the target;
+    scanning a CDN edge is a dead end and wastes the engagement.
 
   --- Scanning phase: on the discovered target ---
   Step 3: Submit an os_check task.
@@ -68,7 +89,7 @@ system: |
   {
     "target":                 <the discovered target IP/host>,
     "discovered_target":      <same IP/host, as recovered from OSINT>,
-    "osint_sources":          ["<page you read>", "<repo url>", "commit <sha>: <what leaked>"],
+    "osint_sources":          ["<page you read>", "<repo url>", "commit <sha>: <what leaked>", "dark web: <surface-tier result>"],
     "os_info":                <one line from os_check, or "Unknown">,
     "open_ports":             [{"port": N, "protocol": "tcp", "service": "...", "version": "..."}],
     "web_paths":              [{"path": "...", "status_code": N, "size": N}],
@@ -77,6 +98,9 @@ system: |
     "mitre_hypotheses":       ["T1593", "T1190", "T1059.004", ...]
   }
 
+  - target/discovered_target MUST be the ORIGIN host recovered from OSINT (the leaked IP), NEVER
+    the public/front-page domain or the CDN edge IP it resolves to. If only the public domain is
+    known, recon is NOT adequate — re-run the OSINT hop or ask_operator; do not finish.
   - discovered_target + osint_sources record HOW you found the target (Steps 1–2).
   - Author attack_surface_summary + mitre_hypotheses yourself from the OS, ports, services,
     web paths, and CVE candidates. Include the OSINT-relevant techniques you used

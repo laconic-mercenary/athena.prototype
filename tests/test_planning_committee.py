@@ -159,7 +159,7 @@ def test_returns_valid_plan_artifact(config, recon_artifact) -> None:
     artifact = run_planning_committee(
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert artifact.run_id == recon_artifact.run_id
@@ -183,7 +183,7 @@ def test_recon_artifact_injected_into_specialist_initial_message(config, recon_a
     run_planning_committee(
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert "ReconArtifact" in network_backend.initial_message
@@ -198,7 +198,7 @@ def test_plan_links_to_recon_artifact(config, recon_artifact) -> None:
     artifact = run_planning_committee(
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert artifact.recon_artifact_id == recon_artifact.artifact_id
@@ -213,7 +213,7 @@ def test_action_ids_assigned_by_python(config, recon_artifact) -> None:
     artifact = run_planning_committee(
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     for action in artifact.actions:
@@ -232,5 +232,5 @@ def test_invalid_priority_raises(config, recon_artifact) -> None:
         run_planning_committee(
             recon_artifact=recon_artifact,
             config=config,
-            _backend_factory=lambda p, u=None: next(backends),
+            _backend_factory=lambda p, u=None, *_: next(backends),
         )

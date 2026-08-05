@@ -32,7 +32,7 @@ def _thread_safe_factory(backends: list[FakeBackend]):
     lock = threading.Lock()
     idx = [0]
 
-    def factory(provider: str, url=None) -> FakeBackend:
+    def factory(provider: str, url=None, extra_headers=None) -> FakeBackend:
         with lock:
             b = backends[idx[0] % len(backends)]
             idx[0] += 1
@@ -88,21 +88,21 @@ def test_resolve_winner_unknown_returns_none() -> None:
 def test_single_specialist_returns_output() -> None:
     backend = FakeBackend([_end("result text")])
     element = _element([_specialist("spec1")])
-    result = _run_element(element, "do the task", {}, "comm", "run1", "t1", lambda p, u=None: backend)
+    result = _run_element(element, "do the task", {}, "comm", "run1", "t1", lambda p, u=None, *_: backend)
     assert result == "result text"
 
 
 def test_single_specialist_temperature_passed_to_backend() -> None:
     backend = FakeBackend([_end("ok")])
     element = _element([_specialist("spec1", temperature=0.3)])
-    _run_element(element, "task", {}, "comm", "run1", "t1", lambda p, u=None: backend)
+    _run_element(element, "task", {}, "comm", "run1", "t1", lambda p, u=None, *_: backend)
     assert backend.calls[0]["temperature"] == 0.3
 
 
 def test_single_specialist_no_temperature_passes_none() -> None:
     backend = FakeBackend([_end("ok")])
     element = _element([_specialist("spec1")])  # no temperature
-    _run_element(element, "task", {}, "comm", "run1", "t1", lambda p, u=None: backend)
+    _run_element(element, "task", {}, "comm", "run1", "t1", lambda p, u=None, *_: backend)
     assert backend.calls[0]["temperature"] is None
 
 
@@ -190,7 +190,7 @@ def test_compare_mode_single_specialist_returns_plain_output() -> None:
     # compare mode with one specialist: no variant labels, just the raw output
     backend = FakeBackend([_end("plain result")])
     element = _element([_specialist("s1", temperature=0.5)], mode="compare")
-    result = _run_element(element, "task", {}, "comm", "run1", "t1", lambda p, u=None: backend)
+    result = _run_element(element, "task", {}, "comm", "run1", "t1", lambda p, u=None, *_: backend)
     assert result == "plain result"
     assert "Variant" not in result
 

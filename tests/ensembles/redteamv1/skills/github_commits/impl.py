@@ -28,19 +28,61 @@ def _parse_repo(repo: str) -> str | None:
     return f"{owner}/{name}"
 
 
-def github_commits(repo: str) -> dict:
-    slug = _parse_repo(repo)
-    if not slug:
-        return {"error": f"Could not parse repo from {repo!r}; expected 'owner/name' or a github.com URL"}
-
+def _headers() -> dict:
     headers = {"User-Agent": _UA, "Accept": "application/vnd.github+json"}
     # Optional: a token raises the 60/hr unauthenticated limit. Not required for a demo.
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def repo_fetch(repo: str) -> dict:
+    """First look at a repository: its metadata and top-level file listing.
+
+    A source-code intelligence pass starts by orienting on the repo — what it is, its default
+    branch, and which files exist (config, requirements, staging env files) — before digging the
+    commit history for secrets. Input is "owner/name" or a github.com URL.
+    """
+    slug = _parse_repo(repo)
+    if not slug:
+        return {"error": f"Could not parse repo from {repo!r}; expected 'owner/name' or a github.com URL"}
+    try:
+        with httpx.Client(timeout=15.0, headers=_headers()) as client:
+            r = client.get(f"{_API}/repos/{slug}")
+            if r.status_code == 404:
+                return {"repo": slug, "error": "Repository not found (or private)"}
+            if r.status_code == 403:
+                return {"repo": slug, "error": "GitHub API rate-limited or forbidden; set GITHUB_TOKEN to raise the limit"}
+            r.raise_for_status()
+            meta = r.json()
+            top_level = []
+            contents = client.get(f"{_API}/repos/{slug}/contents")
+            if contents.status_code == 200 and isinstance(contents.json(), list):
+                top_level = [
+                    {"name": item.get("name", ""), "type": item.get("type", "")}
+                    for item in contents.json()
+                ]
+            return {
+                "repo": slug,
+                "description": meta.get("description") or "",
+                "default_branch": meta.get("default_branch", ""),
+                "language": meta.get("language") or "",
+                "pushed_at": meta.get("pushed_at", ""),
+                "html_url": meta.get("html_url", ""),
+                "top_level_files": top_level,
+            }
+    except httpx.HTTPError as e:
+        return {"repo": slug, "error": f"GitHub API error: {e}"}
+
+
+def github_commits(repo: str) -> dict:
+    slug = _parse_repo(repo)
+    if not slug:
+        return {"error": f"Could not parse repo from {repo!r}; expected 'owner/name' or a github.com URL"}
 
     try:
-        with httpx.Client(timeout=15.0, headers=headers) as client:
+        with httpx.Client(timeout=15.0, headers=_headers()) as client:
             r = client.get(f"{_API}/repos/{slug}/commits", params={"per_page": _MAX_COMMITS})
             if r.status_code == 404:
                 return {"repo": slug, "error": "Repository not found (or private)"}

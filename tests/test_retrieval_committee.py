@@ -172,7 +172,7 @@ def test_returns_valid_retrieval_artifact(config, recon_artifact, plan_artifact)
         plan_artifact=plan_artifact,
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert artifact.run_id == plan_artifact.run_id
@@ -196,7 +196,7 @@ def test_both_artifacts_injected_into_specialist_message(config, recon_artifact,
         plan_artifact=plan_artifact,
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert "PlanArtifact" in web_backend.initial_message
@@ -215,7 +215,7 @@ def test_finding_ids_assigned_by_python(config, recon_artifact, plan_artifact) -
         plan_artifact=plan_artifact,
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
     # No findings to check IDs on, but artifact itself must be valid
     assert artifact.findings == []
@@ -234,7 +234,7 @@ def test_finding_ids_are_python_assigned(config, recon_artifact, plan_artifact) 
         plan_artifact=plan_artifact,
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     for finding in artifact.findings:
@@ -256,7 +256,7 @@ def test_unknown_specialist_returns_error_not_crash(config, recon_artifact, plan
         plan_artifact=plan_artifact,
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
     assert artifact.findings == []
 
@@ -296,7 +296,7 @@ def test_web_retriever_http_get_dispatched(config, recon_artifact, plan_artifact
         plan_artifact=plan_artifact,
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert "http://target/files/credentials.json" in captured
@@ -345,7 +345,7 @@ def test_db_specialist_postgres_query_dispatched(config, recon_artifact, plan_ar
         plan_artifact=plan_artifact,
         recon_artifact=recon_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert len(captured) == 1

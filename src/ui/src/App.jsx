@@ -95,7 +95,7 @@ function reducer(state, action) {
     return {
       ...state,
       page: 'dialog',
-      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
+      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false, objective: payload.objective || '', startedAt: Date.now() },
       planReady: false,
       plan: null,
       committees: {},
@@ -671,7 +671,7 @@ export default function App() {
       <>
         <AcceptanceBanner />
         <EngagementRequest
-          onSubmit={(run_id) => dispatch({ type: 'RUN_STARTED', payload: { run_id } })}
+          onSubmit={(run_id, objective) => dispatch({ type: 'RUN_STARTED', payload: { run_id, objective } })}
         />
       </>
     )

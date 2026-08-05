@@ -215,7 +215,7 @@ def _committee_backends():
 def _full_pipeline_backends():
     """Return a backend factory for a full orchestrator run."""
     it = iter([FakeBackend([_end(APPROVAL_JSON)])] + _committee_backends())  # orchestrator + committees
-    return lambda p, u=None: next(it)
+    return lambda p, u=None, *_: next(it)
 
 
 def test_approval_path_returns_approval(config) -> None:
@@ -268,7 +268,7 @@ def test_rejection_returns_none(config) -> None:
     result = run_orchestrator(
         instructions="Hack example.com",
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert result is None
@@ -313,7 +313,7 @@ def test_ask_user_interaction(config, monkeypatch: pytest.MonkeyPatch) -> None:
     result = run_orchestrator(
         instructions="Probe something.",
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert result is not None
@@ -341,7 +341,7 @@ def test_orchestrator_recovers_from_prose_briefing(config, monkeypatch: pytest.M
     result = run_orchestrator(
         instructions="Probe the target.",
         config=config,
-        _backend_factory=lambda p, u=None: next(it),
+        _backend_factory=lambda p, u=None, *_: next(it),
     )
 
     assert result is not None

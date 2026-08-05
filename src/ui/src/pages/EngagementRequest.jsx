@@ -14,7 +14,7 @@ export function EngagementRequest({ onSubmit }) {
     setError(null)
     try {
       const { run_id } = await startEngagement(text)
-      onSubmit(run_id)
+      onSubmit(run_id, text)
     } catch (err) {
       setError(err.message)
       setSubmitting(false)
@@ -35,7 +35,7 @@ export function EngagementRequest({ onSubmit }) {
             value={instructions}
             onChange={e => setInstructions(e.target.value)}
             placeholder="Describe the target and scope of the engagement…"
-            rows={8}
+            rows={12}
             maxLength={8192}
             disabled={submitting}
           />

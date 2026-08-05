@@ -1,0 +1,12 @@
+name: onion_index_search
+description: >
+  Search Tor/onion paste mirrors reachable through a surface index for leaks tied to a company
+  name or domain. Surface-reachable mirrors only — live onion services are not crawled.
+side_effect: reads_local
+parameters:
+  query:
+    type: string
+    description: Company name or domain to search for (e.g. "meridian.openintel.to").
+returns: >
+  Object with `source`, `query`, `hits` (empty if none), `result`, `coverage`, and
+  `deeper_tier_available` (bool — whether an unqueried deeper tier remains).

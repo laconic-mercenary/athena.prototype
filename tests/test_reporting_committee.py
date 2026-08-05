@@ -203,7 +203,7 @@ def test_returns_valid_report_artifact(config, recon_artifact, plan_artifact, re
         plan_artifact=plan_artifact,
         retrieval_artifact=retrieval_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert artifact.run_id == "run-001"
@@ -230,7 +230,7 @@ def test_all_artifacts_injected_into_specialist_message(config, recon_artifact, 
         plan_artifact=plan_artifact,
         retrieval_artifact=retrieval_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     msg = analyst_backend.initial_message
@@ -256,7 +256,7 @@ def test_risk_rating_validated_by_pydantic(config, recon_artifact, plan_artifact
             plan_artifact=plan_artifact,
             retrieval_artifact=retrieval_artifact,
             config=config,
-            _backend_factory=lambda p, u=None: next(backends),
+            _backend_factory=lambda p, u=None, *_: next(backends),
         )
 
 
@@ -268,7 +268,7 @@ def test_no_specialist_summoned_still_produces_artifact(config, recon_artifact, 
         plan_artifact=plan_artifact,
         retrieval_artifact=retrieval_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert artifact.risk_rating == RiskRating.critical
@@ -282,7 +282,7 @@ def test_report_artifact_links_to_retrieval(config, recon_artifact, plan_artifac
         plan_artifact=plan_artifact,
         retrieval_artifact=retrieval_artifact,
         config=config,
-        _backend_factory=lambda p, u=None: next(backends),
+        _backend_factory=lambda p, u=None, *_: next(backends),
     )
 
     assert artifact.retrieval_artifact_id == retrieval_artifact.artifact_id

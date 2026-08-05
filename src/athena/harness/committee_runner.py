@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -31,7 +32,30 @@ from athena.utils import extract_json, new_id
 
 _log = logging.getLogger("athena.harness.committee_runner")
 
-BackendFactory = Callable[[str, "str | None"], ModelBackend]
+BackendFactory = Callable[..., ModelBackend]
+
+
+def _ollama_transport(specialist) -> tuple[str | None, dict[str, str] | None]:
+    """Resolve a specialist's OpenAI-compatible endpoint override and auth headers.
+
+    Returns (base_url, extra_headers). auth_headers_env maps a header name to the env var
+    holding its value, so secrets stay out of the ensemble. A declared header whose env var
+    is unset is a configuration error — fail loudly rather than send an unauthenticated call.
+    """
+    base_url = getattr(specialist, "base_url", None)
+    headers_env = getattr(specialist, "auth_headers_env", None)
+    if not headers_env:
+        return base_url, None
+    headers: dict[str, str] = {}
+    for header_name, env_var in headers_env.items():
+        value = os.environ.get(env_var)
+        if not value:
+            raise RuntimeError(
+                f"Specialist '{specialist.id}' declares auth header '{header_name}' from env "
+                f"'{env_var}', but that variable is unset. Set it (e.g. in .env)."
+            )
+        headers[header_name] = value
+    return base_url, headers
 
 
 @dataclass
@@ -401,6 +425,7 @@ def _run_one_specialist(
     element_id: str = "",
     element_label: str = "",
     variant_label: str = "",
+    max_tool_calls: int = SPECIALIST_MAX_TOOL_CALLS,
     loop_gate_hooks: "LoopGateHooks | None" = None,
 ) -> str:
     """Run a single specialist agent and return its text output."""
@@ -420,18 +445,21 @@ def _run_one_specialist(
         variant_label=variant_label,
     )
 
-    _tool_calls_made = [0]   # executed (approved) calls — capped by SPECIALIST_MAX_TOOL_CALLS
-    _tool_attempts = [0]     # executed + denied — capped by SPECIALIST_MAX_TOOL_ATTEMPTS
+    _tool_calls_made = [0]   # executed (approved) calls — capped by max_tool_calls
+    _tool_attempts = [0]     # executed + denied — capped by _attempts_cap
+    # Denials don't consume the executed budget, so allow a little headroom above the executed
+    # cap for the operator to redirect — but never fewer attempts than the default.
+    _attempts_cap = max(SPECIALIST_MAX_TOOL_ATTEMPTS, max_tool_calls + 2)
 
     def spec_dispatch(name: str, params: dict) -> str:
         skill = skills_by_name.get(name)
         if skill is None:
             return json.dumps({"error": f"Unknown skill: {name}"})
-        if _tool_calls_made[0] >= SPECIALIST_MAX_TOOL_CALLS:
+        if _tool_calls_made[0] >= max_tool_calls:
             return json.dumps({
-                "error": "Tool call limit reached. Use the result you already received and output your final answer now."
+                "error": "Tool call limit reached. Use the results you already received and output your final answer now."
             })
-        if _tool_attempts[0] >= SPECIALIST_MAX_TOOL_ATTEMPTS:
+        if _tool_attempts[0] >= _attempts_cap:
             return json.dumps({
                 "error": "Too many denied attempts. Proceed to your final answer with what you already know."
             })
@@ -489,7 +517,8 @@ def _run_one_specialist(
             stop_reason=stop_reason,
         )
 
-    backend = make_backend(specialist.provider, None)
+    _spec_base_url, _spec_headers = _ollama_transport(specialist)
+    backend = make_backend(specialist.provider, _spec_base_url, _spec_headers)
     result = run_agent(
         agent_id=agent_id,
         system=specialist.system,
@@ -602,6 +631,7 @@ def _run_compare(
                 element_id=element.id,
                 element_label=element.label,
                 variant_label=variant_labels[idx],
+                max_tool_calls=element.max_tool_calls,
                 loop_gate_hooks=loop_gate_hooks,
             )
             return output, None
@@ -668,6 +698,7 @@ def _run_element(
             committee_name, run_id, make_backend, agent_id,
             element_id=element.id,
             element_label=element.label,
+            max_tool_calls=element.max_tool_calls,
             loop_gate_hooks=loop_gate_hooks,
         )
 
@@ -908,6 +939,17 @@ def run_committee_with_ensemble(
 
         if name == "finish":
             _finished[0] = True
+            # Surface the synthesis step in the UI — otherwise the operator only sees the bare
+            # "finish" tool call and then a JSON blob, with no signal the leader is authoring the
+            # committee's final artifact.
+            pub.sendMessage(
+                "agent.model_text",
+                run_id=run_id,
+                committee=committee.name,
+                agent_id=f"{run_id}.{committee.name}.leader",
+                text=f"Objective met — synthesising the final {committee.name.replace('_', ' ')} artifact…",
+                stop_reason="tool_use",
+            )
             return (
                 f"Objective met. Synthesise your final committee artifact now.\n\n"
                 f"Your ENTIRE response must be a single raw JSON object — "

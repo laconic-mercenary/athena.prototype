@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { marked } from 'marked'
 import { sendChat, planReview, loopGateArm, abortEngagement } from '../api'
 import { FeedbackModal, ReportButton } from '../components/FeedbackModal'
+import { EngagementInfoModal } from '../components/EngagementInfoModal'
 
 marked.setOptions({ breaks: true })
 
@@ -324,6 +325,7 @@ export function OrchestratorDialog({ state, dispatch }) {
   const [error, setError] = useState(null)
   const [panelLocked, setPanelLocked] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [infoOpen, setInfoOpen] = useState(false)
   const messagesRef = useRef(null)
   const textareaRef = useRef(null)
   const lockTimer = useRef(null)
@@ -459,7 +461,13 @@ export function OrchestratorDialog({ state, dispatch }) {
           <span className="dialog-step-arrow">›</span>
           <span className="dialog-step dialog-step--next">Engagement</span>
         </div>
-        <span className="dialog-run-id">{engagement.run_id}</span>
+        <button
+          className="dash-info-btn"
+          onClick={() => setInfoOpen(true)}
+          title="Engagement info"
+        >
+          ⓘ Info
+        </button>
         <button
           className="dash-restart-btn"
           onClick={handleRestart}
@@ -600,6 +608,15 @@ export function OrchestratorDialog({ state, dispatch }) {
       </div>
 
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+
+      {infoOpen && (
+        <EngagementInfoModal
+          engagement={engagement}
+          phase="Briefing"
+          committeeCount={Object.keys(state.committees).length || undefined}
+          onClose={() => setInfoOpen(false)}
+        />
+      )}
     </div>
   )
 }
