@@ -723,6 +723,7 @@ def run_committee_with_ensemble(
     ask_operator_handler: Callable[[str], str],
     operator_queue: queue.Queue | None = None,
     loop_gate_hooks: LoopGateHooks | None = None,
+    disabled_specialists: frozenset[str] = frozenset(),
     *,
     is_retry: bool,
     is_iterate: bool,
@@ -818,6 +819,19 @@ def run_committee_with_ensemble(
                 )
 
                 element = next(e for e in committee.elements if e.id == task.element)
+                # Filter out operator-disabled specialists (forward-only, set in briefing pane).
+                if disabled_specialists:
+                    from dataclasses import replace as _dc_replace
+                    active = [
+                        s for s in element.specialists
+                        if f"{committee.name}/{element.id}/{s.id}" not in disabled_specialists
+                    ]
+                    if active:
+                        element = _dc_replace(element, specialists=active)
+                    # If all disabled, element produces empty output; leader handles it.
+                    else:
+                        task_outputs.append(f"[{task.element}]\n(all specialists disabled by operator)")
+                        continue
                 compare_sink: dict[str, dict] | None = {} if len(element.specialists) > 1 else None
                 output = _run_element(
                     element=element,

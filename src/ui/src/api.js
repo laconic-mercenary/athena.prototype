@@ -98,6 +98,18 @@ export async function loopGateArm(runId, committee, kind, armed) {
   }))
 }
 
+export async function getManifestSummary(runId) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/manifest-summary`))
+}
+
+export async function setSpecialistEnabled(runId, key, enabled) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/specialist-config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, enabled }),
+  }))
+}
+
 export async function reportChat(runId, message) {
   return _json(await fetch(`${BASE}/engagements/${runId}/report-chat`, {
     method: 'POST',

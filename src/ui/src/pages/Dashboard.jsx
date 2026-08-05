@@ -182,8 +182,8 @@ function StatusTicker({ event, latestGateDecision, engagementStatus }) {
 
 const COMMITTEE_ORDER_FROM_STATE = (committees) => Object.keys(committees)
 
-export function Dashboard({ state, dispatch }) {
-  const { engagement, committees, agents, chat, latestEvent, latestGateDecision, loopGate, collaboratorPending, collaboratorReply, collaboratorThread } = state
+export function Dashboard({ state, dispatch, onToggleSpecialist }) {
+  const { engagement, committees, agents, chat, latestEvent, latestGateDecision, loopGate, collaboratorPending, collaboratorReply, collaboratorThread, manifestSummary, disabledSpecialists, plan } = state
   const [graphTab, setGraphTab] = useState('agent')
   const [showArtifacts, setShowArtifacts] = useState(false)
   const [openReport, setOpenReport] = useState(null)
@@ -484,42 +484,51 @@ export function Dashboard({ state, dispatch }) {
         />
       )}
 
-      {planReviewOpen && (engagement.awaitingApproval || (collaboratorReply && collaboratorReply.kind === 'committee')) && (
-        <OperatorDecisionModal
-          title={`${engagement.awaitingCommittee || 'Gate'} · Review`}
-          subtitle="Accept to advance, or Redo to re-run this committee"
-          body={committees[engagement.awaitingCommittee]?.digest}
-          redoAvailable={engagement.awaitingRedoAvailable}
-          collaboratorEnabled
-          collaboratorPending={collaboratorPending}
-          collaboratorReply={collaboratorReply && collaboratorReply.kind === 'committee' ? collaboratorReply : null}
-          collaboratorThread={collaboratorThread}
-          onSendCollaboratorMessage={async (msg) => { await collaboratorMessage(engagement.run_id, msg) }}
-          onCancelCollaboration={handleRestart}
-          onAccept={async (_selectedId, collaborator) => {
-            const resp = await gateDecision(engagement.run_id, 'accept', null, collaborator)
-            // Co-approval: keep the modal open showing "Awaiting @alias" (driven by the
-            // engagement.collaborator_pending SSE event); the collaborator's reply closes it.
-            if (resp.action !== 'collaborator_pending') {
+      {planReviewOpen && (engagement.awaitingApproval || (collaboratorReply && collaboratorReply.kind === 'committee')) && (() => {
+        const manifestCommittees = manifestSummary?.committees || []
+        const gatedIdx = manifestCommittees.findIndex(c => c.name === engagement.awaitingCommittee)
+        const nextCommittee = gatedIdx >= 0 ? (manifestCommittees[gatedIdx + 1] || null) : null
+        return (
+          <OperatorDecisionModal
+            title={`${engagement.awaitingCommittee || 'Gate'} · Review`}
+            subtitle="Accept to advance, or Redo to re-run this committee"
+            body={committees[engagement.awaitingCommittee]?.digest}
+            redoAvailable={engagement.awaitingRedoAvailable}
+            collaboratorEnabled
+            collaboratorPending={collaboratorPending}
+            collaboratorReply={collaboratorReply && collaboratorReply.kind === 'committee' ? collaboratorReply : null}
+            collaboratorThread={collaboratorThread}
+            onSendCollaboratorMessage={async (msg) => { await collaboratorMessage(engagement.run_id, msg) }}
+            onCancelCollaboration={handleRestart}
+            nextCommittee={nextCommittee}
+            plan={plan}
+            disabledSpecialists={disabledSpecialists || {}}
+            onToggleSpecialist={onToggleSpecialist
+              ? (key, enabled) => onToggleSpecialist(engagement.run_id, key, enabled)
+              : undefined}
+            onAccept={async (_selectedId, collaborator) => {
+              const resp = await gateDecision(engagement.run_id, 'accept', null, collaborator)
+              if (resp.action !== 'collaborator_pending') {
+                setPlanReviewOpen(false)
+                dispatch({ type: 'GATE_RESOLVED', payload: {} })
+              }
+            }}
+            onRedo={async (suggestion) => {
+              await gateDecision(engagement.run_id, 'redo', suggestion)
               setPlanReviewOpen(false)
               dispatch({ type: 'GATE_RESOLVED', payload: {} })
-            }
-          }}
-          onRedo={async (suggestion) => {
-            await gateDecision(engagement.run_id, 'redo', suggestion)
-            setPlanReviewOpen(false)
-            dispatch({ type: 'GATE_RESOLVED', payload: {} })
-          }}
-          onOpenArtifact={engagement.awaitingCommittee ? () => {
-            setOpenReport({
-              name: engagement.awaitingCommittee,
-              title: `${engagement.awaitingCommittee} artifact`,
-              accent: '#94a3b8',
-            })
-          } : undefined}
-          onClose={() => setPlanReviewOpen(false)}
-        />
-      )}
+            }}
+            onOpenArtifact={engagement.awaitingCommittee ? () => {
+              setOpenReport({
+                name: engagement.awaitingCommittee,
+                title: `${engagement.awaitingCommittee} artifact`,
+                accent: '#94a3b8',
+              })
+            } : undefined}
+            onClose={() => setPlanReviewOpen(false)}
+          />
+        )
+      })()}
 
       {loopGateOpen && loopGate.awaiting && loopGate.kind === 'element' && (
         <OperatorDecisionModal

@@ -4,6 +4,7 @@ import { EngagementRequest } from './pages/EngagementRequest'
 import { OrchestratorDialog } from './pages/OrchestratorDialog'
 import { Dashboard } from './pages/Dashboard'
 import { AcceptanceBanner } from './components/AcceptanceBanner'
+import { getManifestSummary, setSpecialistEnabled } from './api'
 import './index.css'
 
 const INITIAL_COMMITTEE = {
@@ -50,6 +51,8 @@ function createInitialState() {
   collaboratorPending: null,   // { alias, sentAt } while waiting for email co-approval
   collaboratorReply: null,     // { alias, decision, message, ts } — collaborator's latest reply
   collaboratorThread: [],      // committee-gate email thread: [{ role:'operator'|'collaborator', alias?, decision?, message, ts }]
+  manifestSummary: null,       // { committees: [{name, elements: [{id, label, specialists: [{id, title, skills}]}]}] }
+  disabledSpecialists: {},     // key -> true for disabled specialists
   agents: {},
   agentReplies: {},
   dialogMessages: [],
@@ -110,9 +113,23 @@ function reducer(state, action) {
       collaboratorPending: null,
       collaboratorReply: null,
       collaboratorThread: [],
+      manifestSummary: null,
+      disabledSpecialists: {},
       latestEvent: null,
       eventLog: [],
     }
+  }
+
+  if (type === 'MANIFEST_SUMMARY') {
+    return { ...state, manifestSummary: payload }
+  }
+
+  if (type === 'TOGGLE_SPECIALIST') {
+    const { key, enabled } = payload
+    const next = { ...state.disabledSpecialists }
+    if (enabled) delete next[key]
+    else next[key] = true
+    return { ...state, disabledSpecialists: next }
   }
 
   if (type === 'PLAN_READY') {
@@ -686,6 +703,27 @@ export default function App() {
 
   useEvents(state.engagement.run_id, handleEvent)
 
+  // Fetch manifest summary once when a run_id is assigned.
+  useEffect(() => {
+    const runId = state.engagement.run_id
+    if (!runId) return
+    let cancelled = false
+    getManifestSummary(runId)
+      .then(summary => { if (!cancelled) dispatch({ type: 'MANIFEST_SUMMARY', payload: summary }) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [state.engagement.run_id])
+
+  async function handleToggleSpecialist(runId, key, enabled) {
+    dispatch({ type: 'TOGGLE_SPECIALIST', payload: { key, enabled } })
+    try {
+      await setSpecialistEnabled(runId, key, enabled)
+    } catch {
+      // Revert on failure
+      dispatch({ type: 'TOGGLE_SPECIALIST', payload: { key, enabled: !enabled } })
+    }
+  }
+
   if (state.page === 'request') {
     return (
       <>
@@ -701,7 +739,11 @@ export default function App() {
     return (
       <>
         <AcceptanceBanner />
-        <OrchestratorDialog state={state} dispatch={dispatch} />
+        <OrchestratorDialog
+          state={state}
+          dispatch={dispatch}
+          onToggleSpecialist={handleToggleSpecialist}
+        />
       </>
     )
   }
@@ -709,7 +751,7 @@ export default function App() {
   return (
     <>
       <AcceptanceBanner />
-      <Dashboard state={state} dispatch={dispatch} />
+      <Dashboard state={state} dispatch={dispatch} onToggleSpecialist={handleToggleSpecialist} />
     </>
   )
 }
