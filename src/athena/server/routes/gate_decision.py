@@ -37,6 +37,38 @@ class GateDecisionResponse(BaseModel):
     action: str
 
 
+class CollaboratorMessageRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=_MAX_SUGGESTION_LEN)
+
+
+@router.post("/{run_id}/collaborator-message")
+async def collaborator_message(run_id: str, body: CollaboratorMessageRequest) -> dict:
+    """Send a follow-up email to the collaborator parked on this committee gate. The gate stays
+    parked; the thread continues until the collaborator replies APPROVE."""
+    state = collaboration.get(run_id)
+    if state is None or state.kind != "committee":
+        raise HTTPException(status_code=404, detail="No active collaborator thread for this engagement")
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message is empty")
+    try:
+        await collaboration.send_collaborator_message(
+            run_id=run_id, alias=state.alias, to_email=state.email, text=text
+        )
+    except Exception:
+        _log.exception("failed to send collaborator follow-up for %r", run_id)
+        raise HTTPException(status_code=502, detail="Failed to send collaborator message")
+    # Echo the operator's message into the thread (auto-forwarded to the UI via the SSE bus).
+    pub.sendMessage(
+        "collaborator.operator_message",
+        run_id=run_id,
+        alias=state.alias,
+        committee=state.committee,
+        message=text,
+    )
+    return {"ok": True}
+
+
 @router.post("/{run_id}/gate-decision", response_model=GateDecisionResponse)
 async def gate_decision(run_id: str, body: GateDecisionRequest) -> GateDecisionResponse:
     ctx = runner.get_context(run_id)

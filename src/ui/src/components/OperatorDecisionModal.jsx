@@ -24,6 +24,9 @@ export function OperatorDecisionModal({
   collaboratorEnabled = false,   // show a "@alias" co-approval field on the accept path
   collaboratorPending = null,    // { alias, sentAt } while awaiting a collaborator's co-approval
   collaboratorReply = null,      // { alias, decision, message } — collaborator's latest reply
+  collaboratorThread = [],       // [{ role:'operator'|'collaborator', alias?, decision?, message }]
+  onSendCollaboratorMessage,     // async (text) => void — email a follow-up to the collaborator
+  onCancelCollaboration,         // () => void — abandon the engagement while the thread is open
 }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState(null)
@@ -31,6 +34,23 @@ export function OperatorDecisionModal({
   const [suggestion, setSuggestion] = useState('')
   const [selected, setSelected] = useState(defaultChoiceId)
   const [collaborator, setCollaborator] = useState('')
+  const [collabMsg, setCollabMsg] = useState('')
+  const [collabSending, setCollabSending] = useState(false)
+
+  async function sendCollab() {
+    const t = collabMsg.trim()
+    if (!t || collabSending || !onSendCollaboratorMessage) return
+    setCollabSending(true)
+    setError(null)
+    try {
+      await onSendCollaboratorMessage(t)
+      setCollabMsg('')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollabSending(false)
+    }
+  }
 
   const hasChoices = Array.isArray(choices) && choices.length > 0
   const overriding = hasChoices && selected !== defaultChoiceId
@@ -139,31 +159,82 @@ export function OperatorDecisionModal({
           </div>
         )}
 
-        {collaboratorReply && (collaboratorReply.decision === 'approve' || collaboratorReply.decision === 'deny') ? (
+        {collaboratorReply && collaboratorReply.decision === 'approve' ? (
           <div className="chat-actions plan-review-actions" style={{ padding: '12px 16px', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: collaboratorReply.decision === 'approve' ? '#22c55e' : '#ef4444' }}>
-              {collaboratorReply.decision === 'approve' ? '✓' : '✗'} @{collaboratorReply.alias} {collaboratorReply.decision === 'approve' ? 'approved' : 'denied'}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#22c55e' }}>
+              ✓ @{collaboratorReply.alias} approved
             </span>
             {collaboratorReply.message && (
               <div style={{ fontSize: 12, color: '#94a3b8', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{collaboratorReply.message}</div>
             )}
           </div>
         ) : collaboratorPending ? (
-          <div className="chat-actions plan-review-actions" style={{ padding: '12px 16px', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 16px 14px' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#a78bfa' }}>
               <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#8b5cf6', boxShadow: '0 0 6px #8b5cf6' }} />
-              Awaiting @{collaboratorPending.alias}
+              Thread with @{collaboratorPending.alias} · awaiting <strong style={{ color: '#22c55e' }}>APPROVE</strong>
               {collaboratorPending.sentAt && (
                 <span style={{ color: '#64748b' }}>
                   · sent {new Date(collaboratorPending.sentAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
                 </span>
               )}
             </span>
-            {collaboratorReply && collaboratorReply.decision === 'comment' && collaboratorReply.message && (
-              <div style={{ fontSize: 12, color: '#a78bfa', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-                @{collaboratorReply.alias}: <span style={{ color: '#94a3b8' }}>{collaboratorReply.message}</span>
-              </div>
-            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto', padding: '2px 0' }}>
+              {collaboratorThread.length === 0 ? (
+                <div style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic' }}>
+                  Approval request sent — waiting for @{collaboratorPending.alias} to reply. Send a message below to keep the conversation going.
+                </div>
+              ) : collaboratorThread.map((m, i) => {
+                const mine = m.role === 'operator'
+                const denied = m.decision === 'deny'
+                return (
+                  <div key={i} style={{
+                    alignSelf: mine ? 'flex-end' : 'flex-start', maxWidth: '85%',
+                    background: mine ? 'rgba(59,130,246,0.10)' : 'rgba(139,92,246,0.10)',
+                    border: `1px solid ${mine ? 'rgba(59,130,246,0.25)' : 'rgba(139,92,246,0.25)'}`,
+                    borderRadius: mine ? '8px 8px 2px 8px' : '8px 8px 8px 2px', padding: '6px 10px',
+                  }}>
+                    <div style={{ fontSize: 9, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 2, display: 'flex', gap: 6, alignItems: 'center', color: mine ? '#3b82f6' : '#a78bfa' }}>
+                      {mine ? 'You' : `@${m.alias}`}
+                      {denied && <span style={{ color: '#ef4444', border: '1px solid #ef4444', borderRadius: 3, padding: '0 4px', fontSize: 8 }}>denied</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#cbd5e1', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                      {m.message || (denied ? '(denied — no message)' : '(no message)')}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <textarea
+              className="dialog-textarea"
+              rows={2}
+              placeholder={`Message @${collaboratorPending.alias}…`}
+              value={collabMsg}
+              onChange={e => setCollabMsg(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendCollab() } }}
+            />
+            <div className="chat-actions plan-review-actions" style={{ padding: 0, gap: 8 }}>
+              {error && <span className="chat-error">{error}</span>}
+              {onCancelCollaboration && (
+                <button
+                  type="button"
+                  className="plan-review-btn plan-review-btn--reject"
+                  onClick={onCancelCollaboration}
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                type="button"
+                className="plan-review-btn plan-review-btn--approve"
+                disabled={collabSending || !collabMsg.trim()}
+                onClick={sendCollab}
+              >
+                {collabSending ? 'Sending…' : 'Send →'}
+              </button>
+            </div>
           </div>
         ) : (
         <>

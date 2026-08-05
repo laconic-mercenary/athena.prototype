@@ -65,6 +65,16 @@ export async function gateDecision(runId, action, suggestion, collaborator) {
   }))
 }
 
+// Send a follow-up message to the collaborator parked on a committee gate. The gate stays
+// parked; the thread continues until the collaborator replies APPROVE.
+export async function collaboratorMessage(runId, message) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/collaborator-message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  }))
+}
+
 // In-loop gate (element / step / tool). action is kind-specific:
 //   element: "accept" / "override" (winnerId) / "redo"
 //   step:    "accept" / "redo" (suggestion) / "skip"

@@ -9,7 +9,7 @@ import { ReportModal } from '../components/ReportModal'
 import { CommitteeResultsModal } from '../components/CommitteeResultsModal'
 import { EngagementInfoModal } from '../components/EngagementInfoModal'
 import { formatToolSummary } from '../App'
-import { gateDecision, loopGateDecision, loopGateArm, abortEngagement } from '../api'
+import { gateDecision, loopGateDecision, loopGateArm, abortEngagement, collaboratorMessage } from '../api'
 
 const COMMITTEE_PALETTE = ['#f97316', '#22c55e', '#ef4444', '#eab308', '#3b82f6', '#a855f7', '#06b6d4']
 function committeeColor(name, committeeNames) {
@@ -183,7 +183,7 @@ function StatusTicker({ event, latestGateDecision, engagementStatus }) {
 const COMMITTEE_ORDER_FROM_STATE = (committees) => Object.keys(committees)
 
 export function Dashboard({ state, dispatch }) {
-  const { engagement, committees, agents, chat, latestEvent, latestGateDecision, loopGate, collaboratorPending, collaboratorReply } = state
+  const { engagement, committees, agents, chat, latestEvent, latestGateDecision, loopGate, collaboratorPending, collaboratorReply, collaboratorThread } = state
   const [graphTab, setGraphTab] = useState('agent')
   const [showArtifacts, setShowArtifacts] = useState(false)
   const [openReport, setOpenReport] = useState(null)
@@ -202,7 +202,8 @@ export function Dashboard({ state, dispatch }) {
   // "comment" replies (no decision) leave the gate parked, so no auto-close.
   useEffect(() => {
     if (!collaboratorReply || collaboratorReply.kind !== 'committee') return
-    if (collaboratorReply.decision !== 'approve' && collaboratorReply.decision !== 'deny') return
+    // Committee gate runs until APPROVE: only an approve self-closes; deny/comment keep the thread open.
+    if (collaboratorReply.decision !== 'approve') return
     const t = setTimeout(() => {
       setPlanReviewOpen(false)
       dispatch({ type: 'CLEAR_COLLAB_REPLY' })
@@ -492,6 +493,9 @@ export function Dashboard({ state, dispatch }) {
           collaboratorEnabled
           collaboratorPending={collaboratorPending}
           collaboratorReply={collaboratorReply && collaboratorReply.kind === 'committee' ? collaboratorReply : null}
+          collaboratorThread={collaboratorThread}
+          onSendCollaboratorMessage={async (msg) => { await collaboratorMessage(engagement.run_id, msg) }}
+          onCancelCollaboration={handleRestart}
           onAccept={async (_selectedId, collaborator) => {
             const resp = await gateDecision(engagement.run_id, 'accept', null, collaborator)
             // Co-approval: keep the modal open showing "Awaiting @alias" (driven by the

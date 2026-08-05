@@ -49,6 +49,7 @@ function createInitialState() {
   pendingOrchestratorQuestion: null,
   collaboratorPending: null,   // { alias, sentAt } while waiting for email co-approval
   collaboratorReply: null,     // { alias, decision, message, ts } — collaborator's latest reply
+  collaboratorThread: [],      // committee-gate email thread: [{ role:'operator'|'collaborator', alias?, decision?, message, ts }]
   agents: {},
   agentReplies: {},
   dialogMessages: [],
@@ -108,6 +109,7 @@ function reducer(state, action) {
       dialogMessages: [],
       collaboratorPending: null,
       collaboratorReply: null,
+      collaboratorThread: [],
       latestEvent: null,
       eventLog: [],
     }
@@ -178,6 +180,7 @@ function reducer(state, action) {
     return {
       ...state,
       collaboratorPending: null,
+      collaboratorThread: [],
       engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
     }
   }
@@ -187,6 +190,18 @@ function reducer(state, action) {
     return {
       ...state,
       collaboratorPending: { alias: payload.alias, sentAt: payload.sent_at },
+      collaboratorThread: [],
+      eventLog: appendLog(state, ev),
+    }
+  }
+
+  if (type === 'OPERATOR_COLLAB_MESSAGE') {
+    // The operator sent a follow-up email to the collaborator; echo it into the thread.
+    const { message } = payload
+    const ev = { kind: 'collab', text: `you → @${payload.alias || 'collaborator'}`, color: '#8b5cf6', ts: Date.now() }
+    return {
+      ...state,
+      collaboratorThread: [...state.collaboratorThread, { role: 'operator', message, ts: Date.now() }],
       eventLog: appendLog(state, ev),
     }
   }
@@ -213,10 +228,14 @@ function reducer(state, action) {
       dialogMessages = [...dialogMessages, { role: 'collab', text: message || `(${label})`, ts: Date.now(), alias }]
       agentReplies = { ...agentReplies, [ORCHESTRATOR_AGENT_ID]: [...(agentReplies[ORCHESTRATOR_AGENT_ID] || []), chatMsg] }
     }
+    const collaboratorThread = kind === 'committee'
+      ? [...state.collaboratorThread, { role: 'collaborator', alias, decision, message, ts: Date.now() }]
+      : state.collaboratorThread
     return {
       ...state,
       agentReplies,
       dialogMessages,
+      collaboratorThread,
       collaboratorReply: { alias, decision, message, kind, committee, ts: Date.now() },
       latestEvent: ev,
       eventLog: appendLog(state, ev),
@@ -224,7 +243,7 @@ function reducer(state, action) {
   }
 
   if (type === 'CLEAR_COLLAB_REPLY') {
-    return { ...state, collaboratorReply: null }
+    return { ...state, collaboratorReply: null, collaboratorThread: [], collaboratorPending: null }
   }
 
   if (type === 'LOOP_GATE_AWAITING') {
@@ -662,6 +681,7 @@ export default function App() {
     if (topic === 'engagement.plan_revision') dispatch({ type: 'PLAN_REVISION', payload })
     if (topic === 'engagement.collaborator_pending') dispatch({ type: 'COLLABORATOR_PENDING', payload })
     if (topic === 'collaborator.replied')             dispatch({ type: 'COLLABORATOR_REPLIED', payload })
+    if (topic === 'collaborator.operator_message')    dispatch({ type: 'OPERATOR_COLLAB_MESSAGE', payload })
   }, [])
 
   useEvents(state.engagement.run_id, handleEvent)
