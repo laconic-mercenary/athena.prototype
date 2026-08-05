@@ -126,6 +126,7 @@ def run_workflow(
     leader_queues: dict[str, queue.Queue],
     global_step_budget: int,
     loop_gate_hooks: LoopGateHooks | None = None,
+    get_disabled_specialists: "Callable[[], frozenset[str]] | None" = None,
 ) -> None:
     """Traverse the workflow graph until a terminal committee advances."""
 
@@ -155,6 +156,7 @@ def run_workflow(
         )
 
         try:
+            disabled = get_disabled_specialists() if get_disabled_specialists else frozenset()
             artifact, incomplete = run_committee_with_ensemble(
                 ensemble=ensemble,
                 committee_name=current,
@@ -166,6 +168,7 @@ def run_workflow(
                 ask_operator_handler=ask_operator_handler,
                 operator_queue=leader_queues.get(current),
                 loop_gate_hooks=loop_gate_hooks,
+                disabled_specialists=disabled,
                 is_retry=is_retry,
                 is_iterate=is_iterate,
                 prior_artifact=prior_artifact if is_iterate else None,

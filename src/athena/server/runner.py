@@ -20,6 +20,7 @@ from pubsub import pub
 from athena.ensemble.loader import load_ensemble
 from athena.ensemble.types import LoadedEnsemble
 from athena.harness.committee_runner import LoopGateHooks
+from athena.server.manifest import serialise_ensemble
 from athena.harness.orchestrator import OrchestratorHarness
 from athena.harness.workflow import GLOBAL_STEP_BUDGET, run_workflow
 from athena.model_backend import make_backend
@@ -78,9 +79,18 @@ class EngagementContext:
     gate_digest: str | None = None
     # In-loop gate decision: {"action": ..., **kind-specific fields}.
     loop_gate_decision: dict | None = None
+    # The loaded ensemble for this run — set at start, used by the manifest-summary route.
+    ensemble: LoadedEnsemble | None = None
+    # Compound keys "{committee}/{element_id}/{specialist_id}" for disabled specialists.
+    # Forward-only: takes effect on the next committee that hasn't started yet.
+    disabled_specialists: set[str] = None  # type: ignore[assignment]
     # Set True by abort_engagement(); handlers raise EngagementAborted after their wait
     # so the worker unwinds. Read on the worker thread, written on a route thread.
     cancelled: bool = False
+
+    def __post_init__(self) -> None:
+        if self.disabled_specialists is None:
+            self.disabled_specialists = set()
 
     @property
     def awaiting_approval(self) -> bool:
@@ -125,6 +135,7 @@ def start_engagement(instructions: str) -> str:
         await_phase=AWAIT_NONE,
         leader_queues={},
         armed_gates={},
+        ensemble=ensemble,
     )
     _active[run_id] = ctx
 
@@ -299,6 +310,7 @@ def start_engagement(instructions: str) -> str:
                     leader_queues=ctx.leader_queues,
                     global_step_budget=GLOBAL_STEP_BUDGET,
                     loop_gate_hooks=loop_gate_hooks,
+                    get_disabled_specialists=lambda: frozenset(ctx.disabled_specialists),
                 )
             finally:
                 orchestrator.stop()
@@ -420,6 +432,27 @@ def send_to_leader(run_id: str, committee_name: str, message: str) -> None:
     if q is None:
         raise KeyError(f"No leader queue for committee: {committee_name!r}")
     q.put_nowait(message)
+
+
+def get_manifest_summary(run_id: str) -> dict:
+    """Return a JSON-serialisable summary of the ensemble manifest for the briefing tree."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    if ctx.ensemble is None:
+        raise ValueError("Ensemble not yet loaded")
+    return serialise_ensemble(ctx.ensemble)
+
+
+def set_specialist_enabled(run_id: str, key: str, *, enabled: bool) -> None:
+    """Enable or disable a specialist by compound key '{committee}/{element_id}/{specialist_id}'."""
+    ctx = _active.get(run_id)
+    if ctx is None:
+        raise KeyError(f"No engagement: {run_id!r}")
+    if enabled:
+        ctx.disabled_specialists.discard(key)
+    else:
+        ctx.disabled_specialists.add(key)
 
 
 def send_to_orchestrator(run_id: str, message: str) -> None:
