@@ -613,18 +613,19 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+
+.dialog-steps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .dialog-logo {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 3px;
   color: var(--text);
   text-transform: uppercase;
-}
-
-.dialog-steps {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .dialog-step {
