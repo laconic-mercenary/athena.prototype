@@ -379,7 +379,7 @@ export function OperatorDecisionModal({
         {/* Scrollable body */}
         <div className="chat-thread" style={{ flex: 1 }}>
           {(!hasUpNext || tab === 'review') ? (
-            <ReviewBody />
+            ReviewBody()
           ) : (
             <div style={{ padding: '12px 14px' }}>
               <CommitteePanel
@@ -392,8 +392,10 @@ export function OperatorDecisionModal({
           )}
         </div>
 
-        {/* Sticky footer — always visible */}
-        <Footer />
+        {/* Sticky footer — always visible. Called as a function (not <Footer/>) so its JSX
+            inlines into this tree — rendering it as a nested component would remount the
+            subtree every render and steal focus from the textarea on each keystroke. */}
+        {Footer()}
 
       </div>
     </div>
