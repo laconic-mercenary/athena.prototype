@@ -39,8 +39,9 @@ export async function listArtifacts(runId) {
   return _json(await fetch(`${BASE}/engagements/${runId}/artifacts`))
 }
 
-export async function getArtifact(runId, name) {
-  const resp = await fetch(`${BASE}/engagements/${runId}/artifacts/${name}`)
+export async function getArtifact(runId, name, { render = false } = {}) {
+  const q = render ? '?render=true' : ''
+  const resp = await fetch(`${BASE}/engagements/${runId}/artifacts/${name}${q}`)
   if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
   return resp.text()
 }

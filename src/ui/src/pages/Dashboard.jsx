@@ -466,7 +466,11 @@ export function Dashboard({ state, dispatch, onToggleSpecialist }) {
 
         {graphTab === 'agent' && showArtifacts && (
           <div className="side-pane">
-            <ArtifactTable runId={engagement.run_id} committees={committees} />
+            <ArtifactTable
+              runId={engagement.run_id}
+              committees={committees}
+              onOpen={(name) => setOpenReport({ name, title: `${name} artifact`, accent: '#94a3b8' })}
+            />
           </div>
         )}
       </div>

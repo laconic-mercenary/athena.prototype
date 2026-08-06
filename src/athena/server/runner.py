@@ -444,6 +444,29 @@ def get_manifest_summary(run_id: str) -> dict:
     return serialise_ensemble(ctx.ensemble)
 
 
+def render_artifact(run_id: str, name: str, json_text: str) -> str | None:
+    """Render a stored committee artifact to its markdown form via the schema's render_full().
+
+    Returns the markdown, or None when the artifact isn't a renderable committee output (unknown
+    committee, no ensemble, no render_full, or the JSON doesn't validate) — the caller falls back
+    to the raw JSON.
+    """
+    ctx = _active.get(run_id)
+    if ctx is None or ctx.ensemble is None:
+        return None
+    committee = ctx.ensemble.committees.get(name)
+    if committee is None:
+        return None
+    schema = committee.output_schema
+    if not hasattr(schema, "render_full"):
+        return None
+    try:
+        model = schema.model_validate_json(json_text)
+        return model.render_full()
+    except Exception:
+        return None
+
+
 def set_specialist_enabled(run_id: str, key: str, *, enabled: bool) -> None:
     """Enable or disable a specialist by compound key '{committee}/{element_id}/{specialist_id}'."""
     ctx = _active.get(run_id)

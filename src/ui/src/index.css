@@ -1425,6 +1425,40 @@ html, body, #root {
   padding: 2px 6px;
 }
 .report-modal-close:hover { color: var(--text); }
+.report-modal-tabs { display: inline-flex; gap: 4px; }
+.report-modal-tab {
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+  font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 3px 10px; border-radius: 5px; cursor: pointer;
+}
+.report-modal-tab:hover { color: var(--text); border-color: #475569; }
+.report-modal-tab.is-active { color: #0b1120; background: #94a3b8; border-color: #94a3b8; }
+
+/* Rendered markdown view — the committee artifact's render_full() output. */
+.md-render { font-size: 13px; color: #cbd5e1; line-height: 1.65; }
+.md-render h1 { font-size: 18px; color: #e2e8f0; margin: 0 0 10px; }
+.md-render h2 {
+  font-size: 13px; color: #e2e8f0; margin: 20px 0 8px; letter-spacing: 0.04em;
+  text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 4px;
+}
+.md-render h3 { font-size: 13px; color: #cbd5e1; margin: 14px 0 6px; }
+.md-render p { margin: 0 0 10px; }
+.md-render ul, .md-render ol { margin: 0 0 10px; padding-left: 20px; }
+.md-render li { margin-bottom: 4px; }
+.md-render code {
+  font-family: monospace; font-size: 12px; color: #93c5fd;
+  background: rgba(148,163,184,0.12); padding: 1px 5px; border-radius: 4px;
+}
+.md-render pre {
+  background: rgba(148,163,184,0.08); border: 1px solid var(--border);
+  border-radius: 6px; padding: 12px; overflow-x: auto;
+}
+.md-render pre code { background: none; padding: 0; color: #cbd5e1; }
+.md-render strong { color: #e2e8f0; }
+.md-render a { color: #3b82f6; }
+.md-render table { border-collapse: collapse; margin: 0 0 12px; font-size: 12px; }
+.md-render th, .md-render td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; }
+.md-render hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .report-modal-body {
   padding: 22px 26px;
   overflow-y: auto;
