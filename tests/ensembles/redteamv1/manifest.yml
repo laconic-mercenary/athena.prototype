@@ -54,11 +54,37 @@ committees:
     model: claude-sonnet-4-6
     max_steps: 8
     elements:
+      - id: web_osint
+        label: OSINT Specialist
+        # Multi-hop: fetch the landing page AND follow its links (e.g. /news) to reach the repo URL.
+        max_tool_calls: 4
+        specialists:
+          - elements/web_osint/analyst.yml
+        skills: [http_get]
+
+      - id: github_recon
+        label: GitHub Specialist
+        # Orient on the repo (repo_fetch) then inspect its history (github_commits).
+        max_tool_calls: 2
+        specialists:
+          - elements/github_recon/analyst.yml
+        skills: [repo_fetch, github_commits]
+
+      - id: darkweb_recon
+        label: Dark Web Analyst
+        # One lookup per source (paste / breach / forum / onion).
+        max_tool_calls: 4
+        specialists:
+          - elements/darkweb_recon/analyst.yml
+        skills: [paste_site_search, breach_db_search, leak_forum_search, onion_index_search]
+
       - id: os_check
         label: OS Fingerprint
+        # One probe per OS family (+ an optional http_get for the Server header).
+        max_tool_calls: 4
         specialists:
           - elements/os_check/checker.yml
-        skills: [nmap_scan, http_get]
+        skills: [unix_type_check, windows_smb_check, windows_rdp_check, http_get]
 
       - id: port_scan
         label: Port Scanner
@@ -78,27 +104,25 @@ committees:
           - elements/cve_lookup/researcher.yml
         skills: [searchsploit]
 
-      - id: threat_analyst
-        label: Threat Analyst
-        provider: ollama
-        model: foundation-sec-8b
-        specialists:
-          - elements/threat_analyst/analyst.yml
-        skills: []
-
   planning:
     leader: planning/leader.yml
     model: claude-sonnet-4-6
-    max_steps: 4
+    max_steps: 6
     consumes:
       required: [recon]
     elements:
       - id: exploit_planner
-        label: Exploit Planner
+        label: Exploit Analyst
         specialists:
           - elements/exploit_planner/planner_a.yml
-          - elements/exploit_planner/planner_b.yml
           - elements/exploit_planner/planner_fs.yml
+          - elements/exploit_planner/planner_kimi.yml
+        skills: []
+
+      - id: mitre_mapper
+        label: MITRE ATT&CK Specialist
+        specialists:
+          - elements/mitre_mapper/mapper.yml
         skills: []
 
   exploit:
@@ -109,14 +133,20 @@ committees:
       required: [planning]
       optional: [recon]
     elements:
-      - id: web_exploiter
-        label: Web Exploiter
+      - id: flask_exploiter
+        label: Flask Blood
         specialists:
-          - elements/web_exploiter/exploiter.yml
+          - elements/flask_exploiter/exploiter.yml
         skills: [http_get, http_post, get_shell]
 
+      - id: redis_operator
+        label: Redis Blood
+        specialists:
+          - elements/redis_operator/operator.yml
+        skills: [http_post]
+
       - id: shell_operator
-        label: Shell Operator
+        label: Shell Blood
         specialists:
           - elements/shell_operator/operator.yml
         skills: [run_cmd, close_shell]
@@ -135,6 +165,12 @@ committees:
           - elements/report_writer/writer.yml
         skills: []
 
+      - id: mitre_mapper
+        label: MITRE ATT&CK Specialist
+        specialists:
+          - elements/mitre_mapper/mapper.yml
+        skills: []
+
 # ---
 # Skills registry
 # ---
@@ -142,6 +178,18 @@ skills:
   - id: nmap_scan
     definition: skills/nmap_scan/skill.yml
     impl: skills/nmap_scan/impl.py::nmap_scan
+
+  - id: unix_type_check
+    definition: skills/os_fingerprint/unix_type_check.yml
+    impl: skills/os_fingerprint/impl.py::unix_type_check
+
+  - id: windows_smb_check
+    definition: skills/os_fingerprint/windows_smb_check.yml
+    impl: skills/os_fingerprint/impl.py::windows_smb_check
+
+  - id: windows_rdp_check
+    definition: skills/os_fingerprint/windows_rdp_check.yml
+    impl: skills/os_fingerprint/impl.py::windows_rdp_check
 
   - id: web_enum
     definition: skills/web_enum/skill.yml
@@ -154,6 +202,30 @@ skills:
   - id: http_get
     definition: skills/http_get/skill.yml
     impl: skills/http_get/impl.py::http_get
+
+  - id: repo_fetch
+    definition: skills/github_commits/repo_fetch.yml
+    impl: skills/github_commits/impl.py::repo_fetch
+
+  - id: github_commits
+    definition: skills/github_commits/skill.yml
+    impl: skills/github_commits/impl.py::github_commits
+
+  - id: paste_site_search
+    definition: skills/darkweb/paste_site_search.yml
+    impl: skills/darkweb/impl.py::paste_site_search
+
+  - id: breach_db_search
+    definition: skills/darkweb/breach_db_search.yml
+    impl: skills/darkweb/impl.py::breach_db_search
+
+  - id: leak_forum_search
+    definition: skills/darkweb/leak_forum_search.yml
+    impl: skills/darkweb/impl.py::leak_forum_search
+
+  - id: onion_index_search
+    definition: skills/darkweb/onion_index_search.yml
+    impl: skills/darkweb/impl.py::onion_index_search
 
   - id: http_post
     definition: skills/http_post/skill.yml

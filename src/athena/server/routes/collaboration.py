@@ -76,6 +76,10 @@ async def inbound_email(request: Request) -> Response:
     500 only on unexpected failures worth retrying.
     """
     body = await request.body()
+    # Arrival log (before signature check) so "webhook never reached us" is distinguishable in
+    # the logs from "reached us but failed verification/correlation".
+    _log.info("inbound-email: webhook received (%d bytes, secret_configured=%s)",
+              len(body), collaboration.webhook_secret_configured())
     if not collaboration.verify_webhook_signature(body, dict(request.headers)):
         _log.warning("inbound-email: signature verification failed — rejecting")
         return Response(status_code=401)
@@ -129,8 +133,16 @@ async def inbound_email(request: Request) -> Response:
         message=message,
     )
 
-    if decision is None:
-        _log.info("inbound-email: comment (no approve/deny) from %s for %r — gate stays parked", state.email, run_id)
+    # A committee gate runs "until APPROVE": only an approve resolves it — a DENY or a comment
+    # stays parked and is surfaced as chat so the operator can keep the thread going. The plan
+    # gate keeps its original approve/deny behaviour.
+    if state.kind == "committee":
+        resolves = decision is True
+    else:
+        resolves = decision is not None
+
+    if not resolves:
+        _log.info("inbound-email: %s from %s for %r — gate stays parked", kw, state.email, run_id)
         return Response(status_code=200)
 
     # Actionable decision — consume the pending state and release the gate.

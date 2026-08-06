@@ -9,7 +9,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -40,7 +40,11 @@ async def list_artifacts(run_id: str) -> list[ArtifactMeta]:
 
 
 @router.get("/{run_id}/artifacts/{name}", response_class=PlainTextResponse)
-async def get_artifact(run_id: str, name: str) -> str:
+async def get_artifact(
+    run_id: str,
+    name: str,
+    render: bool = Query(False, description="Return the schema's render_full() markdown instead of raw JSON"),
+) -> str:
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=400, detail="Invalid artifact name")
     if runner.get_context(run_id) is None:
@@ -48,7 +52,11 @@ async def get_artifact(run_id: str, name: str) -> str:
     path = _ARTIFACTS_ROOT / run_id / f"{name}.json"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Artifact not found")
-    return path.read_text()
+    text = path.read_text()
+    if render:
+        # Fall back to raw JSON when the artifact isn't a renderable committee output.
+        return runner.render_artifact(run_id, name, text) or text
+    return text
 
 
 @router.post("/{run_id}/artifacts/{name}/reveal", status_code=204)

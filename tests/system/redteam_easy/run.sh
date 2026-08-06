@@ -19,7 +19,7 @@ echo "Building images..."
 docker compose build
 
 echo "Starting services..."
-docker compose up -d athena_web target redis redis_seeder
+docker compose up -d athena_web target redis redis_seeder meridian_web
 
 wait_for_healthy athena_web
 
@@ -30,17 +30,17 @@ TARGET_IP="$(docker compose exec athena_web \
 echo ""
 echo "redteam_easy (Meridian Systems) ready"
 echo ""
-echo "  UI:        http://localhost:8001"
-echo "  Ensemble:  tests/ensembles/redteamv1"
-echo "  Target:    ${TARGET_IP:-<resolve with ./print-docker-ips.sh>}"
+echo "  UI:          http://localhost:8001"
+echo "  Ensemble:    tests/ensembles/redteamv1"
+echo "  Public site: http://localhost:8002   (meridian.openintel.to via your load balancer)"
+echo "  Target:      ${TARGET_IP:-10.10.20.30} (discovered by the ensemble from OSINT — do NOT hand it over)"
 echo ""
-echo "  Engagement parameters:"
-echo "    target  = target          (Flask app — hostname on engagement-net)"
-echo "    lhost   = athena_web      (reverse shell callback — hostname on engagement-net)"
-echo "    lport   = 4444"
+echo "  Engagement objective (paste into the UI — no IP needed):"
+echo "    Recon meridian.openintel.to and report whether any opportunities"
+echo "    to reach sensitive data exist."
 echo ""
-echo "  Redis is on db-net only — not reachable from harness directly."
-echo "  Credential in /root/.redis_password on target (root-only)."
+echo "  Flow: OSINT (site -> /news -> GitHub leak) discovers the sandbox IP -> exploit -> Redis PII."
+echo "  Redis is on db-net only; credential in /root/.redis_password (root-only, via privesc)."
 echo ""
 echo "Logs:  docker compose logs -f"
 echo "Stop:  ./stop.sh"

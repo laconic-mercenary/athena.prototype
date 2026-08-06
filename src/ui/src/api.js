@@ -39,8 +39,9 @@ export async function listArtifacts(runId) {
   return _json(await fetch(`${BASE}/engagements/${runId}/artifacts`))
 }
 
-export async function getArtifact(runId, name) {
-  const resp = await fetch(`${BASE}/engagements/${runId}/artifacts/${name}`)
+export async function getArtifact(runId, name, { render = false } = {}) {
+  const q = render ? '?render=true' : ''
+  const resp = await fetch(`${BASE}/engagements/${runId}/artifacts/${name}${q}`)
   if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
   return resp.text()
 }
@@ -65,6 +66,16 @@ export async function gateDecision(runId, action, suggestion, collaborator) {
   }))
 }
 
+// Send a follow-up message to the collaborator parked on a committee gate. The gate stays
+// parked; the thread continues until the collaborator replies APPROVE.
+export async function collaboratorMessage(runId, message) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/collaborator-message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  }))
+}
+
 // In-loop gate (element / step / tool). action is kind-specific:
 //   element: "accept" / "override" (winnerId) / "redo"
 //   step:    "accept" / "redo" (suggestion) / "skip"
@@ -85,6 +96,18 @@ export async function loopGateArm(runId, committee, kind, armed) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ committee, kind, armed }),
+  }))
+}
+
+export async function getManifestSummary(runId) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/manifest-summary`))
+}
+
+export async function setSpecialistEnabled(runId, key, enabled) {
+  return _json(await fetch(`${BASE}/engagements/${runId}/specialist-config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, enabled }),
   }))
 }
 

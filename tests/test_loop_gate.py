@@ -316,7 +316,7 @@ def _call(name: str, tc_id: str = "tc1", **inp) -> ModelResponse:
 def _run_spec(skill, backend, hooks):
     return _run_one_specialist(
         _specialist_with(skill), "task", {skill.id: skill},
-        "scan", "run1", lambda p, u=None: backend, "run1.scan.e",
+        "scan", "run1", lambda p, u=None, *_: backend, "run1.scan.e",
         loop_gate_hooks=hooks,
     )
 

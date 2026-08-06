@@ -1,0 +1,16 @@
+name: repo_fetch
+description: >
+  First look at a PUBLIC GitHub repository: its metadata (description, default branch, primary
+  language, last push) and top-level file listing. Use this to orient before digging the commit
+  history — the file listing shows where secrets may have lived (config/, requirements, staging
+  env files). Input is "owner/name" or a github.com URL.
+side_effect: touches_target
+parameters:
+  repo:
+    type: string
+    description: >
+      Repository as "owner/name" or a full GitHub URL
+      (e.g. "https://github.com/acme/client-lib").
+returns: >
+  Object with `repo`, `description`, `default_branch`, `language`, `pushed_at`, `html_url`, and
+  `top_level_files` (each {name, type}).

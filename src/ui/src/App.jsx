@@ -4,6 +4,7 @@ import { EngagementRequest } from './pages/EngagementRequest'
 import { OrchestratorDialog } from './pages/OrchestratorDialog'
 import { Dashboard } from './pages/Dashboard'
 import { AcceptanceBanner } from './components/AcceptanceBanner'
+import { getManifestSummary, setSpecialistEnabled } from './api'
 import './index.css'
 
 const INITIAL_COMMITTEE = {
@@ -49,6 +50,9 @@ function createInitialState() {
   pendingOrchestratorQuestion: null,
   collaboratorPending: null,   // { alias, sentAt } while waiting for email co-approval
   collaboratorReply: null,     // { alias, decision, message, ts } — collaborator's latest reply
+  collaboratorThread: [],      // committee-gate email thread: [{ role:'operator'|'collaborator', alias?, decision?, message, ts }]
+  manifestSummary: null,       // { committees: [{name, elements: [{id, label, specialists: [{id, title, skills}]}]}] }
+  disabledSpecialists: {},     // key -> true for disabled specialists
   agents: {},
   agentReplies: {},
   dialogMessages: [],
@@ -95,7 +99,7 @@ function reducer(state, action) {
     return {
       ...state,
       page: 'dialog',
-      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
+      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false, objective: payload.objective || '', startedAt: Date.now() },
       planReady: false,
       plan: null,
       committees: {},
@@ -108,9 +112,24 @@ function reducer(state, action) {
       dialogMessages: [],
       collaboratorPending: null,
       collaboratorReply: null,
+      collaboratorThread: [],
+      manifestSummary: null,
+      disabledSpecialists: {},
       latestEvent: null,
       eventLog: [],
     }
+  }
+
+  if (type === 'MANIFEST_SUMMARY') {
+    return { ...state, manifestSummary: payload }
+  }
+
+  if (type === 'TOGGLE_SPECIALIST') {
+    const { key, enabled } = payload
+    const next = { ...state.disabledSpecialists }
+    if (enabled) delete next[key]
+    else next[key] = true
+    return { ...state, disabledSpecialists: next }
   }
 
   if (type === 'PLAN_READY') {
@@ -178,6 +197,7 @@ function reducer(state, action) {
     return {
       ...state,
       collaboratorPending: null,
+      collaboratorThread: [],
       engagement: { ...state.engagement, awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false },
     }
   }
@@ -187,6 +207,18 @@ function reducer(state, action) {
     return {
       ...state,
       collaboratorPending: { alias: payload.alias, sentAt: payload.sent_at },
+      collaboratorThread: [],
+      eventLog: appendLog(state, ev),
+    }
+  }
+
+  if (type === 'OPERATOR_COLLAB_MESSAGE') {
+    // The operator sent a follow-up email to the collaborator; echo it into the thread.
+    const { message } = payload
+    const ev = { kind: 'collab', text: `you → @${payload.alias || 'collaborator'}`, color: '#8b5cf6', ts: Date.now() }
+    return {
+      ...state,
+      collaboratorThread: [...state.collaboratorThread, { role: 'operator', message, ts: Date.now() }],
       eventLog: appendLog(state, ev),
     }
   }
@@ -213,10 +245,14 @@ function reducer(state, action) {
       dialogMessages = [...dialogMessages, { role: 'collab', text: message || `(${label})`, ts: Date.now(), alias }]
       agentReplies = { ...agentReplies, [ORCHESTRATOR_AGENT_ID]: [...(agentReplies[ORCHESTRATOR_AGENT_ID] || []), chatMsg] }
     }
+    const collaboratorThread = kind === 'committee'
+      ? [...state.collaboratorThread, { role: 'collaborator', alias, decision, message, ts: Date.now() }]
+      : state.collaboratorThread
     return {
       ...state,
       agentReplies,
       dialogMessages,
+      collaboratorThread,
       collaboratorReply: { alias, decision, message, kind, committee, ts: Date.now() },
       latestEvent: ev,
       eventLog: appendLog(state, ev),
@@ -224,7 +260,7 @@ function reducer(state, action) {
   }
 
   if (type === 'CLEAR_COLLAB_REPLY') {
-    return { ...state, collaboratorReply: null }
+    return { ...state, collaboratorReply: null, collaboratorThread: [], collaboratorPending: null }
   }
 
   if (type === 'LOOP_GATE_AWAITING') {
@@ -662,16 +698,38 @@ export default function App() {
     if (topic === 'engagement.plan_revision') dispatch({ type: 'PLAN_REVISION', payload })
     if (topic === 'engagement.collaborator_pending') dispatch({ type: 'COLLABORATOR_PENDING', payload })
     if (topic === 'collaborator.replied')             dispatch({ type: 'COLLABORATOR_REPLIED', payload })
+    if (topic === 'collaborator.operator_message')    dispatch({ type: 'OPERATOR_COLLAB_MESSAGE', payload })
   }, [])
 
   useEvents(state.engagement.run_id, handleEvent)
+
+  // Fetch manifest summary once when a run_id is assigned.
+  useEffect(() => {
+    const runId = state.engagement.run_id
+    if (!runId) return
+    let cancelled = false
+    getManifestSummary(runId)
+      .then(summary => { if (!cancelled) dispatch({ type: 'MANIFEST_SUMMARY', payload: summary }) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [state.engagement.run_id])
+
+  async function handleToggleSpecialist(runId, key, enabled) {
+    dispatch({ type: 'TOGGLE_SPECIALIST', payload: { key, enabled } })
+    try {
+      await setSpecialistEnabled(runId, key, enabled)
+    } catch {
+      // Revert on failure
+      dispatch({ type: 'TOGGLE_SPECIALIST', payload: { key, enabled: !enabled } })
+    }
+  }
 
   if (state.page === 'request') {
     return (
       <>
         <AcceptanceBanner />
         <EngagementRequest
-          onSubmit={(run_id) => dispatch({ type: 'RUN_STARTED', payload: { run_id } })}
+          onSubmit={(run_id, objective) => dispatch({ type: 'RUN_STARTED', payload: { run_id, objective } })}
         />
       </>
     )
@@ -681,7 +739,11 @@ export default function App() {
     return (
       <>
         <AcceptanceBanner />
-        <OrchestratorDialog state={state} dispatch={dispatch} />
+        <OrchestratorDialog
+          state={state}
+          dispatch={dispatch}
+          onToggleSpecialist={handleToggleSpecialist}
+        />
       </>
     )
   }
@@ -689,7 +751,7 @@ export default function App() {
   return (
     <>
       <AcceptanceBanner />
-      <Dashboard state={state} dispatch={dispatch} />
+      <Dashboard state={state} dispatch={dispatch} onToggleSpecialist={handleToggleSpecialist} />
     </>
   )
 }

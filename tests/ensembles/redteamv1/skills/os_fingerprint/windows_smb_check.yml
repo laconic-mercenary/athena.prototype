@@ -1,0 +1,12 @@
+name: windows_smb_check
+description: >
+  Fingerprint a host for Windows file/RPC services by probing SMB / RPC / NetBIOS (ports 135,
+  139, 445) with nmap service detection. Open SMB/RPC/NetBIOS strongly indicates Windows.
+side_effect: touches_target
+parameters:
+  target:
+    type: string
+    description: IP address or hostname to fingerprint.
+returns: >
+  Object with `check`, `family`, `target`, `ports_scanned`, `open_ports`
+  (list of {port, protocol, service, version}), `signal` (human-readable verdict), and `stdout`.

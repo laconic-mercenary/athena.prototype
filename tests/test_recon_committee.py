@@ -127,7 +127,7 @@ LEADER_SUMMARY_JSON = json.dumps({"summary": "Apache 2.4.6 exposed on port 80 wi
 def _make_backends(*responses_per_backend):
     """Build an iterator of FakeBackends from lists of ModelResponses."""
     backends = iter([FakeBackend(list(r)) for r in responses_per_backend])
-    return lambda provider, url=None: next(backends)
+    return lambda provider, url=None, *_: next(backends)
 
 
 def test_returns_valid_recon_artifact(config, approval):

@@ -175,7 +175,51 @@ async def send_approval_request(
         resp.raise_for_status()
 
 
+async def send_collaborator_message(run_id: str, alias: str, to_email: str, text: str) -> None:
+    """Send a plain-text follow-up to a collaborator mid-thread (no attachment).
+
+    Used while a committee gate is parked on a collaborator: the operator keeps the
+    conversation going by email until the collaborator replies APPROVE. Reuses the same
+    per-run reply address so the collaborator's replies still correlate to this engagement.
+    """
+    text = (text or "").strip()
+    html_body = (
+        f'<div style="font-size:15px;color:#0f172a;white-space:pre-wrap">{html.escape(text)}</div>'
+        '<p style="margin:18px 0;font-size:14px;color:#475569">Reply with '
+        '<strong>APPROVE</strong> when you are ready to approve; otherwise just reply with your '
+        "comments and we'll continue.</p>"
+    )
+    payload = {
+        "from": _FROM_ADDRESS,
+        "to": [to_email],
+        "subject": f"[Athena] Co-approval discussion (@{alias})",
+        "html": html_body,
+    }
+    if _REPLY_DOMAIN:
+        payload["reply_to"] = f"{run_id}@{_REPLY_DOMAIN}"
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://api.resend.com/emails",
+            json=payload,
+            headers={"Authorization": f"Bearer {_RESEND_API_KEY}"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+
+
 # --- Inbound reply handling (Resend email.received webhook) -----------------
+
+def webhook_secret_configured() -> bool:
+    """Whether a webhook signing secret is set. When False, verify_webhook_signature can only
+    return False — every inbound reply is rejected. A quick diagnostic for 'no replies arrive'."""
+    return bool(_WEBHOOK_SECRET)
+
+
+def reply_domain_configured() -> str:
+    """The configured inbound reply domain (empty string if unset). Without it, outbound emails
+    carry no Reply-To, so replies bounce to the From address (which has no inbound webhook)."""
+    return _REPLY_DOMAIN
+
 
 def verify_webhook_signature(body: bytes, headers: dict[str, str]) -> bool:
     """Verify a Resend (Svix) webhook signature over the raw request body.
@@ -188,6 +232,7 @@ def verify_webhook_signature(body: bytes, headers: dict[str, str]) -> bool:
     caller can decide; callers should refuse to act on unverified webhooks.
     """
     if not _WEBHOOK_SECRET:
+        _log.warning("verify: no RESEND_WEBHOOK_SECRET configured")
         return False
     # Header names arrive lower-cased from Starlette; be tolerant anyway. Resend uses
     # the "svix-*" names; the Standard Webhooks spec (which Svix also emits) uses the
@@ -197,6 +242,10 @@ def verify_webhook_signature(body: bytes, headers: dict[str, str]) -> bool:
     svix_ts = lower.get("svix-timestamp") or lower.get("webhook-timestamp")
     svix_sig = lower.get("svix-signature") or lower.get("webhook-signature")
     if not (svix_id and svix_ts and svix_sig):
+        _log.warning(
+            "verify: missing signing headers (id=%s ts=%s sig=%s); headers seen=%s",
+            bool(svix_id), bool(svix_ts), bool(svix_sig), sorted(lower.keys()),
+        )
         return False
     secret = _WEBHOOK_SECRET
     if secret.startswith("whsec_"):
@@ -204,14 +253,26 @@ def verify_webhook_signature(body: bytes, headers: dict[str, str]) -> bool:
     try:
         key = base64.b64decode(secret)
     except Exception:
+        _log.warning("verify: secret is not valid base64 after the whsec_ prefix")
         return False
     signed = f"{svix_id}.{svix_ts}.".encode("utf-8") + body
     expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
-    # svix-signature: "v1,<sig> v1,<sig2> ..." — accept any matching version.
+    # svix-signature: "v1,<sig> v1,<sig2> ...". Take the part after the version comma; if a
+    # provider sends a bare signature with no "v1," prefix, fall back to the whole token.
+    candidates = []
     for part in svix_sig.split():
-        _, _, sig = part.partition(",")
+        _, comma, sig = part.partition(",")
+        candidates.append(sig if comma else part)
+    for sig in candidates:
         if sig and hmac.compare_digest(sig, expected):
             return True
+    # Signature mismatch — the headers are present but the HMAC didn't match. Log enough to tell
+    # apart "wrong secret" from "body was altered in transit" (a proxy re-encoding the JSON is a
+    # classic cause) without leaking anything sensitive: lengths + short digest prefixes only.
+    _log.warning(
+        "verify: signature mismatch (body_len=%d, key_len=%d, expected=%s…, received=%s)",
+        len(body), len(key), expected[:12], [c[:12] for c in candidates],
+    )
     return False
 
 
@@ -225,6 +286,13 @@ def extract_run_id(recipients: list[str]) -> str | None:
     if not _REPLY_DOMAIN:
         return None
     for raw in recipients or []:
+        # Resend may deliver recipients as plain strings ("a@b", "Name <a@b>") or as objects
+        # ({"address": "a@b"} / {"email": "a@b"}). Normalise both to a string before parsing —
+        # otherwise a dict silently yields no address and the reply looks uncorrelated.
+        if isinstance(raw, dict):
+            raw = raw.get("address") or raw.get("email") or ""
+        if not isinstance(raw, str):
+            continue
         addr = parseaddr(raw)[1]
         local, _, domain = addr.partition("@")
         if local and domain.lower() == _REPLY_DOMAIN.lower():

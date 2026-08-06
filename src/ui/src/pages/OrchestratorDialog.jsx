@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react'
 import { marked } from 'marked'
 import { sendChat, planReview, loopGateArm, abortEngagement } from '../api'
 import { FeedbackModal, ReportButton } from '../components/FeedbackModal'
+import { EngagementInfoModal } from '../components/EngagementInfoModal'
+import { Accordion, SpecialistRow, CommitteePanel } from '../components/CommitteeTree'
 
 marked.setOptions({ breaks: true })
 
@@ -178,114 +180,75 @@ function BriefSwitchPanel({ plan, armedGates, disabled, armDisabled, onToggle })
   )
 }
 
-function PlanPreview({ plan, planReady }) {
-  if (!plan) return null
-  const committeeNames = Object.keys(plan.committees || {})
-  const gates = plan.gates || []
-  const terminal = committeeNames[committeeNames.length - 1]
+// ── Plan tree ─────────────────────────────────────────────────────────────────
+function PlanTree({ plan, planReady, manifestSummary, disabledSpecialists, runId, onToggleSpecialist }) {
+  if (!plan && !manifestSummary) return null
+
+  const gates = plan?.gates || []
+  const terminal = manifestSummary
+    ? manifestSummary.committees[manifestSummary.committees.length - 1]?.name
+    : Object.keys(plan?.committees || {}).slice(-1)[0]
+
+  // Merge plan objectives with manifest structure. Manifest is the authority on
+  // committees/elements/specialists; plan provides objectives per committee.
+  const committees = manifestSummary
+    ? manifestSummary.committees
+    : Object.keys(plan?.committees || {}).map(name => ({ name, elements: [] }))
 
   return (
     <div className="brief-plan-scroll">
       <div style={{ fontSize: 9, letterSpacing: 2, textTransform: 'uppercase', color: '#3b5270', marginBottom: 4 }}>
         Engagement Plan
       </div>
-      <div style={{ fontSize: 10, color: '#475569', marginBottom: 18, lineHeight: 1.5 }}>
-        {committeeNames.length} committee{committeeNames.length !== 1 ? 's' : ''} will run in sequence.
-      </div>
 
-      {!planReady && committeeNames.length > 0 && (
-        <div style={{ marginBottom: 18, padding: '10px 14px', background: '#071020', border: '1px solid #1e3050', borderRadius: 6, fontSize: 10, color: '#3b5270' }}>
+      {!planReady && plan && (
+        <div style={{ marginBottom: 14, padding: '8px 12px', background: '#071020', border: '1px solid #1e3050', borderRadius: 6, fontSize: 10, color: '#3b5270' }}>
           Orchestrator is revising the plan…
         </div>
       )}
 
-      {committeeNames.map((name, i) => {
-        const brief = plan.committees[name]
+      {committees.map((committee, i) => {
+        const name = committee.name
+        const brief = plan?.committees?.[name] || {}
+        const objectives = brief.objective || []
         const gate = gates.find(g => g.after === name)
-        const isLast = i === committeeNames.length - 1
+        const isLast = i === committees.length - 1
 
         return (
           <div key={name}>
-            <div style={{
-              background: '#0a121e',
-              border: '1px solid #1e3050',
-              borderRadius: 6,
-              padding: '12px 14px',
-            }}>
+            {/* Committee card */}
+            <div style={{ background: '#0a121e', border: '1px solid #1e3050', borderRadius: 6, padding: '10px 12px', marginBottom: 0 }}>
+              {/* Header */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <span style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: 18, height: 18,
-                  borderRadius: '50%',
-                  background: '#1e3050',
-                  color: '#64748b',
-                  fontSize: 9,
-                  fontWeight: 700,
-                  flexShrink: 0,
-                }}>
-                  {i + 1}
-                </span>
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: 16, height: 16, borderRadius: '50%', background: '#1e3050',
+                  color: '#64748b', fontSize: 9, fontWeight: 700, flexShrink: 0,
+                }}>{i + 1}</span>
                 <span style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', letterSpacing: 0.5, textTransform: 'uppercase' }}>
                   {name}
                 </span>
               </div>
 
-              {(brief.objective || []).length > 0 && (
-                <div style={{ paddingLeft: 26, marginBottom: 4 }}>
-                  <div style={{ fontSize: 8, letterSpacing: 1, textTransform: 'uppercase', color: '#334155', marginBottom: 3 }}>
-                    Objective
-                  </div>
-                  {(brief.objective || []).map((obj, j) => (
-                    <div key={j} style={{ fontSize: 11, color: '#64748b', lineHeight: 1.5, marginBottom: 2 }}>
-                      {obj}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {brief.constraints?.length > 0 && (
-                <div style={{ paddingLeft: 26, marginTop: 6 }}>
-                  <div style={{ fontSize: 8, letterSpacing: 1, textTransform: 'uppercase', color: '#334155', marginBottom: 3 }}>
-                    Constraints
-                  </div>
-                  {brief.constraints.map((c, j) => (
-                    <div key={j} style={{ fontSize: 10, color: '#475569', lineHeight: 1.5 }}>{c}</div>
-                  ))}
-                </div>
-              )}
-
-              {brief.emphasis?.length > 0 && (
-                <div style={{ paddingLeft: 26, marginTop: 6 }}>
-                  <div style={{ fontSize: 8, letterSpacing: 1, textTransform: 'uppercase', color: '#334155', marginBottom: 3 }}>
-                    Emphasis
-                  </div>
-                  {brief.emphasis.map((e, j) => (
-                    <div key={j} style={{ fontSize: 10, color: '#475569', lineHeight: 1.5 }}>{e}</div>
-                  ))}
-                </div>
-              )}
+              <CommitteePanel
+                committee={committee}
+                objectives={objectives}
+                disabledSpecialists={disabledSpecialists}
+                onToggleSpecialist={(key, enabled) => onToggleSpecialist(runId, key, enabled)}
+              />
             </div>
 
+            {/* Gate / connector between committees */}
             {!isLast && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '6px 0' }}>
                 {gate ? (
                   <>
                     <div style={{ width: 1, height: 8, background: '#1e3050' }} />
                     <div style={{
-                      background: '#0d1a2a',
-                      border: '1px solid #1e4080',
-                      borderRadius: 4,
-                      padding: '4px 10px',
-                      fontSize: 8,
-                      color: '#3b82f6',
-                      letterSpacing: 1.5,
-                      textTransform: 'uppercase',
-                      fontWeight: 700,
-                    }}>
-                      ⬡ Operator approval required
-                    </div>
+                      background: '#0d1a2a', border: '1px solid #1e4080', borderRadius: 4,
+                      padding: '4px 10px', fontSize: 8, color: '#3b82f6',
+                      letterSpacing: 1.5, textTransform: 'uppercase', fontWeight: 700,
+                    }}>⬡ Operator approval required</div>
                     <div style={{ width: 1, height: 8, background: '#1e3050' }} />
                   </>
                 ) : (
@@ -297,7 +260,6 @@ function PlanPreview({ plan, planReady }) {
         )
       })}
 
-      {/* Terminal gate marker — approval after the last committee, before the report is delivered */}
       {terminal && gates.some(g => g.after === terminal) && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '6px 0' }}>
           <div style={{ width: 1, height: 8, background: '#1e3050' }} />
@@ -305,17 +267,15 @@ function PlanPreview({ plan, planReady }) {
             background: '#0d1a2a', border: '1px solid #1e4080', borderRadius: 4,
             padding: '4px 10px', fontSize: 8, color: '#3b82f6',
             letterSpacing: 1.5, textTransform: 'uppercase', fontWeight: 700,
-          }}>
-            ⬡ Approval before final report
-          </div>
+          }}>⬡ Approval before final report</div>
         </div>
       )}
     </div>
   )
 }
 
-export function OrchestratorDialog({ state, dispatch }) {
-  const { engagement, dialogMessages, planReady, plan, armedGates, collaboratorPending } = state
+export function OrchestratorDialog({ state, dispatch, onToggleSpecialist }) {
+  const { engagement, dialogMessages, planReady, plan, armedGates, collaboratorPending, manifestSummary, disabledSpecialists } = state
 
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -324,6 +284,7 @@ export function OrchestratorDialog({ state, dispatch }) {
   const [error, setError] = useState(null)
   const [panelLocked, setPanelLocked] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [infoOpen, setInfoOpen] = useState(false)
   const messagesRef = useRef(null)
   const textareaRef = useRef(null)
   const lockTimer = useRef(null)
@@ -446,7 +407,7 @@ export function OrchestratorDialog({ state, dispatch }) {
     dispatch({ type: 'RESET' })
   }
 
-  const planVisible = planReady || plan
+  const planVisible = planReady || plan || manifestSummary
 
   return (
     <div className="dialog-shell">
@@ -459,13 +420,19 @@ export function OrchestratorDialog({ state, dispatch }) {
           <span className="dialog-step-arrow">›</span>
           <span className="dialog-step dialog-step--next">Engagement</span>
         </div>
-        <span className="dialog-run-id">{engagement.run_id}</span>
+        <button
+          className="dash-info-btn"
+          onClick={() => setInfoOpen(true)}
+          title="Engagement info"
+        >
+          ⓘ Info
+        </button>
         <button
           className="dash-restart-btn"
           onClick={handleRestart}
-          title="Abandon this engagement and return to the start screen"
+          title="Kill switch — halt the harness threads and abandon this engagement"
         >
-          ↺ Restart
+          ⏻ KILL SWITCH
         </button>
       </div>
 
@@ -553,7 +520,14 @@ export function OrchestratorDialog({ state, dispatch }) {
             onToggle={handleToggle}
           />
 
-          <PlanPreview plan={plan} planReady={planReady} />
+          <PlanTree
+            plan={plan}
+            planReady={planReady}
+            manifestSummary={manifestSummary}
+            disabledSpecialists={disabledSpecialists || {}}
+            runId={engagement.run_id}
+            onToggleSpecialist={onToggleSpecialist}
+          />
 
           <div className="brief-action-bar">
             {error && <div className="brief-action-error">{error}</div>}
@@ -600,6 +574,15 @@ export function OrchestratorDialog({ state, dispatch }) {
       </div>
 
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+
+      {infoOpen && (
+        <EngagementInfoModal
+          engagement={engagement}
+          phase="Briefing"
+          committeeCount={Object.keys(state.committees).length || undefined}
+          onClose={() => setInfoOpen(false)}
+        />
+      )}
     </div>
   )
 }

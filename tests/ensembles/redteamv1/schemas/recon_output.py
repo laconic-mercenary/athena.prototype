@@ -29,7 +29,9 @@ class CVECandidate(BaseModel):
 
 class ReconOutput(BaseModel):
     target: str
-    os_info: str = ""          # OS family/distro/version inferred from banners (Step 1)
+    discovered_target: str = ""    # target IP/host recovered from OSINT (git-leaked config)
+    osint_sources: list[str] = []  # provenance: pages read, repo URL, leaking commit
+    os_info: str = ""          # OS family/distro/version inferred from banners
     open_ports: list[DiscoveredPort]
     web_paths: list[WebPath] = []
     cve_candidates: list[CVECandidate] = []
@@ -38,8 +40,15 @@ class ReconOutput(BaseModel):
 
     def render_full(self) -> str:
         lines = [f"Target: {self.target}"]
+        if self.discovered_target and self.discovered_target != self.target:
+            lines.append(f"Discovered via OSINT: {self.discovered_target}")
         if self.os_info:
             lines.append(f"Operating System: {self.os_info}")
+        if self.osint_sources:
+            lines.append("")
+            lines.append("OSINT Sources:")
+            for s in self.osint_sources:
+                lines.append(f"  - {s}")
         lines.append("")
         lines.append("Open Ports:")
         for p in self.open_ports:

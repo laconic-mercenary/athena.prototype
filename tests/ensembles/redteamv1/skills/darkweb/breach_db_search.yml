@@ -1,0 +1,12 @@
+name: breach_db_search
+description: >
+  Search public breach compilations (Collection-style aggregated dumps) for breach records tied
+  to a company name or domain. Free aggregated tier only — no paywalled breach databases.
+side_effect: reads_local
+parameters:
+  query:
+    type: string
+    description: Company name or domain to search for (e.g. "meridian.openintel.to").
+returns: >
+  Object with `source`, `query`, `hits` (empty if none), `result`, `coverage`, and
+  `deeper_tier_available` (bool — whether an unqueried deeper tier remains).

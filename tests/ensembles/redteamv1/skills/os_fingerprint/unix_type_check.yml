@@ -1,0 +1,13 @@
+name: unix_type_check
+description: >
+  Fingerprint a host for Unix/Linux by probing SSH and Linux-served HTTP (ports 22, 80, 443)
+  with nmap service detection. Reads the family from open ports and service banners
+  (nmap -O OS detection needs root and is not used).
+side_effect: touches_target
+parameters:
+  target:
+    type: string
+    description: IP address or hostname to fingerprint.
+returns: >
+  Object with `check`, `family`, `target`, `ports_scanned`, `open_ports`
+  (list of {port, protocol, service, version}), `signal` (human-readable verdict), and `stdout`.

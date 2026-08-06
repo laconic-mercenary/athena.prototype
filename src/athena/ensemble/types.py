@@ -37,6 +37,12 @@ class LoadedSpecialist:
     temperature: float | None     # None → provider default; set for sampling diversity
     skill_ids:   list[str]        # effective skills for this specialist; overrides element-level list
     max_tokens:  int | None       # None → falls back to SPECIALIST_MAX_TOKENS in committee_runner
+    # OpenAI-compatible (provider: ollama) endpoint override — lets a single ensemble target
+    # more than one endpoint (e.g. a Modal-hosted model distinct from the shared OLLAMA_BASE_URL).
+    base_url:    str | None = None          # None → falls back to OLLAMA_BASE_URL
+    # Extra auth headers as {header_name: env_var_name} — resolved from the environment at run
+    # time so secrets never live in the ensemble. Used for Modal proxy auth (Modal-Key/Modal-Secret).
+    auth_headers_env: dict[str, str] | None = None
 
 
 @dataclass
@@ -46,6 +52,10 @@ class LoadedElement:
     instances:   int
     specialists: list[LoadedSpecialist]
     skill_ids:   list[str]        # references into LoadedEnsemble.skills
+    # Hard cap on real skill calls ONE specialist in this element may execute per run. Default 1
+    # keeps single-action specialists (exploit/planning) tight; multi-source scouts (OSINT that
+    # follows links, dark-web per-source lookups, per-OS-family checks) raise it in the manifest.
+    max_tool_calls: int = 1
 
 
 @dataclass

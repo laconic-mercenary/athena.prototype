@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { listArtifacts, getArtifact } from '../api'
+import { listArtifacts } from '../api'
 
 const CLASSIFICATION_ORDER = ['signal_critical', 'signal_warn', 'signal_info', 'noise', 'unknown']
 
@@ -15,34 +15,13 @@ function classificationColor(cls) {
   return '#64748b'
 }
 
-export function ArtifactTable({ runId, committees }) {
+export function ArtifactTable({ runId, committees, onOpen }) {
   const [artifacts, setArtifacts] = useState([])
-  const [selected, setSelected]   = useState(null)
-  const [content, setContent]     = useState(null)
-  const [loading, setLoading]     = useState(false)
 
   useEffect(() => {
     if (!runId) return
     listArtifacts(runId).then(setArtifacts).catch(() => {})
   }, [runId])
-
-  async function openArtifact(name) {
-    if (selected === name) { setSelected(null); setContent(null); return }
-    setSelected(name)
-    setLoading(true)
-    try {
-      const text = await getArtifact(runId, name)
-      try {
-        setContent(JSON.stringify(JSON.parse(text), null, 2))
-      } catch {
-        setContent(text)
-      }
-    } catch {
-      setContent('(failed to load)')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const allFindings = Object.entries(committees).flatMap(([committee, data]) =>
     (data.findings || []).map(f => ({ ...f, committee }))
@@ -77,29 +56,23 @@ export function ArtifactTable({ runId, committees }) {
               const committee = committees[a.name]
               const incomplete = committee?.incomplete
               return (
-                <div key={a.name}>
-                  <button
-                    className={`artifact-row ${selected === a.name ? 'artifact-row--active' : ''}`}
-                    onClick={() => openArtifact(a.name)}
-                  >
-                    <span className="artifact-name">{a.name}</span>
-                    {incomplete && (
-                      <span style={{
-                        fontSize: 8, color: '#f97316',
-                        background: '#1a0e00', borderRadius: 2,
-                        padding: '1px 4px', marginLeft: 4,
-                      }}>
-                        INCOMPLETE
-                      </span>
-                    )}
-                    <span className="artifact-size">{(a.size / 1024).toFixed(1)} KB</span>
-                  </button>
-                  {selected === a.name && (
-                    <pre className="artifact-content">
-                      {loading ? 'Loading…' : content}
-                    </pre>
+                <button
+                  key={a.name}
+                  className="artifact-row"
+                  onClick={() => onOpen && onOpen(a.name)}
+                >
+                  <span className="artifact-name">{a.name}</span>
+                  {incomplete && (
+                    <span style={{
+                      fontSize: 8, color: '#f97316',
+                      background: '#1a0e00', borderRadius: 2,
+                      padding: '1px 4px', marginLeft: 4,
+                    }}>
+                      INCOMPLETE
+                    </span>
                   )}
-                </div>
+                  <span className="artifact-size">{(a.size / 1024).toFixed(1)} KB</span>
+                </button>
               )
             })}
           </div>

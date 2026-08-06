@@ -1,0 +1,17 @@
+name: github_commits
+description: >
+  Inspect a PUBLIC GitHub repository's commit history for secrets leaked in past commits.
+  Returns recent commits with their file diffs (patches) — so you can find values that were
+  committed and later deleted but still live in history (internal IPs, credentials, config).
+  Input is "owner/name" or a github.com URL.
+side_effect: touches_target
+parameters:
+  repo:
+    type: string
+    description: >
+      Repository as "owner/name" or a full GitHub URL
+      (e.g. "https://github.com/acme/client-lib").
+returns: >
+  Object with `repo`, `commit_count`, and `commits` — each commit has `sha`, `message`,
+  `date`, `author`, and `files` (filename, status, and the diff `patch`). Scan the patches
+  for leaked hosts/IPs/credentials, including in commits that a later commit removed.
