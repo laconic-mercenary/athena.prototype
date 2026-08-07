@@ -16,7 +16,10 @@ services:
       - ../../ensembles/redteamv1:/app/ensemble:ro
     env_file: ../../../.env
     environment:
-      - ENSEMBLE_PATH=/app/ensemble
+      - ATHENA_ENS_PATH=/app/ensemble
+      # Allowlist for http_get / http_post skills. meridian-www is the local OSINT target;
+      # 10.10.20.30 is the static engagement-net IP discovered via OSINT and used during exploit.
+      - TOOLS_HTTP_OK_DOMAINS=meridian-www,10.10.20.30
     ports:
       - "8001:8001"
     healthcheck:
@@ -44,9 +47,9 @@ services:
         ipv4_address: 10.10.20.30    # static "sandbox" IP leaked via meridian-client-x git history
       db-net: {}
 
-  # Public marketing site (meridian.openintel.to). Static pages only; the OSINT phase
+  # Local marketing site (hostname: meridian-www). Static pages only; the OSINT phase
   # scrapes the landing page → /news → the leaked GitHub repo. Separate from `target`.
-  # Operator load balancer maps public :80 → host :8002 → this container's :80.
+  # Accessible at http://localhost:8002 for manual inspection.
   meridian_web:
     image: nginx:alpine
     hostname: meridian-www

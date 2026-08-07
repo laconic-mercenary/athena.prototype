@@ -18,7 +18,7 @@ the target without the operator reviewing and approving the attack plan.
 briefing_required:
   - name: domain
     type: string
-    example: "meridian.openintel.to"
+    example: "meridian-www"
     description: >
       The target organisation's public domain. The engagement STARTS from OSINT against this
       domain — the ensemble discovers the actual host/IP itself. The operator's objective
@@ -111,4 +111,4 @@ Declare exactly this gate in the EngagementPlan. Additional gates (e.g. after `r
 - `httpx` — HTTP client used by the HTTP and source-code-intelligence skills
 - `pwntools` — for the interactive-shell fallback only
 - Foundation-Sec — configured via `provider: ollama` in the manifest (planning committee only)
-- Outbound internet from the harness — to reach OSINT targets and code-hosting APIs
+- Outbound internet from the harness — GitHub API access for `github_commits` OSINT skill

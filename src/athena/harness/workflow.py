@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Callable
 
 from pubsub import pub
+
+from athena import topics
 from pydantic import BaseModel
 
 from athena.engagement_plan import CommitteeBrief, EngagementPlan
@@ -32,9 +34,19 @@ from athena.harness.committee_runner import (
 from athena.harness.orchestrator import GateDecision, OrchestratorHarness
 from athena.model_backend import ModelBackend
 
+
+###############
+# CONSTS / GLOBALS #
+###############
+
 _log = logging.getLogger("athena.harness.workflow")
 
 GLOBAL_STEP_BUDGET = 750
+
+
+###############
+# CUSTOM TYPES #
+###############
 
 BackendFactory = Callable[[str, "str | None"], ModelBackend]
 AskOperatorHandler = Callable[[str], str]
@@ -45,74 +57,9 @@ AskOperatorHandler = Callable[[str], str]
 GateHandler = Callable[[str, str, bool], "tuple[str, str | None]"]
 
 
-# ---------------------------------------------------------------------------
-# Graph helpers
-# ---------------------------------------------------------------------------
-
-def _is_terminal(node: WorkflowNode) -> bool:
-    """A committee is terminal iff it has no forward (non-retry/iterate) transitions."""
-    return not any(
-        t.condition not in ("retry", "iterate") for t in node.transitions
-    )
-
-
-def _forward_target(node: WorkflowNode) -> str | None:
-    """Return the to-committee for the unconditional (advance) transition, if any."""
-    for t in node.transitions:
-        if t.condition is None:
-            return t.to
-    return None
-
-
-def _has_declared_transition(node: WorkflowNode, condition: str, to: str) -> bool:
-    return any(t.condition == condition and t.to == to for t in node.transitions)
-
-
-def _await_operator_gate(
-    gate_handler: GateHandler,
-    node: WorkflowNode,
-    committee: str,
-    digest: str,
-    redo_available: bool,
-    run_id: str,
-) -> GateDecision:
-    """Block on the operator-authoritative committee gate and return a GateDecision.
-
-    Accept → advance. Redo → iterate (or retry, if only retry is declared) on the
-    same committee, with the operator's suggestion as the objective note. Redo is
-    guarded by the SAME manifest check the orchestrator uses (_has_declared_transition):
-    an undeclared Redo is rejected and the gate re-awaits — so operator authority never
-    exceeds the manifest envelope.
-    """
-    while True:
-        # The handler marks the engagement as awaiting and publishes
-        # gate.awaiting_approval itself (flag set before the event), then blocks.
-        action, suggestion = gate_handler(committee, digest, redo_available)
-
-        if action == "accept":
-            return GateDecision(decision="advance", rationale="Operator accepted the output.")
-
-        if action == "redo":
-            cond = (
-                "iterate" if _has_declared_transition(node, "iterate", committee)
-                else "retry" if _has_declared_transition(node, "retry", committee)
-                else None
-            )
-            if cond is None:
-                # Defensive: the UI hides Redo when redo_available is False, so this
-                # only fires on a stale client. Tell the operator, keep the gate open.
-                pub.sendMessage("gate.redo_unsupported", run_id=run_id, committee=committee)
-                continue
-            note = (suggestion or "").strip() or None
-            rationale = f"Operator requested redo: {note}" if note else "Operator requested redo."
-            return GateDecision(decision=cond, to=committee, note=note, rationale=rationale)
-
-        _log.warning("Unknown gate action %r on %r; re-awaiting.", action, committee)
-
-
-# ---------------------------------------------------------------------------
-# Main workflow runner
-# ---------------------------------------------------------------------------
+###############
+# FUNCTIONS #
+###############
 
 def run_workflow(
     ensemble: LoadedEnsemble,
@@ -149,7 +96,7 @@ def run_workflow(
         is_iterate = iterate_counts.get(current, 0) > 0 and prior_artifact is not None
 
         pub.sendMessage(
-            "committee.started",
+            topics.COMMITTEE_STARTED,
             run_id=run_id,
             committee=current,
             objective=brief.objective,
@@ -176,7 +123,7 @@ def run_workflow(
         except RefuseStartError as exc:
             _log.error("Committee %r refused to start: %s", current, exc.reason)
             pub.sendMessage(
-                "engagement.rejected",
+                topics.ENGAGEMENT_REJECTED,
                 run_id=run_id,
                 reason=f"Committee {current!r} refused: {exc.reason}",
             )
@@ -190,7 +137,7 @@ def run_workflow(
         digest = artifact.render_digest() if hasattr(artifact, "render_digest") else artifact.model_dump_json()
 
         pub.sendMessage(
-            "committee.completed",
+            topics.COMMITTEE_COMPLETED,
             run_id=run_id,
             committee=current,
             digest=digest,
@@ -228,7 +175,7 @@ def run_workflow(
                 + (f"\nOperator note: {decision.note}" if decision.note else "")
             )
             pub.sendMessage(
-                "gate.decision",
+                topics.GATE_DECISION,
                 run_id=run_id,
                 committee=current,
                 decision=decision.decision,
@@ -251,13 +198,13 @@ def run_workflow(
 
         if decision.decision == "advance":
             if terminal:
-                pub.sendMessage("engagement.completed", run_id=run_id)
+                pub.sendMessage(topics.ENGAGEMENT_COMPLETED, run_id=run_id)
                 return
 
             next_committee = _forward_target(node)
             if next_committee is None:
                 _log.error("advance called on %r but no forward transition found", current)
-                pub.sendMessage("engagement.completed", run_id=run_id)
+                pub.sendMessage(topics.ENGAGEMENT_COMPLETED, run_id=run_id)
                 return
 
             # Refine the next committee's objective if the orchestrator provided one
@@ -322,6 +269,71 @@ def run_workflow(
             # Should not happen (ask_operator is resolved inside orchestrator.run_gate)
             _log.error("Unexpected gate decision %r", decision.decision)
             current = _forward_target(node) or current
+
+
+###############
+# NON PUBLIC FUNCTIONS #
+###############
+
+def _is_terminal(node: WorkflowNode) -> bool:
+    """A committee is terminal iff it has no forward (non-retry/iterate) transitions."""
+    return not any(
+        t.condition not in ("retry", "iterate") for t in node.transitions
+    )
+
+
+def _forward_target(node: WorkflowNode) -> str | None:
+    """Return the to-committee for the unconditional (advance) transition, if any."""
+    for t in node.transitions:
+        if t.condition is None:
+            return t.to
+    return None
+
+
+def _has_declared_transition(node: WorkflowNode, condition: str, to: str) -> bool:
+    return any(t.condition == condition and t.to == to for t in node.transitions)
+
+
+def _await_operator_gate(
+    gate_handler: GateHandler,
+    node: WorkflowNode,
+    committee: str,
+    digest: str,
+    redo_available: bool,
+    run_id: str,
+) -> GateDecision:
+    """Block on the operator-authoritative committee gate and return a GateDecision.
+
+    Accept → advance. Redo → iterate (or retry, if only retry is declared) on the
+    same committee, with the operator's suggestion as the objective note. Redo is
+    guarded by the SAME manifest check the orchestrator uses (_has_declared_transition):
+    an undeclared Redo is rejected and the gate re-awaits — so operator authority never
+    exceeds the manifest envelope.
+    """
+    while True:
+        # The handler marks the engagement as awaiting and publishes
+        # gate.awaiting_approval itself (flag set before the event), then blocks.
+        action, suggestion = gate_handler(committee, digest, redo_available)
+
+        if action == "accept":
+            return GateDecision(decision="advance", rationale="Operator accepted the output.")
+
+        if action == "redo":
+            cond = (
+                "iterate" if _has_declared_transition(node, "iterate", committee)
+                else "retry" if _has_declared_transition(node, "retry", committee)
+                else None
+            )
+            if cond is None:
+                # Defensive: the UI hides Redo when redo_available is False, so this
+                # only fires on a stale client. Tell the operator, keep the gate open.
+                pub.sendMessage(topics.GATE_REDO_UNSUPPORTED, run_id=run_id, committee=committee)
+                continue
+            note = (suggestion or "").strip() or None
+            rationale = f"Operator requested redo: {note}" if note else "Operator requested redo."
+            return GateDecision(decision=cond, to=committee, note=note, rationale=rationale)
+
+        _log.warning("Unknown gate action %r on %r; re-awaiting.", action, committee)
 
 
 def _clear_downstream(

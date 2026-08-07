@@ -11,7 +11,17 @@ from pydantic import BaseModel, Field
 from athena.utils import new_id, new_short_id
 
 
+###############
+# CUSTOM TYPES #
+###############
+
 class Classification(str, Enum):
+    """Signal strength classification applied to a recon observation.
+
+    The recon leader assigns this when promoting a RawFinding to an Observation.
+    signal_critical and signal_warn findings drive the highest-priority planned actions.
+    """
+
     signal_critical = "signal_critical"
     signal_warn = "signal_warn"
     signal_info = "signal_info"
@@ -20,6 +30,8 @@ class Classification(str, Enum):
 
 
 class Category(str, Enum):
+    """Domain category for a recon observation, used to group findings in the report."""
+
     network = "network"
     service = "service"
     configuration = "configuration"
@@ -28,16 +40,35 @@ class Category(str, Enum):
 
 
 class Specialist(BaseModel):
+    """A record of one specialist agent that participated in the recon committee run.
+
+    Stored in ReconArtifact.specialists so downstream committees and the report
+    can attribute observations to the agent that produced them.
+    """
+
     id: str = Field(default_factory=new_id)
     title: str
 
 
 class Comment(BaseModel):
+    """An inline annotation on an Observation, authored by a specialist or leader.
+
+    Stored in Observation.comments so the planning committee can see how the
+    recon leader or peers assessed a finding before acting on it.
+    """
+
     author_id: str
     text: str
 
 
 class RawFinding(BaseModel):
+    """An unclassified specialist finding: the raw command invocation and output.
+
+    Specialists emit RawFindings during recon; the committee leader reviews them
+    and promotes significant ones to Observations with explicit classification and
+    category, discarding noise.
+    """
+
     id: str = Field(default_factory=new_short_id)
     specialist_id: str
     command: str
@@ -46,6 +77,13 @@ class RawFinding(BaseModel):
 
 
 class Observation(BaseModel):
+    """A classified and categorized recon finding, promoted from a RawFinding.
+
+    The recon leader creates Observations by evaluating RawFindings and assigning
+    a Classification and Category. Only Observations (not RawFindings) appear in
+    the final ReconArtifact and feed into the planning committee.
+    """
+
     id: str = Field(default_factory=new_short_id)
     specialist_id: str
     command: str
@@ -56,10 +94,23 @@ class Observation(BaseModel):
 
 
 class ThreatAnalysis(BaseModel):
+    """High-level threat narrative synthesized by the recon leader.
+
+    Produced alongside the observation list as the recon committee's final judgment:
+    a prose summary of what the target's posture implies for the engagement.
+    """
+
     summary: str
 
 
 class ReconArtifact(BaseModel):
+    """The recon committee's complete output artifact.
+
+    Written to disk as JSON at the end of the recon run and passed as context to
+    the planning committee. Contains the full observation list, the participating
+    specialist roster, and the leader's threat analysis summary.
+    """
+
     artifact_id: str = Field(default_factory=new_id)
     run_id: str
     committee: str = "recon"
@@ -72,6 +123,8 @@ class ReconArtifact(BaseModel):
 
 
 class ActionPriority(str, Enum):
+    """Priority level assigned to a planned action by the planning committee leader."""
+
     critical = "critical"
     high = "high"
     medium = "medium"
@@ -79,6 +132,13 @@ class ActionPriority(str, Enum):
 
 
 class PlannedAction(BaseModel):
+    """One discrete action item produced by the planning committee.
+
+    Each action references the recon observations that motivated it and carries
+    a priority so the retrieval committee can sequence its work. observation_ids
+    links back to Observation.id entries in the ReconArtifact.
+    """
+
     id: str = Field(default_factory=new_short_id)
     priority: ActionPriority
     title: str
@@ -89,6 +149,13 @@ class PlannedAction(BaseModel):
 
 
 class PlanArtifact(BaseModel):
+    """The planning committee's complete output artifact.
+
+    Produced after the planning leader synthesizes the ReconArtifact into an
+    ordered list of PlannedActions. Passed to the retrieval committee as its
+    primary input; recon_artifact_id provides the provenance chain.
+    """
+
     artifact_id: str = Field(default_factory=new_id)
     run_id: str
     committee: str = "planning"
@@ -100,6 +167,13 @@ class PlanArtifact(BaseModel):
 
 
 class RetrievedFinding(BaseModel):
+    """One exploitation or evidence-retrieval result from a retrieval specialist.
+
+    Ties a specialist's actual tool call and output back to the PlannedAction it
+    was executing. action_id is empty for cross-cutting findings not tied to a
+    specific planned action.
+    """
+
     id: str = Field(default_factory=new_short_id)
     specialist_id: str
     action_id: str  # references PlannedAction.id; empty string if cross-cutting
@@ -110,6 +184,13 @@ class RetrievedFinding(BaseModel):
 
 
 class RetrievalArtifact(BaseModel):
+    """The retrieval committee's complete output artifact.
+
+    Produced after retrieval specialists execute against the target. Contains all
+    RetrievedFindings from the run and is the primary input to the reporting committee.
+    plan_artifact_id provides the provenance chain back to the planned actions.
+    """
+
     artifact_id: str = Field(default_factory=new_id)
     run_id: str
     committee: str = "retrieval"
@@ -121,6 +202,8 @@ class RetrievalArtifact(BaseModel):
 
 
 class RiskRating(str, Enum):
+    """Overall risk rating applied to the engagement by the reporting committee."""
+
     critical = "critical"
     high = "high"
     medium = "medium"
@@ -128,11 +211,20 @@ class RiskRating(str, Enum):
 
 
 class ReportSection(BaseModel):
+    """One titled section of the final report produced by the reporting committee."""
+
     title: str
     content: str
 
 
 class ReportArtifact(BaseModel):
+    """The reporting committee's final output — the deliverable for the engagement.
+
+    Synthesizes the full artifact chain (recon → planning → retrieval) into a
+    structured report with an executive summary, risk rating, narrative sections,
+    and prioritized recommendations. retrieval_artifact_id anchors the chain.
+    """
+
     artifact_id: str = Field(default_factory=new_id)
     run_id: str
     committee: str = "reporting"
@@ -146,6 +238,12 @@ class ReportArtifact(BaseModel):
 
 
 class OrchestratorApproval(BaseModel):
+    """Legacy orchestrator approval record from the pre-ensemble pipeline.
+
+    Kept for backward compatibility with older artifact files. The current
+    pipeline uses EngagementPlan and GateDecision instead.
+    """
+
     run_id: str = Field(default_factory=new_id)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     target: str
@@ -153,5 +251,11 @@ class OrchestratorApproval(BaseModel):
 
 
 class OrchestratorRejection(BaseModel):
+    """Legacy orchestrator rejection record from the pre-ensemble pipeline.
+
+    Kept for backward compatibility with older artifact files. The current
+    pipeline surfaces rejections as engagement status REJECTED with operator rationale.
+    """
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     reason: str

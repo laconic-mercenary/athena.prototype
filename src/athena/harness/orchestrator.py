@@ -23,19 +23,21 @@ from pathlib import Path
 from typing import Callable
 
 from pubsub import pub
+
+from athena import topics
 from pydantic import ValidationError
 
 from athena.engagement_plan import EngagementPlan
 from athena.model_backend import ModelBackend, ToolDefinition
 from athena.utils import new_id
 
+###############
+# CONSTS / GLOBALS #
+###############
+
 _log = logging.getLogger("athena.harness.orchestrator")
 
 ORCHESTRATOR_MAX_TOKENS = 4_096
-
-# ---------------------------------------------------------------------------
-# Orchestrator system prompt (ensemble-agnostic)
-# ---------------------------------------------------------------------------
 
 _ORCHESTRATOR_SYSTEM = """\
 You are the Chief Orchestrator — harness-level, not part of any ensemble.
@@ -76,10 +78,6 @@ After 3 retries on the same committee, use ask_operator rather than retrying aga
 The operator may message you at any time — between committees or during gate evaluation.
 Respond briefly in plain prose. Gate decisions still require the gate tools above.\
 """
-
-# ---------------------------------------------------------------------------
-# Tool definitions
-# ---------------------------------------------------------------------------
 
 _SUBMIT_PLAN_TOOL = ToolDefinition(
     name="submit_plan",
@@ -208,12 +206,19 @@ _CHAT_TOOLS     = [_READ_ARTIFACT_TOOL]
 _CHAT_MAX_TOOL_ITERATIONS = 20
 
 
-# ---------------------------------------------------------------------------
-# Gate decision
-# ---------------------------------------------------------------------------
+###############
+# CUSTOM TYPES #
+###############
 
 @dataclass
 class GateDecision:
+    """The orchestrator's evaluated decision for a post-committee gate.
+
+    Produced by the loop thread after the orchestrator agent processes a committee
+    digest. The workflow runner acts on the decision field to advance, re-run the
+    committee fresh (retry), or re-run it with the prior artifact shown (iterate).
+    """
+
     decision: str            # "advance" | "retry" | "iterate"
     rationale: str
     to: str | None = None          # retry/iterate target
@@ -221,12 +226,15 @@ class GateDecision:
     next_objective: str | None = None   # advance refinement
 
 
-# ---------------------------------------------------------------------------
-# Internal event types for the persistent loop inbox
-# ---------------------------------------------------------------------------
-
 @dataclass
 class _GateRequest:
+    """Internal inbox message: the workflow thread submitting a gate for evaluation.
+
+    Placed on the orchestrator's inbox queue when a committee completes. The loop
+    thread dequeues it, feeds the digest and context to the orchestrator agent, and
+    puts a GateDecision (or a propagated exception) on the outbox.
+    """
+
     committee_name: str
     digest: str
     gate_type: str
@@ -236,6 +244,13 @@ class _GateRequest:
 
 @dataclass
 class _OperatorMessage:
+    """Internal inbox message: freeform operator text injected mid-engagement.
+
+    The server injects these via inject_operator_message() from a route thread.
+    The loop thread processes them between gate evaluations so only one
+    backend.complete() call runs at a time.
+    """
+
     text: str
 
 
@@ -249,9 +264,9 @@ class _Stop:
     """Sentinel: instructs run_loop() to exit cleanly."""
 
 
-# ---------------------------------------------------------------------------
-# OrchestratorHarness
-# ---------------------------------------------------------------------------
+###############
+# CLASSES #
+###############
 
 class OrchestratorHarness:
     """Stateful orchestrator — one instance per engagement.
@@ -313,7 +328,7 @@ class OrchestratorHarness:
             has_submit_plan = any(tc.name == "submit_plan" for tc in response.tool_calls)
             if response.text and has_submit_plan:
                 pub.sendMessage(
-                    "orchestrator.message", run_id=self._run_id, text=response.text
+                    topics.ORCHESTRATOR_MESSAGE, run_id=self._run_id, text=response.text
                 )
 
             if response.stop_reason == "end_turn":
@@ -333,7 +348,7 @@ class OrchestratorHarness:
                     # too causes every question to appear twice in the UI.
                     answer = self._ask_user_handler(question)
                     pub.sendMessage(
-                        "orchestrator.answer", run_id=self._run_id, answer=answer
+                        topics.ORCHESTRATOR_ANSWER, run_id=self._run_id, answer=answer
                     )
                     results.append(answer)
 
@@ -359,7 +374,7 @@ class OrchestratorHarness:
                             plan = EngagementPlan.model_validate(plan_raw)
                             self._plan = plan
                             pub.sendMessage(
-                                "engagement.plan_ready",
+                                topics.ENGAGEMENT_PLAN_READY,
                                 run_id=self._run_id,
                                 plan=plan.model_dump(),
                             )
@@ -472,7 +487,7 @@ class OrchestratorHarness:
             )
             if response.text:
                 pub.sendMessage(
-                    "orchestrator.message", run_id=self._run_id, text=response.text
+                    topics.ORCHESTRATOR_MESSAGE, run_id=self._run_id, text=response.text
                 )
             if response.stop_reason == "end_turn":
                 return
@@ -558,11 +573,11 @@ class OrchestratorHarness:
                 elif tc.name == "ask_operator":
                     question = tc.input.get("question", "")
                     pub.sendMessage(
-                        "orchestrator.question", run_id=self._run_id, question=question
+                        topics.ORCHESTRATOR_QUESTION, run_id=self._run_id, question=question
                     )
                     answer = self._ask_user_handler(question)
                     pub.sendMessage(
-                        "orchestrator.answer", run_id=self._run_id, answer=answer
+                        topics.ORCHESTRATOR_ANSWER, run_id=self._run_id, answer=answer
                     )
                     results.append(answer)
 
@@ -581,7 +596,7 @@ class OrchestratorHarness:
 
             if decision is not None:
                 pub.sendMessage(
-                    "gate.decision",
+                    topics.GATE_DECISION,
                     run_id=self._run_id,
                     committee=req.committee_name,
                     decision=decision.decision,
@@ -599,7 +614,7 @@ class OrchestratorHarness:
                 narrative = f"[{req.committee_name}] Gate: {decision.decision.upper()}"
                 if decision.rationale:
                     narrative += f" — {decision.rationale}"
-                pub.sendMessage("orchestrator.message", run_id=self._run_id, text=narrative)
+                pub.sendMessage(topics.ORCHESTRATOR_MESSAGE, run_id=self._run_id, text=narrative)
                 return decision
 
     def _drain_operator_messages(self) -> None:

@@ -25,6 +25,23 @@ from typing import Any, Callable
 
 import anthropic
 
+from athena import env_vars
+
+
+###############
+# CONSTS / GLOBALS #
+###############
+
+_OLLAMA_FINISH_REASON: dict[str, str] = {
+    "stop": "end_turn",
+    "tool_calls": "tool_use",
+    "length": "max_tokens",
+}
+
+
+###############
+# CUSTOM TYPES #
+###############
 
 @dataclass(frozen=True)
 class ToolDefinition:
@@ -37,6 +54,12 @@ class ToolDefinition:
 
 @dataclass
 class ToolCall:
+    """A single tool-use request returned by the model in a complete() response.
+
+    Normalized across providers: the id is provider-assigned and must be echoed back
+    in record_tool_results() so the backend can build a valid conversation history.
+    """
+
     id: str
     name: str
     input: dict[str, Any]
@@ -44,10 +67,21 @@ class ToolCall:
 
 @dataclass
 class ModelResponse:
+    """Normalized response from any model backend after a single complete() call.
+
+    The agent loop inspects stop_reason to decide its next action: execute tool calls
+    and loop (tool_use), surface the final answer (end_turn), or raise a hard error
+    (max_tokens — the loop has no room to recover from a truncated response).
+    """
+
     stop_reason: str           # "end_turn" | "tool_use" | "max_tokens"
     text: str | None           # present when stop_reason == "end_turn"
     tool_calls: list[ToolCall] = field(default_factory=list)
 
+
+###############
+# CLASSES #
+###############
 
 class ModelBackend(ABC):
     """Stateful conversation manager. One instance per agent run."""
@@ -113,16 +147,18 @@ class ModelBackend(ABC):
         ...
 
 
-# ---------------------------------------------------------------------------
-# Anthropic
-# ---------------------------------------------------------------------------
-
-
 class AnthropicBackend(ModelBackend):
+    """ModelBackend backed by the Anthropic Messages API.
+
+    Manages conversation history in Anthropic's native alternating role/content format.
+    The API key is read from ATHENA_ANTHROPIC_API_KEY at construction and never stored elsewhere.
+    Tool definitions are translated to Anthropic's input_schema format on each complete() call.
+    """
+
     def __init__(self) -> None:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = os.environ.get(env_vars.ANTHROPIC_API_KEY)
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set")
+            raise RuntimeError(f"{env_vars.ANTHROPIC_API_KEY} environment variable is not set")
         self._client = anthropic.Anthropic(api_key=api_key)
         self._system: str = ""
         self._messages: list[dict] = []
@@ -228,21 +264,10 @@ class AnthropicBackend(ModelBackend):
             self._messages.append({"role": "user", "content": text})
 
 
-# ---------------------------------------------------------------------------
-# Ollama (OpenAI-compatible endpoint)
-# ---------------------------------------------------------------------------
-
-_OLLAMA_FINISH_REASON: dict[str, str] = {
-    "stop": "end_turn",
-    "tool_calls": "tool_use",
-    "length": "max_tokens",
-}
-
-
 class OllamaBackend(ModelBackend):
     """Calls any OpenAI-compatible /v1/chat/completions endpoint (Ollama or vLLM).
 
-    If the OLLAMA_API_KEY environment variable is set, its value is sent as a
+    If the ATHENA_OLLAMA_API_KEY environment variable is set, its value is sent as a
     Bearer token — required when pointing at a Modal-hosted vLLM endpoint.
     """
 
@@ -254,10 +279,10 @@ class OllamaBackend(ModelBackend):
     ) -> None:
         self._endpoint = f"{base_url.rstrip('/')}/v1/chat/completions"
         self._messages: list[dict] = []
-        # The global OLLAMA_API_KEY Bearer belongs to the global OLLAMA_BASE_URL endpoint. A
+        # The global ATHENA_OLLAMA_API_KEY Bearer belongs to the global ATHENA_OLLAMA_BASE_URL endpoint. A
         # specialist that overrides its own base_url owns its auth via extra_headers instead, so
         # we do NOT apply the global key to it — that keeps distinct endpoints' creds from mixing.
-        self._api_key: str | None = (os.environ.get("OLLAMA_API_KEY") or None) if use_global_api_key else None
+        self._api_key: str | None = (os.environ.get(env_vars.OLLAMA_API_KEY) or None) if use_global_api_key else None
         # Extra transport headers (e.g. Modal proxy auth: Modal-Key / Modal-Secret), already
         # resolved from the environment by the caller.
         self._extra_headers: dict[str, str] = extra_headers or {}
@@ -377,11 +402,6 @@ class OllamaBackend(ModelBackend):
         self._messages.append({"role": "user", "content": text})
 
 
-# ---------------------------------------------------------------------------
-# Fake (tests)
-# ---------------------------------------------------------------------------
-
-
 class FakeBackend(ModelBackend):
     """Scriptable fake for tests. Responses are consumed in order."""
 
@@ -427,10 +447,9 @@ class FakeBackend(ModelBackend):
         self.injected.append(text)
 
 
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
-
+###############
+# FUNCTIONS #
+###############
 
 BackendFactory = Callable[..., ModelBackend]
 
@@ -443,17 +462,17 @@ def make_backend(
     """Instantiate the correct backend for the given provider name.
 
     When ollama_base_url is passed explicitly (a per-element endpoint override), that endpoint
-    owns its auth via extra_headers — the global OLLAMA_API_KEY Bearer is not applied to it.
+    owns its auth via extra_headers — the global ATHENA_OLLAMA_API_KEY Bearer is not applied to it.
     """
     if provider == "anthropic":
         return AnthropicBackend()
     if provider == "ollama":
         overridden = ollama_base_url is not None
-        url = ollama_base_url or os.environ.get("OLLAMA_BASE_URL")
+        url = ollama_base_url or os.environ.get(env_vars.OLLAMA_BASE_URL)
         if not url:
             raise ValueError(
                 "ollama_base_url is required when provider is 'ollama' "
-                "(pass it explicitly or set OLLAMA_BASE_URL)"
+                f"(pass it explicitly or set {env_vars.OLLAMA_BASE_URL})"
             )
         return OllamaBackend(
             base_url=url,

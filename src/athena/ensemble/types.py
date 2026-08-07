@@ -14,8 +14,19 @@ from typing import Any, Callable, Type
 from pydantic import BaseModel
 
 
+###############
+# CUSTOM TYPES #
+###############
+
 @dataclass
 class LoadedSkill:
+    """A fully-resolved skill available to specialists in this ensemble.
+
+    Combines the manifest metadata (id, name, description, JSON Schema parameters)
+    with the concrete Python callable imported at load time. The side_effect tier
+    is shown to the operator at the loop-gate so they can judge risk before approving.
+    """
+
     id:          str
     name:        str
     description: str
@@ -29,6 +40,13 @@ class LoadedSkill:
 
 @dataclass
 class LoadedSpecialist:
+    """A fully-resolved specialist configuration loaded from a specialist YAML file.
+
+    Holds the resolved model, provider, temperature, and effective skill grant after
+    inheriting from committee and ensemble defaults. Optional base_url and auth_headers_env
+    allow a specialist to target a different endpoint than the committee default.
+    """
+
     id:          str              # yml filename stem (e.g. "counter")
     title:       str              # display name; falls back to id if not set in yml
     system:      str
@@ -38,8 +56,8 @@ class LoadedSpecialist:
     skill_ids:   list[str]        # effective skills for this specialist; overrides element-level list
     max_tokens:  int | None       # None → falls back to SPECIALIST_MAX_TOKENS in committee_runner
     # OpenAI-compatible (provider: ollama) endpoint override — lets a single ensemble target
-    # more than one endpoint (e.g. a Modal-hosted model distinct from the shared OLLAMA_BASE_URL).
-    base_url:    str | None = None          # None → falls back to OLLAMA_BASE_URL
+    # more than one endpoint (e.g. a Modal-hosted model distinct from the shared ATHENA_OLLAMA_BASE_URL).
+    base_url:    str | None = None          # None → falls back to ATHENA_OLLAMA_BASE_URL
     # Extra auth headers as {header_name: env_var_name} — resolved from the environment at run
     # time so secrets never live in the ensemble. Used for Modal proxy auth (Modal-Key/Modal-Secret).
     auth_headers_env: dict[str, str] | None = None
@@ -47,6 +65,13 @@ class LoadedSpecialist:
 
 @dataclass
 class LoadedElement:
+    """A fully-resolved element — one logical specialist role within a committee.
+
+    An element groups one or more specialists under a shared task card and skill grant.
+    The harness instantiates 'instances' specialists from the element per step task,
+    each capped at max_tool_calls real tool calls per run.
+    """
+
     id:          str
     label:       str              # human-friendly display name; defaults to id
     instances:   int
@@ -60,6 +85,13 @@ class LoadedElement:
 
 @dataclass
 class LoadedCommittee:
+    """A fully-resolved committee definition ready for execution by committee_runner.
+
+    Produced by the ensemble loader after following all file references and importing
+    the output schema. Carries everything the committee runner needs: leader system prompt,
+    model/provider, elements, playbook, output schema, and upstream artifact dependencies.
+    """
+
     name:             str
     leader_system:    str
     model:            str
@@ -75,12 +107,25 @@ class LoadedCommittee:
 
 @dataclass
 class WorkflowTransition:
+    """A directed edge in the workflow DAG — one possible next committee from this node.
+
+    condition=None means the default forward advance path; "retry", "iterate", and
+    "operator_approval" match the orchestrator's gate decision to select the edge taken.
+    """
+
     to:        str
     condition: str | None   # None = forward advance; "retry" | "iterate" | "operator_approval"
 
 
 @dataclass
 class WorkflowNode:
+    """A single node in the workflow DAG, representing one committee and its outgoing edges.
+
+    The workflow runner consults the node's transitions after the orchestrator evaluates
+    a committee's output to determine which committee (or terminal state) comes next.
+    output_schema is the Pydantic model the committee is expected to produce.
+    """
+
     name:        str
     transitions: list[WorkflowTransition]
     output_schema: Type[BaseModel]
@@ -88,6 +133,13 @@ class WorkflowNode:
 
 @dataclass
 class LoadedEnsemble:
+    """Root in-memory representation of a fully loaded and validated ensemble manifest.
+
+    Created by the ensemble loader after resolving all file references, importing all
+    schemas, and building the workflow DAG. Passed to run_workflow() to drive an
+    engagement; also stored on EngagementContext for manifest-summary queries.
+    """
+
     name:        str
     version:     str
     description: str

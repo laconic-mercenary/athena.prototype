@@ -13,6 +13,10 @@ import logging
 import sys
 import time
 
+###############
+# CONSTS / GLOBALS #
+###############
+
 # Shared UTC formatter — reused by both the stream handler and RunLogger's file handler.
 UTC_FORMATTER = logging.Formatter(
     fmt="%(asctime)s  %(name)s  %(message)s",
@@ -20,6 +24,10 @@ UTC_FORMATTER = logging.Formatter(
 )
 UTC_FORMATTER.converter = time.gmtime  # force UTC regardless of system timezone
 
+
+###############
+# FUNCTIONS #
+###############
 
 def configure_logging(verbose: bool) -> None:
     """Configure the athena logger. Call once at process startup."""

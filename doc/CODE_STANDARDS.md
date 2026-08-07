@@ -12,11 +12,11 @@ the codebase. They supplement (and sometimes override) general coding instincts.
    the current session. The project has evolved significantly; assumptions about
    what's in a file are wrong more often than not.
 
-2. **Read `projects/common/TERMS.md`** if your task involves agent roles, pipeline
+2. **Read `doc/TERMS.md`** if your task involves agent roles, pipeline
    terminology, SSE topics, or ensemble vocabulary. Consistency with those terms is
    mandatory.
 
-3. **Read `projects/common/ARCHITECTURE.md`** if your task touches the SSE bridge,
+3. **Read `doc/ARCHITECTURE.md`** if your task touches the SSE bridge,
    operator chat injection, gates, or the harness thread model.
 
 ---
@@ -148,15 +148,46 @@ the codebase. They supplement (and sometimes override) general coding instincts.
 
 ---
 
-## File Structure
+## Python Module Layout
 
-Organise all source files top-to-bottom:
+Every Python module must follow this top-to-bottom order. Mark each section with the
+exact comment block below — even if a section is empty, include the header so the
+structure is scannable at a glance.
 
-1. Constants
-2. Globals
-3. Custom types (classes, dataclasses, type aliases)
-4. Public functions
-5. Non-public functions
+```python
+###############
+# CONSTS / GLOBALS #
+###############
+
+###############
+# CUSTOM TYPES #
+###############
+
+###############
+# CLASSES #
+###############
+
+###############
+# FUNCTIONS #
+###############
+
+###############
+# NON PUBLIC FUNCTIONS #
+###############
+```
+
+**Sections:**
+
+| Section | What belongs here |
+|---------|-------------------|
+| `CONSTS / GLOBALS` | Module-level constants (`ALL_CAPS`), module-level mutable state, `logger = logging.getLogger(...)` |
+| `CUSTOM TYPES` | `TypeAlias`, `TypeVar`, `Protocol`, `NamedTuple`, `TypedDict`, Pydantic models, `dataclass` definitions |
+| `CLASSES` | Regular classes that are not pure data types |
+| `FUNCTIONS` | Public functions (`def foo(...)`) — callable by other modules |
+| `NON PUBLIC FUNCTIONS` | Private helpers (`def _foo(...)`) — internal to this module only |
+
+Imports, `__all__`, and module-level docstrings go above the first section header, in
+standard Python import order (stdlib → third-party → local).
 
 ---
 

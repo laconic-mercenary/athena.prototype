@@ -97,9 +97,9 @@ def test_tool_definition_is_frozen() -> None:
 
 
 def test_anthropic_backend_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ATHENA_ANTHROPIC_API_KEY", raising=False)
     from athena.model_backend import AnthropicBackend
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+    with pytest.raises(RuntimeError, match="ATHENA_ANTHROPIC_API_KEY"):
         AnthropicBackend()
 
 

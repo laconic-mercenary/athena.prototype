@@ -9,12 +9,14 @@ resolution failure so broken manifests are caught at load time.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from athena import env_vars
 from athena.ensemble.types import (
     LoadedCommittee,
     LoadedElement,
@@ -26,9 +28,120 @@ from athena.ensemble.types import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Skill helpers
-# ---------------------------------------------------------------------------
+###############
+# FUNCTIONS #
+###############
+
+def load_ensemble(path: Path) -> LoadedEnsemble:
+    """Load an ensemble from a directory containing manifest.yml."""
+    manifest_path = path / "manifest.yml"
+    if not manifest_path.exists():
+        raise ValueError(f"No manifest.yml found in {path}")
+
+    raw = yaml.safe_load(manifest_path.read_text())
+    name = raw["name"]
+    version = str(raw["version"])
+    description = raw.get("description", "")
+
+    capability_path = path / raw.get("capability_doc", "capability.md")
+    if not capability_path.exists():
+        raise ValueError(f"capability_doc not found: {capability_path}")
+    capability = capability_path.read_text()
+
+    schemas_module = _load_schemas_package(path)
+
+    # Skills registry
+    skills: dict[str, LoadedSkill] = {}
+    for skill_entry in raw.get("skills", []):
+        skill = _load_skill(skill_entry, path)
+        skills[skill.id] = skill
+
+    global_default_model = os.environ.get(env_vars.ENS_DEFAULT_MODEL)
+    if not global_default_model:
+        raise RuntimeError(f"{env_vars.ENS_DEFAULT_MODEL} environment variable is not set")
+    global_provider = os.environ.get(env_vars.ENS_DEFAULT_PROVIDER)
+    if not global_provider:
+        raise RuntimeError(f"{env_vars.ENS_DEFAULT_PROVIDER} environment variable is not set")
+
+    # Committees
+    committees_dir = path / "committees"
+    committees_raw = raw.get("committees", {})
+    committees: dict[str, LoadedCommittee] = {}
+    for committee_name, committee_raw in committees_raw.items():
+        committees[committee_name] = _load_committee(
+            name=committee_name,
+            committee_raw=committee_raw,
+            committees_dir=committees_dir,
+            schemas_module=schemas_module,
+            global_default_model=global_default_model,
+            global_provider=global_provider,
+        )
+
+    # Workflow graph
+    workflow_raw = raw.get("workflow", {})
+    entry = workflow_raw["entry"]
+    nodes_raw = workflow_raw.get("nodes", {})
+    workflow: dict[str, WorkflowNode] = {}
+
+    for node_name, node_raw in nodes_raw.items():
+        schema_ref = node_raw.get("output_schema", "")
+        output_schema = _resolve_schema(schemas_module, schema_ref)
+
+        # Patch the output_schema onto the already-loaded committee
+        if node_name in committees:
+            committees[node_name].output_schema = output_schema
+
+        transitions = [
+            WorkflowTransition(
+                to=t["to"],
+                condition=t.get("condition") or None,
+            )
+            for t in node_raw.get("transitions", [])
+        ]
+        workflow[node_name] = WorkflowNode(
+            name=node_name,
+            transitions=transitions,
+            output_schema=output_schema,
+        )
+
+    # Validate: every committee referenced in the workflow exists
+    for node_name in workflow:
+        if node_name not in committees:
+            raise ValueError(f"Workflow node {node_name!r} has no matching committee definition")
+
+    # Validate: every skill_id referenced by elements or specialists exists
+    for committee in committees.values():
+        for element in committee.elements:
+            for sid in element.skill_ids:
+                if sid not in skills:
+                    raise ValueError(
+                        f"Element {element.id!r} in committee {committee.name!r} "
+                        f"references unknown skill {sid!r}"
+                    )
+            for specialist in element.specialists:
+                for sid in specialist.skill_ids:
+                    if sid not in skills:
+                        raise ValueError(
+                            f"Specialist {specialist.id!r} in element {element.id!r} "
+                            f"references unknown skill {sid!r}"
+                        )
+
+    return LoadedEnsemble(
+        name=name,
+        version=version,
+        description=description,
+        capability=capability,
+        entry=entry,
+        workflow=workflow,
+        committees=committees,
+        skills=skills,
+        root=path,
+    )
+
+
+###############
+# NON PUBLIC FUNCTIONS #
+###############
 
 def _params_to_json_schema(params: dict) -> dict:
     """Convert a skill.yml parameters block to a JSON Schema object."""
@@ -86,10 +199,6 @@ def _load_skill(skill_entry: dict, ensemble_root: Path) -> LoadedSkill:
     )
 
 
-# ---------------------------------------------------------------------------
-# Schema helpers
-# ---------------------------------------------------------------------------
-
 def _load_schemas_package(ensemble_root: Path):
     """Import the ensemble's schemas/ package and return the module."""
     schemas_dir = ensemble_root / "schemas"
@@ -120,10 +229,6 @@ def _resolve_schema(schemas_module, ref: str):
         raise ValueError(f"Schema class {class_name!r} not found in schemas/__init__.py")
     return klass
 
-
-# ---------------------------------------------------------------------------
-# Specialist / element helpers
-# ---------------------------------------------------------------------------
 
 def _load_specialist(
     yml_path: Path,
@@ -202,10 +307,6 @@ def _load_element(
     )
 
 
-# ---------------------------------------------------------------------------
-# Committee helpers
-# ---------------------------------------------------------------------------
-
 def _load_committee(
     name: str,
     committee_raw: dict,
@@ -246,7 +347,6 @@ def _load_committee(
         if task_md.exists():
             task_cards[element.id] = task_md.read_text()
 
-    output_schema_ref = ""  # populated from workflow node
     consumes_raw = committee_raw.get("consumes", {})
 
     return LoadedCommittee(
@@ -261,112 +361,4 @@ def _load_committee(
         output_schema=object,  # patched after workflow is parsed
         consumes_required=consumes_raw.get("required", []),
         consumes_optional=consumes_raw.get("optional", []),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-
-def load_ensemble(path: Path) -> LoadedEnsemble:
-    """Load an ensemble from a directory containing manifest.yml."""
-    manifest_path = path / "manifest.yml"
-    if not manifest_path.exists():
-        raise ValueError(f"No manifest.yml found in {path}")
-
-    raw = yaml.safe_load(manifest_path.read_text())
-    name = raw["name"]
-    version = str(raw["version"])
-    description = raw.get("description", "")
-
-    capability_path = path / raw.get("capability_doc", "capability.md")
-    if not capability_path.exists():
-        raise ValueError(f"capability_doc not found: {capability_path}")
-    capability = capability_path.read_text()
-
-    schemas_module = _load_schemas_package(path)
-
-    # Skills registry
-    skills: dict[str, LoadedSkill] = {}
-    for skill_entry in raw.get("skills", []):
-        skill = _load_skill(skill_entry, path)
-        skills[skill.id] = skill
-
-    # Global defaults (not declared in the manifest for inventory; use sensible defaults)
-    global_default_model = "claude-sonnet-4-6"
-    global_provider = "anthropic"
-
-    # Committees
-    committees_dir = path / "committees"
-    committees_raw = raw.get("committees", {})
-    committees: dict[str, LoadedCommittee] = {}
-    for committee_name, committee_raw in committees_raw.items():
-        committees[committee_name] = _load_committee(
-            name=committee_name,
-            committee_raw=committee_raw,
-            committees_dir=committees_dir,
-            schemas_module=schemas_module,
-            global_default_model=global_default_model,
-            global_provider=global_provider,
-        )
-
-    # Workflow graph
-    workflow_raw = raw.get("workflow", {})
-    entry = workflow_raw["entry"]
-    nodes_raw = workflow_raw.get("nodes", {})
-    workflow: dict[str, WorkflowNode] = {}
-
-    for node_name, node_raw in nodes_raw.items():
-        schema_ref = node_raw.get("output_schema", "")
-        output_schema = _resolve_schema(schemas_module, schema_ref)
-
-        # Patch the output_schema onto the already-loaded committee
-        if node_name in committees:
-            committees[node_name].output_schema = output_schema
-
-        transitions = [
-            WorkflowTransition(
-                to=t["to"],
-                condition=t.get("condition") or None,
-            )
-            for t in node_raw.get("transitions", [])
-        ]
-        workflow[node_name] = WorkflowNode(
-            name=node_name,
-            transitions=transitions,
-            output_schema=output_schema,
-        )
-
-    # Validate: every committee referenced in the workflow exists
-    for node_name in workflow:
-        if node_name not in committees:
-            raise ValueError(f"Workflow node {node_name!r} has no matching committee definition")
-
-    # Validate: every skill_id referenced by elements or specialists exists
-    for committee in committees.values():
-        for element in committee.elements:
-            for sid in element.skill_ids:
-                if sid not in skills:
-                    raise ValueError(
-                        f"Element {element.id!r} in committee {committee.name!r} "
-                        f"references unknown skill {sid!r}"
-                    )
-            for specialist in element.specialists:
-                for sid in specialist.skill_ids:
-                    if sid not in skills:
-                        raise ValueError(
-                            f"Specialist {specialist.id!r} in element {element.id!r} "
-                            f"references unknown skill {sid!r}"
-                        )
-
-    return LoadedEnsemble(
-        name=name,
-        version=version,
-        description=description,
-        capability=capability,
-        entry=entry,
-        workflow=workflow,
-        committees=committees,
-        skills=skills,
-        root=path,
     )

@@ -8,6 +8,10 @@ from athena.ensemble.types import LoadedSkill
 from athena.model_backend import ToolDefinition
 
 
+###############
+# FUNCTIONS #
+###############
+
 def skill_to_tool_def(skill: LoadedSkill) -> ToolDefinition:
     """Convert a LoadedSkill to a ToolDefinition the agent loop can use."""
     return ToolDefinition(
