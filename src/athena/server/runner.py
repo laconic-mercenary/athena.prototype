@@ -17,6 +17,8 @@ from pathlib import Path
 
 from pubsub import pub
 
+from athena import engagement_status, env_vars, topics
+
 from athena.ensemble.loader import load_ensemble
 from athena.ensemble.types import LoadedEnsemble
 from athena.harness.committee_runner import LoopGateHooks
@@ -26,33 +28,43 @@ from athena.harness.workflow import GLOBAL_STEP_BUDGET, run_workflow
 from athena.model_backend import make_backend
 from athena.utils import new_id
 
+###############
+# CONSTS / GLOBALS #
+###############
+
 _log = logging.getLogger("athena.server.runner")
 
-ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "claude-sonnet-4-6")
+ORCHESTRATOR_MODEL: str | None = os.environ.get(env_vars.SRV_ORCHESTRATOR_MODEL)
 ORCHESTRATOR_AGENT_ID = "athena.orchestrator"
 
-# Which operator decision, if any, the pipeline is currently blocked on. A single
-# flag (the old `awaiting_approval` bool) conflated all of these, so a wrong-phase
-# POST (stale tab, double-submit) could pass a route guard and silently no-op the
-# other channel (HARNESS_DEFICIENCIES.md H3). Each route now guards on its own phase.
-AWAIT_NONE = "none"
-AWAIT_PLAN = "plan"                      # briefing: plan approve / reject / revise
-AWAIT_COMMITTEE_GATE = "committee_gate"  # between-committee operator gate (Accept/Redo)
-AWAIT_LOOP_GATE = "loop_gate"            # in-loop gate (element / step / tool)
+# Re-exported from engagement_status so callers that already import runner can still
+# use runner.AWAIT_* without an additional import.
+AWAIT_NONE = engagement_status.AWAIT_NONE
+AWAIT_PLAN = engagement_status.AWAIT_PLAN
+AWAIT_COMMITTEE_GATE = engagement_status.AWAIT_COMMITTEE_GATE
+AWAIT_LOOP_GATE = engagement_status.AWAIT_LOOP_GATE
 
 _executor = ThreadPoolExecutor(max_workers=1)
 _active: dict[str, "EngagementContext"] = {}
 
 
-class EngagementAborted(Exception):
-    """Raised inside the worker thread when the operator restarts/abandons a run, so the
-    workflow unwinds and frees the single worker instead of holding it (demo Restart)."""
-
+###############
+# CUSTOM TYPES #
+###############
 
 @dataclass
 class EngagementContext:
+    """All mutable server-side state for one running engagement.
+
+    Created by start_engagement() and stored in the _active dict. The pipeline
+    worker thread reads and writes status and await_phase; route handlers read
+    them and write decision fields before signalling the appropriate threading.Event
+    to unblock the worker. All cross-thread access is inherently racy but safe in
+    practice because only one worker runs at a time and events serialize decisions.
+    """
+
     run_id: str
-    status: str   # "running" | "completed" | "rejected" | "failed"
+    status: str   # one of the engagement_status.* string constants
 
     reply_event: threading.Event
     plan_decision_event: threading.Event
@@ -99,25 +111,31 @@ class EngagementContext:
         return self.await_phase != AWAIT_NONE
 
 
+###############
+# CLASSES #
+###############
+
+class EngagementAborted(Exception):
+    """Raised inside the worker thread when the operator restarts/abandons a run, so the
+    workflow unwinds and frees the single worker instead of holding it (demo Restart)."""
+
+
+###############
+# FUNCTIONS #
+###############
+
 def get_context(run_id: str) -> EngagementContext | None:
     return _active.get(run_id)
 
 
 def is_busy() -> bool:
-    return any(ctx.status == "running" for ctx in _active.values())
-
-
-def _resolve_ensemble_path() -> Path:
-    env = os.environ.get("ENSEMBLE_PATH")
-    if env:
-        return Path(env)
-    raise RuntimeError(
-        "No ensemble configured. Set the ENSEMBLE_PATH environment variable."
-    )
+    return any(ctx.status == engagement_status.RUNNING for ctx in _active.values())
 
 
 def start_engagement(instructions: str) -> str:
     """Start a new engagement. Returns the pre-generated run_id."""
+    if not ORCHESTRATOR_MODEL:
+        raise RuntimeError(f"{env_vars.SRV_ORCHESTRATOR_MODEL} environment variable is not set")
     if is_busy():
         raise RuntimeError("An engagement is already in progress")
 
@@ -127,7 +145,7 @@ def start_engagement(instructions: str) -> str:
     run_id = new_id()
     ctx = EngagementContext(
         run_id=run_id,
-        status="running",
+        status=engagement_status.RUNNING,
         reply_event=threading.Event(),
         plan_decision_event=threading.Event(),
         gate_decision_event=threading.Event(),
@@ -142,7 +160,7 @@ def start_engagement(instructions: str) -> str:
     def _ask_user_handler(question: str) -> str:
         ctx.pending_question = question
         ctx.reply_event.clear()
-        pub.sendMessage("orchestrator.question", run_id=run_id, question=question)
+        pub.sendMessage(topics.ORCHESTRATOR_QUESTION, run_id=run_id, question=question)
         answered = ctx.reply_event.wait(timeout=300)
         if ctx.cancelled:
             raise EngagementAborted()
@@ -165,7 +183,7 @@ def start_engagement(instructions: str) -> str:
         ctx.gate_digest = digest
         ctx.gate_decision_event.clear()
         pub.sendMessage(
-            "gate.awaiting_approval",
+            topics.GATE_AWAITING_APPROVAL,
             run_id=run_id,
             committee=committee,
             digest=digest,
@@ -195,7 +213,7 @@ def start_engagement(instructions: str) -> str:
             ctx.loop_gate_decision = None
             ctx.loop_gate_event.clear()
             pub.sendMessage(
-                "loop_gate.awaiting",
+                topics.LOOP_GATE_AWAITING,
                 run_id=run_id,
                 kind=kind,
                 committee=committee,
@@ -211,7 +229,7 @@ def start_engagement(instructions: str) -> str:
                 # AWAIT_LOOP_GATE can't wedge the routes' phase guards (H16).
                 ctx.await_phase = AWAIT_NONE
             pub.sendMessage(
-                "loop_gate.resolved",
+                topics.LOOP_GATE_RESOLVED,
                 run_id=run_id,
                 kind=kind,
                 committee=committee,
@@ -234,7 +252,7 @@ def start_engagement(instructions: str) -> str:
     def _run() -> None:
         try:
             pub.sendMessage(
-                "engagement.started",
+                topics.ENGAGEMENT_STARTED,
                 run_id=run_id,
                 ensemble=ensemble.name,
                 version=ensemble.version,
@@ -275,19 +293,19 @@ def start_engagement(instructions: str) -> str:
 
                 if ctx.plan_decision_type == "revise":
                     orchestrator.inject_revision(ctx.revision_message or "Please revise.")
-                    pub.sendMessage("engagement.plan_revision", run_id=run_id)
+                    pub.sendMessage(topics.ENGAGEMENT_PLAN_REVISION, run_id=run_id)
                     continue
 
                 if ctx.plan_decision_type != "approve":
                     pub.sendMessage(
-                        "engagement.rejected", run_id=run_id, reason="Operator rejected the plan"
+                        topics.ENGAGEMENT_REJECTED, run_id=run_id, reason="Operator rejected the plan"
                     )
-                    ctx.status = "rejected"
+                    ctx.status = engagement_status.REJECTED
                     return
 
                 break
 
-            pub.sendMessage("engagement.approved", run_id=run_id)
+            pub.sendMessage(topics.ENGAGEMENT_APPROVED, run_id=run_id)
 
             ctx.orchestrator = orchestrator
             orch_thread = threading.Thread(
@@ -316,16 +334,16 @@ def start_engagement(instructions: str) -> str:
                 orchestrator.stop()
                 orch_thread.join(timeout=30)
 
-            ctx.status = "completed"
+            ctx.status = engagement_status.COMPLETED
 
         except EngagementAborted:
             _log.info("engagement %s aborted by operator (restart)", run_id)
-            ctx.status = "abandoned"
-            pub.sendMessage("engagement.aborted", run_id=run_id)
+            ctx.status = engagement_status.ABANDONED
+            pub.sendMessage(topics.ENGAGEMENT_ABORTED, run_id=run_id)
         except Exception:
             _log.exception("engagement %s failed", run_id)
-            pub.sendMessage("engagement.rejected", run_id=run_id, reason="Internal error")
-            ctx.status = "failed"
+            pub.sendMessage(topics.ENGAGEMENT_REJECTED, run_id=run_id, reason="Internal error")
+            ctx.status = engagement_status.FAILED
 
     _executor.submit(_run)
     return run_id
@@ -341,7 +359,7 @@ def reply_to_orchestrator(run_id: str, answer: str) -> None:
         raise KeyError(f"No engagement: {run_id!r}")
     ctx.pending_answer = answer
     ctx.reply_event.set()
-    pub.sendMessage("orchestrator.answer", run_id=run_id, answer=answer)
+    pub.sendMessage(topics.ORCHESTRATOR_ANSWER, run_id=run_id, answer=answer)
 
 
 def resolve_approval(run_id: str, *, approved: bool) -> None:
@@ -384,7 +402,7 @@ def abort_engagement(run_id: str) -> None:
     if ctx is None:
         return
     ctx.cancelled = True
-    ctx.status = "abandoned"
+    ctx.status = engagement_status.ABANDONED
     # Wake anything the worker might be blocked on so it can observe `cancelled`.
     # This covers the "paused, waiting for the operator" states — briefing approval,
     # committee/in-loop gates, orchestrator questions — which is when Restart is normally
@@ -489,3 +507,16 @@ def send_to_orchestrator(run_id: str, message: str) -> None:
     if ctx.orchestrator is None:
         raise ValueError("Orchestrator chat is not available during briefing")
     ctx.orchestrator.inject_operator_message(message)
+
+
+###############
+# NON PUBLIC FUNCTIONS #
+###############
+
+def _resolve_ensemble_path() -> Path:
+    env = os.environ.get(env_vars.ENS_PATH)
+    if env:
+        return Path(env)
+    raise RuntimeError(
+        f"No ensemble configured. Set the {env_vars.ENS_PATH} environment variable."
+    )

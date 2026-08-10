@@ -11,18 +11,22 @@ import json
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
+from athena import env_vars
 from athena.model_backend import make_backend
-from athena.server import runner
+from athena.server import limits, runner
+
+###############
+# CONSTS / GLOBALS #
+###############
 
 router = APIRouter(prefix="/engagements")
 
 _ARTIFACTS_ROOT = Path("artifacts")
-_REPORT_CHAT_MODEL = os.environ.get("REPORT_CHAT_MODEL", "claude-haiku-4-5-20251001")
-_REPORT_CHAT_PROVIDER = os.environ.get("REPORT_CHAT_PROVIDER", "anthropic")
-_MAX_MESSAGE_LEN = 2000
+_REPORT_CHAT_MODEL: str | None = os.environ.get(env_vars.SRV_REPORT_CHAT_MODEL)
+_REPORT_CHAT_PROVIDER: str | None = os.environ.get(env_vars.SRV_REPORT_CHAT_PROVIDER)
 
 _SYSTEM = """\
 You are an AI assistant helping an operator debrief a completed engagement.
@@ -34,19 +38,31 @@ Respond based only on the documents provided. Be direct.\
 _history: dict[str, list[dict[str, str]]] = {}
 
 
+###############
+# CUSTOM TYPES #
+###############
+
 class ReportChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=_MAX_MESSAGE_LEN)
+    message: str = Field(..., min_length=1, max_length=limits.MAX_MESSAGE_LEN)
 
 
 class ReportChatResponse(BaseModel):
     reply: str
 
 
+###############
+# FUNCTIONS #
+###############
+
 @router.post("/{run_id}/report-chat", response_model=ReportChatResponse)
 async def report_chat(run_id: str, body: ReportChatRequest) -> ReportChatResponse:
+    if not _REPORT_CHAT_MODEL:
+        raise RuntimeError(f"{env_vars.SRV_REPORT_CHAT_MODEL} environment variable is not set")
+    if not _REPORT_CHAT_PROVIDER:
+        raise RuntimeError(f"{env_vars.SRV_REPORT_CHAT_PROVIDER} environment variable is not set")
     ctx = runner.get_context(run_id)
     if ctx is None:
-        raise HTTPException(status_code=404, detail="Engagement not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Engagement not found")
 
     run_dir = _ARTIFACTS_ROOT / run_id
     docs: dict[str, str] = {}
@@ -59,7 +75,9 @@ async def report_chat(run_id: str, body: ReportChatRequest) -> ReportChatRespons
                 docs[path.stem] = path.read_text()
 
     if not docs:
-        raise HTTPException(status_code=404, detail="No artifacts found for this engagement")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No artifacts found for this engagement"
+        )
 
     history = _history.get(run_id, [])
     msg = body.message.strip()

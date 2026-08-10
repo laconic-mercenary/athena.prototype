@@ -10,17 +10,132 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import HTMLResponse
 from pubsub import pub
 
+from athena import topics
+
 from athena import collaboration
 from athena.server import runner
+
+
+###############
+# CONSTS / GLOBALS #
+###############
 
 _log = logging.getLogger("athena.server.routes.collaboration")
 
 router = APIRouter()
 
+
+###############
+# FUNCTIONS #
+###############
+
+@router.get("/webhooks/collab/{run_id}/approve")
+async def collab_approve(run_id: str) -> HTMLResponse:
+    return _resolve(run_id, approved=True)
+
+
+@router.get("/webhooks/collab/{run_id}/deny")
+async def collab_deny(run_id: str) -> HTMLResponse:
+    return _resolve(run_id, approved=False)
+
+
+@router.post("/webhooks/inbound-email")
+async def inbound_email(request: Request) -> Response:
+    """Resend email.received webhook — the collaborator replied to the co-approval
+    email with APPROVE or DENY. Verify the signature, correlate the reply to its
+    engagement by the per-run recipient address, fetch the body, and release the
+    plan gate. Returns 200 for anything we intentionally ignore (wrong event, no
+    run_id, no clear decision, already resolved) so Resend doesn't retry those;
+    500 only on unexpected failures worth retrying.
+    """
+    body = await request.body()
+    # Arrival log (before signature check) so "webhook never reached us" is distinguishable in
+    # the logs from "reached us but failed verification/correlation".
+    _log.info("inbound-email: webhook received (%d bytes, secret_configured=%s)",
+              len(body), collaboration.webhook_secret_configured())
+    if not collaboration.verify_webhook_signature(body, dict(request.headers)):
+        _log.warning("inbound-email: signature verification failed — rejecting")
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        _log.warning("inbound-email: body is not valid JSON")
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+
+    if payload.get("type") != "email.received":
+        return Response(status_code=status.HTTP_200_OK)  # not our event; ack and ignore
+
+    data = payload.get("data") or {}
+    run_id = collaboration.extract_run_id(data.get("to") or [])
+    if not run_id:
+        _log.info("inbound-email: no run_id in recipients %r — ignoring", data.get("to"))
+        return Response(status_code=status.HTTP_200_OK)
+
+    email_id = data.get("email_id")
+    if not email_id:
+        _log.warning("inbound-email: %r had no email_id — cannot fetch body", run_id)
+        return Response(status_code=status.HTTP_200_OK)
+
+    # Peek (don't consume): we surface the collaborator's message even when the reply
+    # carries no clear decision, and only consume+resolve when it does.
+    state = collaboration.get(run_id)
+    if state is None:
+        _log.info("inbound-email: %r already resolved or unknown — ignoring", run_id)
+        return Response(status_code=status.HTTP_200_OK)
+
+    try:
+        text = await collaboration.fetch_received_email_text(email_id)
+    except Exception:
+        _log.exception("inbound-email: failed to fetch body for %r", run_id)
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)  # transient — let Resend retry
+
+    decision = collaboration.parse_reply_decision(text)
+    message = collaboration.reply_message(text)
+    kw = "approve" if decision is True else "deny" if decision is False else "comment"
+
+    # Always surface the collaborator's message to the chat. "comment" replies (no clear
+    # keyword) show up too, so a collaborator's question is visible while the gate stays parked.
+    pub.sendMessage(
+        topics.COLLABORATOR_REPLIED,
+        run_id=run_id,
+        alias=state.alias,
+        kind=state.kind,
+        committee=state.committee,
+        decision=kw,
+        message=message,
+    )
+
+    # A committee gate runs "until APPROVE": only an approve resolves it — a DENY or a comment
+    # stays parked and is surfaced as chat so the operator can keep the thread going. The plan
+    # gate keeps its original approve/deny behaviour.
+    if state.kind == "committee":
+        resolves = decision is True
+    else:
+        resolves = decision is not None
+
+    if not resolves:
+        _log.info("inbound-email: %s from %s for %r — gate stays parked", kw, state.email, run_id)
+        return Response(status_code=status.HTTP_200_OK)
+
+    # Actionable decision — consume the pending state and release the gate.
+    collaboration.pop(run_id)
+    try:
+        _dispatch_decision(state, approved=decision)
+    except KeyError:
+        _log.warning("inbound-email: engagement %r not found or already resolved", run_id)
+
+    _log.info("collaboration (%s) for %r resolved via email reply: %s by %s", state.kind, run_id, kw, state.email)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+###############
+# NON PUBLIC FUNCTIONS #
+###############
 
 def _page(title: str, heading: str, color: str) -> HTMLResponse:
     return HTMLResponse(f"""<!doctype html>
@@ -53,107 +168,7 @@ p{color:#475569;font-size:12px;line-height:1.6}
 <body><div class="card">
 <h1>Already recorded</h1>
 <p>This link has already been used or the engagement has ended.</p>
-</div></body></html>""", status_code=410)
-
-
-@router.get("/webhooks/collab/{run_id}/approve")
-async def collab_approve(run_id: str) -> HTMLResponse:
-    return _resolve(run_id, approved=True)
-
-
-@router.get("/webhooks/collab/{run_id}/deny")
-async def collab_deny(run_id: str) -> HTMLResponse:
-    return _resolve(run_id, approved=False)
-
-
-@router.post("/webhooks/inbound-email")
-async def inbound_email(request: Request) -> Response:
-    """Resend email.received webhook — the collaborator replied to the co-approval
-    email with APPROVE or DENY. Verify the signature, correlate the reply to its
-    engagement by the per-run recipient address, fetch the body, and release the
-    plan gate. Returns 200 for anything we intentionally ignore (wrong event, no
-    run_id, no clear decision, already resolved) so Resend doesn't retry those;
-    500 only on unexpected failures worth retrying.
-    """
-    body = await request.body()
-    # Arrival log (before signature check) so "webhook never reached us" is distinguishable in
-    # the logs from "reached us but failed verification/correlation".
-    _log.info("inbound-email: webhook received (%d bytes, secret_configured=%s)",
-              len(body), collaboration.webhook_secret_configured())
-    if not collaboration.verify_webhook_signature(body, dict(request.headers)):
-        _log.warning("inbound-email: signature verification failed — rejecting")
-        return Response(status_code=401)
-
-    try:
-        payload = json.loads(body)
-    except ValueError:
-        _log.warning("inbound-email: body is not valid JSON")
-        return Response(status_code=400)
-
-    if payload.get("type") != "email.received":
-        return Response(status_code=200)  # not our event; ack and ignore
-
-    data = payload.get("data") or {}
-    run_id = collaboration.extract_run_id(data.get("to") or [])
-    if not run_id:
-        _log.info("inbound-email: no run_id in recipients %r — ignoring", data.get("to"))
-        return Response(status_code=200)
-
-    email_id = data.get("email_id")
-    if not email_id:
-        _log.warning("inbound-email: %r had no email_id — cannot fetch body", run_id)
-        return Response(status_code=200)
-
-    # Peek (don't consume): we surface the collaborator's message even when the reply
-    # carries no clear decision, and only consume+resolve when it does.
-    state = collaboration.get(run_id)
-    if state is None:
-        _log.info("inbound-email: %r already resolved or unknown — ignoring", run_id)
-        return Response(status_code=200)
-
-    try:
-        text = await collaboration.fetch_received_email_text(email_id)
-    except Exception:
-        _log.exception("inbound-email: failed to fetch body for %r", run_id)
-        return Response(status_code=500)  # transient — let Resend retry
-
-    decision = collaboration.parse_reply_decision(text)
-    message = collaboration.reply_message(text)
-    kw = "approve" if decision is True else "deny" if decision is False else "comment"
-
-    # Always surface the collaborator's message to the chat. "comment" replies (no clear
-    # keyword) show up too, so a collaborator's question is visible while the gate stays parked.
-    pub.sendMessage(
-        "collaborator.replied",
-        run_id=run_id,
-        alias=state.alias,
-        kind=state.kind,
-        committee=state.committee,
-        decision=kw,
-        message=message,
-    )
-
-    # A committee gate runs "until APPROVE": only an approve resolves it — a DENY or a comment
-    # stays parked and is surfaced as chat so the operator can keep the thread going. The plan
-    # gate keeps its original approve/deny behaviour.
-    if state.kind == "committee":
-        resolves = decision is True
-    else:
-        resolves = decision is not None
-
-    if not resolves:
-        _log.info("inbound-email: %s from %s for %r — gate stays parked", kw, state.email, run_id)
-        return Response(status_code=200)
-
-    # Actionable decision — consume the pending state and release the gate.
-    collaboration.pop(run_id)
-    try:
-        _dispatch_decision(state, approved=decision)
-    except KeyError:
-        _log.warning("inbound-email: engagement %r not found or already resolved", run_id)
-
-    _log.info("collaboration (%s) for %r resolved via email reply: %s by %s", state.kind, run_id, kw, state.email)
-    return Response(status_code=200)
+</div></body></html>""", status_code=status.HTTP_410_GONE)
 
 
 def _dispatch_decision(state: collaboration.CollabState, *, approved: bool) -> None:

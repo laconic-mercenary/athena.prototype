@@ -1,6 +1,6 @@
 """Collaboration feature — link-based co-approval at the plan review gate.
 
-Enabled only when COLLABORATION_ENABLED=true in the environment. When disabled
+Enabled only when ATHENA_SRV_COLLABORATION_ENABLED=true in the environment. When disabled
 the module is still importable; all public helpers are no-ops or return None.
 
 The collaborator receives an email with two links (approve / deny) pointing
@@ -22,11 +22,18 @@ from email.utils import parseaddr
 
 import httpx
 
+from athena import env_vars
+
+
+###############
+# CONSTS / GLOBALS #
+###############
+
 _log = logging.getLogger("athena.collaboration")
 
-COLLABORATION_ENABLED = os.environ.get("COLLABORATION_ENABLED", "").strip().lower() == "true"
+COLLABORATION_ENABLED = os.environ.get(env_vars.SRV_COLLABORATION_ENABLED, "").strip().lower() == "true"
 
-_RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+_RESEND_API_KEY = os.environ.get(env_vars.SRV_RESEND_API_KEY, "")
 _FROM_ADDRESS = "athena@openintel.to"
 
 # Inbound reply-in-email support. Collaborators reply to a per-run address
@@ -34,14 +41,15 @@ _FROM_ADDRESS = "athena@openintel.to"
 # webhook to us. REPLY_DOMAIN is the Resend-managed receiving domain (e.g.
 # "cool-hedgehog.resend.app") — no DNS/MX to configure. When unset we fall back
 # to the click-link flow (no reply_to header is added).
-_REPLY_DOMAIN = os.environ.get("COLLAB_REPLY_DOMAIN", "").strip().lstrip("@")
+_REPLY_DOMAIN = os.environ.get(env_vars.SRV_COLLAB_REPLY_DOMAIN, "").strip().lstrip("@")
 # Svix-style signing secret shown when the email.received webhook is created
 # ("whsec_..."). Used to verify inbound webhook authenticity.
-_WEBHOOK_SECRET = os.environ.get("RESEND_WEBHOOK_SECRET", "").strip()
+_WEBHOOK_SECRET = os.environ.get(env_vars.SRV_RESEND_WEBHOOK_SECRET, "").strip()
 
 
+# Must precede _ALIASES — called at module import time to initialise the alias map.
 def _parse_aliases() -> dict[str, str]:
-    raw = os.environ.get("COLLABORATOR_ALIASES", "")
+    raw = os.environ.get(env_vars.SRV_COLLABORATOR_ALIASES, "")
     result: dict[str, str] = {}
     for pair in raw.split(","):
         pair = pair.strip()
@@ -57,9 +65,45 @@ def _parse_aliases() -> dict[str, str]:
 
 _ALIASES: dict[str, str] = _parse_aliases() if COLLABORATION_ENABLED else {}
 
+_pending: dict = {}
+
+# Alias chars: word-ish, matching how ATHENA_SRV_COLLABORATOR_ALIASES keys are written.
+_ALIAS_RE = re.compile(r"@?([A-Za-z0-9_.\-]+)")
+
+# APPROVE / DENY as standalone words (case-insensitive). Anchored to word
+# boundaries so "disapprove" or a quoted "...approve the plan..." in the original
+# doesn't false-match; we scan only the top reply portion (see parse_reply_decision).
+_APPROVE_RE = re.compile(r"\bapprove\b", re.IGNORECASE)
+_DENY_RE = re.compile(r"\b(deny|reject)\b", re.IGNORECASE)
+
+# Lines that typically introduce the quoted original in a reply. Everything from
+# the first such marker onward is dropped before keyword scanning.
+_QUOTE_MARKERS = (
+    re.compile(r"^\s*On .+ wrote:\s*$", re.IGNORECASE),   # Gmail/Apple
+    re.compile(r"^\s*-{2,}\s*Original Message\s*-{2,}", re.IGNORECASE),  # Outlook
+    re.compile(r"^\s*_{5,}\s*$"),                          # Outlook underscore rule
+    re.compile(r"^\s*From:\s.+", re.IGNORECASE),          # forwarded header block
+)
+
+# Cap the collaborator message we surface in the UI so a giant reply (or a mail
+# client that fails to quote its original) can't flood the chat.
+_REPLY_MESSAGE_MAX_LEN = 1000
+
+
+###############
+# CUSTOM TYPES #
+###############
 
 @dataclass
 class CollabState:
+    """Pending co-approval state for one engagement, held until the collaborator responds.
+
+    Stored in the in-memory _pending dict keyed by run_id. The kind field determines
+    which gate is released on approval: "plan" calls runner.resolve_approval() while
+    "committee" calls runner.resolve_gate_decision(). Consumed (popped) once the
+    collaborator clicks the approve/deny link or sends a qualifying email reply.
+    """
+
     run_id: str
     alias: str
     email: str
@@ -73,12 +117,9 @@ class CollabState:
     committee: str | None
 
 
-_pending: dict[str, CollabState] = {}
-
-
-# Alias chars: word-ish, matching how COLLABORATOR_ALIASES keys are written.
-_ALIAS_RE = re.compile(r"@?([A-Za-z0-9_.\-]+)")
-
+###############
+# FUNCTIONS #
+###############
 
 def extract_alias(text: str | None) -> str | None:
     """Pull the collaborator alias out of a free-text co-approval field.
@@ -207,8 +248,6 @@ async def send_collaborator_message(run_id: str, alias: str, to_email: str, text
         resp.raise_for_status()
 
 
-# --- Inbound reply handling (Resend email.received webhook) -----------------
-
 def webhook_secret_configured() -> bool:
     """Whether a webhook signing secret is set. When False, verify_webhook_signature can only
     return False — every inbound reply is rejected. A quick diagnostic for 'no replies arrive'."""
@@ -232,7 +271,7 @@ def verify_webhook_signature(body: bytes, headers: dict[str, str]) -> bool:
     caller can decide; callers should refuse to act on unverified webhooks.
     """
     if not _WEBHOOK_SECRET:
-        _log.warning("verify: no RESEND_WEBHOOK_SECRET configured")
+        _log.warning("verify: no %s configured", env_vars.SRV_RESEND_WEBHOOK_SECRET)
         return False
     # Header names arrive lower-cased from Starlette; be tolerant anyway. Resend uses
     # the "svix-*" names; the Standard Webhooks spec (which Svix also emits) uses the
@@ -322,13 +361,6 @@ async def fetch_received_email_text(email_id: str) -> str:
     return re.sub(r"<[^>]+>", " ", html_part)
 
 
-# APPROVE / DENY as standalone words (case-insensitive). Anchored to word
-# boundaries so "disapprove" or a quoted "...approve the plan..." in the original
-# doesn't false-match; we scan only the top reply portion (see parse_reply_decision).
-_APPROVE_RE = re.compile(r"\bapprove\b", re.IGNORECASE)
-_DENY_RE = re.compile(r"\b(deny|reject)\b", re.IGNORECASE)
-
-
 def parse_reply_decision(text: str) -> bool | None:
     """Return True (approve), False (deny), or None (no clear keyword).
 
@@ -347,15 +379,15 @@ def parse_reply_decision(text: str) -> bool | None:
     return None
 
 
-# Lines that typically introduce the quoted original in a reply. Everything from
-# the first such marker onward is dropped before keyword scanning.
-_QUOTE_MARKERS = (
-    re.compile(r"^\s*On .+ wrote:\s*$", re.IGNORECASE),   # Gmail/Apple
-    re.compile(r"^\s*-{2,}\s*Original Message\s*-{2,}", re.IGNORECASE),  # Outlook
-    re.compile(r"^\s*_{5,}\s*$"),                          # Outlook underscore rule
-    re.compile(r"^\s*From:\s.+", re.IGNORECASE),          # forwarded header block
-)
+def reply_message(text: str) -> str:
+    """The collaborator's own words to show in the chat — the reply above any quoted
+    original, trimmed. Empty string when the reply is only quoted text / blank."""
+    return _reply_top(text).strip()[:_REPLY_MESSAGE_MAX_LEN]
 
+
+###############
+# NON PUBLIC FUNCTIONS #
+###############
 
 def _reply_top(text: str) -> str:
     lines = (text or "").splitlines()
@@ -367,14 +399,3 @@ def _reply_top(text: str) -> str:
             break
         kept.append(line)
     return "\n".join(kept)
-
-
-# Cap the collaborator message we surface in the UI so a giant reply (or a mail
-# client that fails to quote its original) can't flood the chat.
-_REPLY_MESSAGE_MAX_LEN = 1000
-
-
-def reply_message(text: str) -> str:
-    """The collaborator's own words to show in the chat — the reply above any quoted
-    original, trimmed. Empty string when the reply is only quoted text / blank."""
-    return _reply_top(text).strip()[:_REPLY_MESSAGE_MAX_LEN]

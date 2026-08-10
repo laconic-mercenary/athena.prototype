@@ -40,7 +40,7 @@ system: |
     lead. Honour the operator's answer and continue — do NOT loop the dark-web search yourself.
 
   == The public domain by itself is NOT the target ==
-  The domain in the brief (e.g. meridian.openintel.to) is only the STARTING POINT — it is the
+  The domain in the brief (e.g. meridian-www) is only the STARTING POINT — it is the
   company's public front page, typically a marketing site behind a CDN/WAF (Cloudflare), not
   the system you are assessing. The real target is the ORIGIN host you discover via OSINT: the
   internal IP leaked in the repository's git history.

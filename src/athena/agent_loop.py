@@ -21,8 +21,9 @@ from typing import Any, Callable
 from athena.model_backend import ModelBackend, ToolDefinition
 
 
-ToolDispatch = Callable[[str, dict[str, Any]], str]
-
+###############
+# CONSTS / GLOBALS #
+###############
 
 # Output-token ceiling for committee leaders and specialists that emit a full
 # artifact (plan, report, section) in one final turn. If a single call hits its
@@ -38,9 +39,28 @@ SYNTHESIS_MAX_TOKENS = 16384
 MAX_END_TURN_CORRECTIONS = 4
 
 
-class MaxIterationsExceeded(RuntimeError):
-    pass
+###############
+# CUSTOM TYPES #
+###############
 
+ToolDispatch = Callable[[str, dict[str, Any]], str]
+
+
+###############
+# CLASSES #
+###############
+
+class MaxIterationsExceeded(RuntimeError):
+    """Raised by run_agent() when the model has not produced a final response within max_iterations.
+
+    The caller (committee_runner or orchestrator) treats this as a hard failure —
+    the agent is considered stuck and the run is marked failed.
+    """
+
+
+###############
+# FUNCTIONS #
+###############
 
 def run_agent(
     *,

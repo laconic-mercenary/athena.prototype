@@ -22,15 +22,17 @@ from athena.server import bus
 from athena.server.routes import artifacts, chat, engagements, events, gate_decision, loop_gate, plan_review, report_chat, specialist_config
 from athena import collaboration
 
+
+###############
+# CONSTS / GLOBALS #
+###############
+
 _UI_DIST = Path(__file__).parent.parent.parent.parent / "src" / "ui" / "dist"
 
 
-@asynccontextmanager
-async def _lifespan(app: FastAPI):
-    # Register the running event loop with the bus before any pipeline starts.
-    bus.register_loop(asyncio.get_running_loop())
-    yield
-
+###############
+# FUNCTIONS #
+###############
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Athena", lifespan=_lifespan)
@@ -63,3 +65,14 @@ def create_app() -> FastAPI:
         app.mount("/", StaticFiles(directory=_UI_DIST, html=True), name="ui")
 
     return app
+
+
+###############
+# NON PUBLIC FUNCTIONS #
+###############
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Register the running event loop with the bus before any pipeline starts.
+    bus.register_loop(asyncio.get_running_loop())
+    yield

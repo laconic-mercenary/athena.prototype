@@ -8,6 +8,10 @@ from typing import Any
 from uuid import uuid4
 
 
+###############
+# FUNCTIONS #
+###############
+
 def new_id() -> str:
     return str(uuid4())
 

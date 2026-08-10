@@ -17,7 +17,7 @@ services:
     env_file: ../../../.env
     environment:
       - SKILL_ALLOWED_ROOTS=/data
-      - ENSEMBLE_PATH=/app/ensemble
+      - ATHENA_ENS_PATH=/app/ensemble
     ports:
       - "8001:8001"
     healthcheck:
@@ -44,7 +44,7 @@ services:
     env_file: ../../../.env
     environment:
       - SKILL_ALLOWED_ROOTS=/data
-      - ENSEMBLE_PATH=/app/ensemble
+      - ATHENA_ENS_PATH=/app/ensemble
     depends_on:
       athena_web:
         condition: service_healthy

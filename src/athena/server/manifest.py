@@ -5,6 +5,10 @@ from __future__ import annotations
 from athena.ensemble.types import LoadedEnsemble
 
 
+###############
+# FUNCTIONS #
+###############
+
 def serialise_ensemble(ensemble: LoadedEnsemble) -> dict:
     committees = []
     for name, committee in ensemble.committees.items():

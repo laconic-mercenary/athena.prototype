@@ -1,4 +1,4 @@
-Authorized red team engagement against Meridian Systems (meridian.openintel.to).
+Authorized red team engagement against Meridian Systems (meridian-www).
 
 Begin with open-source reconnaissance of their public footprint — website, code repositories, and breach/dark-web exposure — to discover what infrastructure is reachable. 
 

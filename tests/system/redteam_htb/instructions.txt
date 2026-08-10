@@ -31,7 +31,7 @@ acceptable for a single-operator engagement on your own machine.
 Prerequisites
 -------------
 - Docker Engine + Compose v2
-- .env populated (ANTHROPIC_API_KEY; OLLAMA_API_KEY + Modal Foundation-Sec
+- .env populated (ATHENA_ANTHROPIC_API_KEY; ATHENA_OLLAMA_API_KEY + Modal Foundation-Sec
   endpoint for the recon threat_analyst and the Foundation-Sec planner)
 - OpenVPN CONNECTED on the host before ./run.sh:
       sudo openvpn --config ~/htb.ovpn

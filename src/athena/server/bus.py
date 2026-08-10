@@ -14,6 +14,11 @@ import asyncio
 
 from pubsub import pub
 
+
+###############
+# CONSTS / GLOBALS #
+###############
+
 # Set once at server startup; never mutated thereafter.
 _loop: asyncio.AbstractEventLoop | None = None
 
@@ -21,6 +26,10 @@ _loop: asyncio.AbstractEventLoop | None = None
 # stream opens; removed when it closes. Not persistent — see WORKSPACE_TODO.md.
 _queues: dict[str, asyncio.Queue] = {}
 
+
+###############
+# FUNCTIONS #
+###############
 
 def register_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Bind the running event loop. Must be called before any pipeline starts."""
@@ -44,6 +53,10 @@ def remove_queue(run_id: str, q: asyncio.Queue) -> None:
     if _queues.get(run_id) is q:
         del _queues[run_id]
 
+
+###############
+# NON PUBLIC FUNCTIONS #
+###############
 
 def _bridge(topicObj=pub.AUTO_TOPIC, **kwargs) -> None:
     """PyPubSub listener — receives every published message on the pipeline thread."""

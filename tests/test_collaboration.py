@@ -23,10 +23,10 @@ WEBHOOK_SECRET = f"whsec_{SECRET_B64}"
 
 @pytest.fixture(autouse=True)
 def collab(monkeypatch):
-    monkeypatch.setenv("COLLABORATION_ENABLED", "true")
-    monkeypatch.setenv("COLLAB_REPLY_DOMAIN", REPLY_DOMAIN)
-    monkeypatch.setenv("RESEND_WEBHOOK_SECRET", WEBHOOK_SECRET)
-    monkeypatch.setenv("COLLABORATOR_ALIASES", "matt:matt@example.com")
+    monkeypatch.setenv("ATHENA_SRV_COLLABORATION_ENABLED", "true")
+    monkeypatch.setenv("ATHENA_SRV_COLLAB_REPLY_DOMAIN", REPLY_DOMAIN)
+    monkeypatch.setenv("ATHENA_SRV_RESEND_WEBHOOK_SECRET", WEBHOOK_SECRET)
+    monkeypatch.setenv("ATHENA_SRV_COLLABORATOR_ALIASES", "matt:matt@example.com")
     import athena.collaboration as c
     importlib.reload(c)
     yield c
