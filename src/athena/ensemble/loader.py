@@ -9,14 +9,12 @@ resolution failure so broken manifests are caught at load time.
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from athena import env_vars
 from athena.ensemble.types import (
     LoadedCommittee,
     LoadedElement,
@@ -56,13 +54,6 @@ def load_ensemble(path: Path) -> LoadedEnsemble:
         skill = _load_skill(skill_entry, path)
         skills[skill.id] = skill
 
-    global_default_model = os.environ.get(env_vars.ENS_DEFAULT_MODEL)
-    if not global_default_model:
-        raise RuntimeError(f"{env_vars.ENS_DEFAULT_MODEL} environment variable is not set")
-    global_provider = os.environ.get(env_vars.ENS_DEFAULT_PROVIDER)
-    if not global_provider:
-        raise RuntimeError(f"{env_vars.ENS_DEFAULT_PROVIDER} environment variable is not set")
-
     # Committees
     committees_dir = path / "committees"
     committees_raw = raw.get("committees", {})
@@ -73,8 +64,6 @@ def load_ensemble(path: Path) -> LoadedEnsemble:
             committee_raw=committee_raw,
             committees_dir=committees_dir,
             schemas_module=schemas_module,
-            global_default_model=global_default_model,
-            global_provider=global_provider,
         )
 
     # Workflow graph
@@ -236,16 +225,14 @@ def _load_specialist(
     element_provider: str | None,
     committee_model: str,
     committee_provider: str,
-    global_default_model: str,
-    global_provider: str,
     element_skill_ids: list[str],
 ) -> LoadedSpecialist:
     if not yml_path.exists():
         raise ValueError(f"Specialist yml not found: {yml_path}")
     raw = yaml.safe_load(yml_path.read_text())
-    # Model cascade: specialist yml → element override → committee → global default
-    model = raw.get("model") or element_model or committee_model or global_default_model
-    provider = raw.get("provider") or element_provider or committee_provider or global_provider
+    # Model cascade: specialist yml → element override → committee (required)
+    model = raw.get("model") or element_model or committee_model
+    provider = raw.get("provider") or element_provider or committee_provider
     temperature_raw = raw.get("temperature")
     temperature = float(temperature_raw) if temperature_raw is not None else None
     max_tokens_raw = raw.get("max_tokens")
@@ -272,8 +259,6 @@ def _load_element(
     committee_dir: Path,
     committee_model: str,
     committee_provider: str,
-    global_default_model: str,
-    global_provider: str,
 ) -> LoadedElement:
     element_id = element_raw["id"]
     label = element_raw.get("label", element_id)
@@ -289,8 +274,6 @@ def _load_element(
             element_provider,
             committee_model,
             committee_provider,
-            global_default_model,
-            global_provider,
             element_skill_ids=skill_ids,
         )
         for spec_path in element_raw.get("specialists", [])
@@ -312,12 +295,12 @@ def _load_committee(
     committee_raw: dict,
     committees_dir: Path,
     schemas_module,
-    global_default_model: str,
-    global_provider: str,
 ) -> LoadedCommittee:
     committee_dir = committees_dir / name
-    model = committee_raw.get("model") or global_default_model
-    provider = committee_raw.get("provider") or global_provider
+    model = committee_raw.get("model")
+    if not model:
+        raise ValueError(f"Committee {name!r} is missing required 'model' field")
+    provider = committee_raw.get("provider", "anthropic")
     max_steps = int(committee_raw.get("max_steps", 12))
 
     leader_path = committees_dir / committee_raw["leader"]
@@ -335,8 +318,6 @@ def _load_committee(
             committee_dir,
             model,
             provider,
-            global_default_model,
-            global_provider,
         )
         for e in committee_raw.get("elements", [])
     ]

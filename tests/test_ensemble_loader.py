@@ -4,17 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from athena import env_vars
 from athena.ensemble.loader import load_ensemble
 from athena.ensemble.types import LoadedEnsemble
 
 FIXTURE = Path(__file__).parent / "ensembles" / "fsscanv1"
-
-
-@pytest.fixture(autouse=True)
-def _ensemble_env(monkeypatch):
-    monkeypatch.setenv(env_vars.ENS_DEFAULT_MODEL, "claude-sonnet-4-6")
-    monkeypatch.setenv(env_vars.ENS_DEFAULT_PROVIDER, "anthropic")
 
 
 def test_load_ensemble_returns_loaded_ensemble():
