@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
@@ -25,8 +24,6 @@ from athena.server import limits, runner
 router = APIRouter(prefix="/engagements")
 
 _ARTIFACTS_ROOT = Path("artifacts")
-_REPORT_CHAT_MODEL: str | None = os.environ.get(env_vars.SRV_REPORT_CHAT_MODEL)
-_REPORT_CHAT_PROVIDER: str | None = os.environ.get(env_vars.SRV_REPORT_CHAT_PROVIDER)
 
 _SYSTEM = """\
 You are an AI assistant helping an operator debrief a completed engagement.
@@ -56,10 +53,8 @@ class ReportChatResponse(BaseModel):
 
 @router.post("/{run_id}/report-chat", response_model=ReportChatResponse)
 async def report_chat(run_id: str, body: ReportChatRequest) -> ReportChatResponse:
-    if not _REPORT_CHAT_MODEL:
-        raise RuntimeError(f"{env_vars.SRV_REPORT_CHAT_MODEL} environment variable is not set")
-    if not _REPORT_CHAT_PROVIDER:
-        raise RuntimeError(f"{env_vars.SRV_REPORT_CHAT_PROVIDER} environment variable is not set")
+    report_model = env_vars.get_required(env_vars.SRV_REPORT_CHAT_MODEL)
+    report_provider = env_vars.get_required(env_vars.SRV_REPORT_CHAT_PROVIDER)
     ctx = runner.get_context(run_id)
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Engagement not found")
@@ -92,9 +87,9 @@ async def report_chat(run_id: str, body: ReportChatRequest) -> ReportChatRespons
     initial_message = "\n\n".join(parts)
 
     def _call_model() -> str:
-        backend = make_backend(_REPORT_CHAT_PROVIDER, None)
+        backend = make_backend(report_provider)
         backend.begin(system=_SYSTEM, initial_message=initial_message)
-        response = backend.complete(model=_REPORT_CHAT_MODEL, tools=None, max_tokens=1024)
+        response = backend.complete(model=report_model, tools=None, max_tokens=1024)
         return response.text or ""
 
     reply = await asyncio.to_thread(_call_model)

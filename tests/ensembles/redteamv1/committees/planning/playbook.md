@@ -4,7 +4,7 @@
 
 | Element | Mode | Specialists | Skills |
 |---------|------|-------------|--------|
-| `exploit_planner` | Compare (3 variants) | planner_a (Haiku t=0.3), planner_b (Haiku t=0.7), planner_fs (Foundation-Sec) | none |
+| `exploit_planner` | Compare (3 variants) | planner_a (Claude Haiku), planner_fs (Foundation-Sec), planner_kimi (Kimi-K3) | none |
 
 ## Standard sequence
 

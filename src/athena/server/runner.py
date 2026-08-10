@@ -7,8 +7,8 @@ the server needs to interact with a running pipeline.
 
 from __future__ import annotations
 
+import json
 import logging
-import os
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -34,7 +34,6 @@ from athena.utils import new_id
 
 _log = logging.getLogger("athena.server.runner")
 
-ORCHESTRATOR_MODEL: str | None = os.environ.get(env_vars.SRV_ORCHESTRATOR_MODEL)
 ORCHESTRATOR_AGENT_ID = "athena.orchestrator"
 
 # Re-exported from engagement_status so callers that already import runner can still
@@ -44,6 +43,17 @@ AWAIT_PLAN = engagement_status.AWAIT_PLAN
 AWAIT_COMMITTEE_GATE = engagement_status.AWAIT_COMMITTEE_GATE
 AWAIT_LOOP_GATE = engagement_status.AWAIT_LOOP_GATE
 
+ASK_USER_TIMEOUT_SEC=300
+
+# TODO
+# One engagement at a time. NOTE: this worker count is NOT the real one-at-a-time gate —
+# is_busy() in start_engagement rejects a second engagement before it is ever submitted
+# (that check runs synchronously on the event loop, so it is race-free). Bumping max_workers
+# alone therefore does nothing: the extra worker sits idle. True concurrency also requires,
+# in order: (1) a multi-run UI + operator model (the dashboard and the blocking operator gates
+# assume a single active run), then (2) turning is_busy() into a capacity gate. Per-run state
+# is already isolated (EngagementContext, backends, artifacts/{run_id}/, and the SSE bus which
+# routes by run_id), so the blockers are the UI/operator model and shared endpoint rate limits.
 _executor = ThreadPoolExecutor(max_workers=1)
 _active: dict[str, "EngagementContext"] = {}
 
@@ -118,11 +128,31 @@ class EngagementContext:
 class EngagementAborted(Exception):
     """Raised inside the worker thread when the operator restarts/abandons a run, so the
     workflow unwinds and frees the single worker instead of holding it (demo Restart)."""
+    pass
 
 
 ###############
 # FUNCTIONS #
 ###############
+
+def _orchestrator_backend_config() -> dict:
+    """Parse ATHENA_SRV_ORCHESTRATOR_CONFIG (a required JSON object) into a make_backend() config dict.
+
+    Set it to "{}" when the provider needs no options (e.g. Anthropic, which reads its key from
+    env). A non-Anthropic provider (e.g. ollama) carries ollama_base_url and extra_headers here;
+    make_backend ignores keys it doesn't recognise. Bombs if unset, blank, or not a JSON object.
+    """
+    raw = env_vars.get_required(env_vars.SRV_ORCHESTRATOR_CONFIG)
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"{env_vars.SRV_ORCHESTRATOR_CONFIG} is not valid JSON: {e}") from e
+    if not isinstance(cfg, dict):
+        raise RuntimeError(
+            f"{env_vars.SRV_ORCHESTRATOR_CONFIG} must be a JSON object, got {type(cfg).__name__}"
+        )
+    return cfg
+
 
 def get_context(run_id: str) -> EngagementContext | None:
     return _active.get(run_id)
@@ -134,8 +164,9 @@ def is_busy() -> bool:
 
 def start_engagement(instructions: str) -> str:
     """Start a new engagement. Returns the pre-generated run_id."""
-    if not ORCHESTRATOR_MODEL:
-        raise RuntimeError(f"{env_vars.SRV_ORCHESTRATOR_MODEL} environment variable is not set")
+    orch_model = env_vars.get_required(env_vars.SRV_ORCHESTRATOR_MODEL)
+    orch_provider = env_vars.get_required(env_vars.SRV_ORCHESTRATOR_PROVIDER)
+    orch_config = _orchestrator_backend_config()  # all three bomb here (at the API) if unset/malformed
     if is_busy():
         raise RuntimeError("An engagement is already in progress")
 
@@ -161,7 +192,7 @@ def start_engagement(instructions: str) -> str:
         ctx.pending_question = question
         ctx.reply_event.clear()
         pub.sendMessage(topics.ORCHESTRATOR_QUESTION, run_id=run_id, question=question)
-        answered = ctx.reply_event.wait(timeout=300)
+        answered = ctx.reply_event.wait(timeout=ASK_USER_TIMEOUT_SEC)
         if ctx.cancelled:
             raise EngagementAborted()
         ctx.pending_question = None
@@ -258,10 +289,10 @@ def start_engagement(instructions: str) -> str:
                 version=ensemble.version,
             )
 
-            orch_backend = make_backend("anthropic", None)
+            orch_backend = make_backend(orch_provider, orch_config)
             orchestrator = OrchestratorHarness(
                 backend=orch_backend,
-                model=ORCHESTRATOR_MODEL,
+                model=orch_model,
                 run_id=run_id,
                 ask_user_handler=_ask_user_handler,
                 read_artifact_fn=_read_artifact_fn,
@@ -514,9 +545,4 @@ def send_to_orchestrator(run_id: str, message: str) -> None:
 ###############
 
 def _resolve_ensemble_path() -> Path:
-    env = os.environ.get(env_vars.ENS_PATH)
-    if env:
-        return Path(env)
-    raise RuntimeError(
-        f"No ensemble configured. Set the {env_vars.ENS_PATH} environment variable."
-    )
+    return Path(env_vars.get_required(env_vars.ENS_PATH))

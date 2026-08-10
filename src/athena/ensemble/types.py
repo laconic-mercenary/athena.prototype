@@ -55,11 +55,13 @@ class LoadedSpecialist:
     temperature: float | None     # None → provider default; set for sampling diversity
     skill_ids:   list[str]        # effective skills for this specialist; overrides element-level list
     max_tokens:  int | None       # None → falls back to SPECIALIST_MAX_TOKENS in committee_runner
-    # OpenAI-compatible (provider: ollama) endpoint override — lets a single ensemble target
-    # more than one endpoint (e.g. a Modal-hosted model distinct from the shared ATHENA_OLLAMA_BASE_URL).
-    base_url:    str | None = None          # None → falls back to ATHENA_OLLAMA_BASE_URL
-    # Extra auth headers as {header_name: env_var_name} — resolved from the environment at run
-    # time so secrets never live in the ensemble. Used for Modal proxy auth (Modal-Key/Modal-Secret).
+    # OpenAI-compatible (provider: ollama) endpoint URL. REQUIRED for ollama specialists —
+    # there is no global default; every ollama endpoint is named explicitly in the manifest
+    # (yaml key: ollama_base_url). None is only valid for non-ollama providers.
+    base_url:    str | None = None
+    # Auth headers as {header_name: env_var_name} — resolved from the environment at run time
+    # so secrets never live in the ensemble. This is the sole ollama auth mechanism: Modal proxy
+    # (Modal-Key/Modal-Secret) or a Bearer (Authorization -> env var holding "Bearer <token>").
     auth_headers_env: dict[str, str] | None = None
 
 

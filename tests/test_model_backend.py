@@ -99,7 +99,7 @@ def test_tool_definition_is_frozen() -> None:
 def test_anthropic_backend_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ATHENA_ANTHROPIC_API_KEY", raising=False)
     from athena.model_backend import AnthropicBackend
-    with pytest.raises(RuntimeError, match="ATHENA_ANTHROPIC_API_KEY"):
+    with pytest.raises(ValueError, match="ATHENA_ANTHROPIC_API_KEY"):
         AnthropicBackend()
 
 
@@ -170,7 +170,7 @@ def test_ollama_record_multiple_tool_results() -> None:
 
 def test_make_backend_ollama_returns_ollama_instance() -> None:
     from athena.model_backend import OllamaBackend, make_backend
-    backend = make_backend("ollama", ollama_base_url="http://localhost:11434")
+    backend = make_backend("ollama", {"ollama_base_url": "http://localhost:11434"})
     assert isinstance(backend, OllamaBackend)
 
 
