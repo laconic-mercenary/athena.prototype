@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -21,7 +20,7 @@ from typing import Callable
 
 from pubsub import pub
 
-from athena import engagement_status, topics
+from athena import engagement_status, env_vars, topics
 from pydantic import BaseModel, ValidationError
 
 from athena.agent_loop import SYNTHESIS_MAX_TOKENS, run_agent
@@ -609,7 +608,7 @@ def run_committee_with_ensemble(
             )
         return None
 
-    backend = make_backend(committee.provider, None)
+    backend = make_backend(committee.provider)
     artifact_text = run_agent(
         agent_id=leader_id,
         system=committee.leader_system,
@@ -656,27 +655,32 @@ def run_committee_with_ensemble(
 # NON PUBLIC FUNCTIONS #
 ###############
 
-def _ollama_transport(specialist) -> tuple[str | None, dict[str, str] | None]:
-    """Resolve a specialist's OpenAI-compatible endpoint override and auth headers.
+def _ollama_transport(specialist) -> dict:
+    """Build the make_backend() config for a specialist's OpenAI-compatible endpoint.
 
-    Returns (base_url, extra_headers). auth_headers_env maps a header name to the env var
+    Returns a config dict with optional keys `ollama_base_url` and `extra_headers` (each
+    omitted when not applicable). auth_headers_env maps a header name to the env var
     holding its value, so secrets stay out of the ensemble. A declared header whose env var
     is unset is a configuration error — fail loudly rather than send an unauthenticated call.
     """
+    config: dict = {}
     base_url = getattr(specialist, "base_url", None)
+    if base_url is not None:
+        config["ollama_base_url"] = base_url
     headers_env = getattr(specialist, "auth_headers_env", None)
     if not headers_env:
-        return base_url, None
+        return config
     headers: dict[str, str] = {}
     for header_name, env_var in headers_env.items():
-        value = os.environ.get(env_var)
-        if not value:
+        try:
+            headers[header_name] = env_vars.get_required(env_var)
+        except ValueError as e:
+            # Re-raise with the config context (which specialist / header) that get_required lacks.
             raise RuntimeError(
-                f"Specialist '{specialist.id}' declares auth header '{header_name}' from env "
-                f"'{env_var}', but that variable is unset. Set it (e.g. in .env)."
-            )
-        headers[header_name] = value
-    return base_url, headers
+                f"Specialist '{specialist.id}' auth header '{header_name}': {e}"
+            ) from e
+    config["extra_headers"] = headers
+    return config
 
 
 def _apply_element_gate(
@@ -959,8 +963,8 @@ def _run_one_specialist(
             stop_reason=stop_reason,
         )
 
-    _spec_base_url, _spec_headers = _ollama_transport(specialist)
-    backend = make_backend(specialist.provider, _spec_base_url, _spec_headers)
+    _spec_config = _ollama_transport(specialist)
+    backend = make_backend(specialist.provider, _spec_config)
     result = run_agent(
         agent_id=agent_id,
         system=specialist.system,

@@ -269,7 +269,6 @@ fixtures, and run scripts. System tests exercise the full server with live API c
 |----------|-------------------|
 | `fs-scan/` | Minimal ensemble: file inventory across a known directory tree |
 | `redteam_easy/` | Redteam pipeline against a local Docker target, no RCE |
-| `redteam_htb/` | Full `redteamv1` engagement (requires external services) |
 
 ```bash
 cd tests/system/fs-scan
