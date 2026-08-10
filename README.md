@@ -79,7 +79,7 @@ Pydantic schema, stored to disk, and consumed verbatim by downstream committees.
 ```
 Operator (React UI) ──── HTTP / SSE ────► FastAPI server  (server.py)
                                                 │
-                                                │  ENSEMBLE_PATH env var
+                                                │  ATHENA_ENS_PATH env var
                                                 ▼
                                        Ensemble Harness
                                                 │
@@ -110,7 +110,8 @@ The harness supports two providers out of the box:
 
 - **`provider: anthropic`** — any Claude model via the Anthropic API
 - **`provider: ollama`** — any model behind an OpenAI-compatible `/v1/chat/completions`
-  endpoint (Modal vLLM, Ollama, LM Studio, etc.), set via `OLLAMA_BASE_URL`
+  endpoint (Modal vLLM, Ollama, LM Studio, etc.); each element declares its own
+  `ollama_base_url` and `auth_headers_env` in the manifest (no global endpoint env var)
 
 Mix providers freely within a single ensemble. A planning committee can run three
 specialists in compare mode — one Claude, one Foundation-Sec, one Kimi — and the
@@ -147,18 +148,26 @@ Copy `.env.example` to `.env` and fill in values.
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `ENSEMBLE_PATH` | Absolute or relative path to the ensemble directory |
+| `ATHENA_ANTHROPIC_API_KEY` | Anthropic API key |
+| `ATHENA_ENS_PATH` | Absolute or relative path to the ensemble directory |
+| `ATHENA_SRV_ORCHESTRATOR_MODEL` | Model for the orchestrator phase |
+| `ATHENA_SRV_ORCHESTRATOR_PROVIDER` | Orchestrator backend provider (e.g. `anthropic`) |
+| `ATHENA_SRV_ORCHESTRATOR_CONFIG` | JSON `make_backend` config; use `{}` for Anthropic |
+| `ATHENA_SRV_REPORT_CHAT_MODEL` | Model for the post-engagement debrief chat |
+| `ATHENA_SRV_REPORT_CHAT_PROVIDER` | Provider for the post-engagement debrief chat |
 
-**Optional:**
+All required vars bomb at startup/first engagement if unset (via `env_vars.get_required`) —
+no silent defaults.
+
+**Optional** (feature-flagged; only the collaborator-email path uses these):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHESTRATOR_MODEL` | `claude-sonnet-4-6` | Model for the orchestrator phase |
-| `REPORT_CHAT_MODEL` | `claude-haiku-4-5-20251001` | Model for the post-engagement debrief chat |
-| `OLLAMA_BASE_URL` | — | vLLM endpoint for specialists that use `provider: ollama` |
-| `RESEND_API_KEY` | — | Resend API key — enables collaborator email for gate approvals |
-| `COLLAB_REPLY_DOMAIN` | — | Resend reply-to domain for collaborator threads |
+| `ATHENA_SRV_COLLABORATION_ENABLED` | `false` | Enable collaborator email for gate approvals |
+| `ATHENA_SRV_RESEND_API_KEY` | — | Resend API key (required when collaboration is enabled) |
+| `ATHENA_SRV_COLLAB_REPLY_DOMAIN` | — | Resend reply-to domain for collaborator threads |
+| `ATHENA_SRV_RESEND_WEBHOOK_SECRET` | — | Resend webhook signing secret (inbound replies) |
+| `ATHENA_SRV_COLLABORATOR_ALIASES` | — | Allowed collaborator email aliases |
 
 ---
 
@@ -195,7 +204,7 @@ python server.py --host 0.0.0.0 --port 8000 --verbose
 
 ### Operator collaboration
 
-Gate approvals can require a second operator. If `RESEND_API_KEY` is configured, the
+Gate approvals can require a second operator. If `ATHENA_SRV_RESEND_API_KEY` is configured, the
 gate dialog accepts a collaborator `@alias`. The collaborator receives an email, replies
 to approve or deny, and their response appears in the gate thread in real time.
 
@@ -205,13 +214,14 @@ to approve or deny, and their response appears in the gate thread in real time.
 
 ### Using the bundled ensemble
 
-Point `ENSEMBLE_PATH` at `tests/ensembles/redteamv1` and start the server. The
+Point `ATHENA_ENS_PATH` at `tests/ensembles/redteamv1` and start the server. The
 orchestrator accepts a domain name as the engagement target and runs the full redteam
 pipeline against it.
 
 The redteam ensemble requires:
 - `nmap` installed on the server machine
-- `OLLAMA_BASE_URL` configured if the Foundation-Sec or Kimi planning variants are enabled
+- The auth env vars named by the ollama planners' `auth_headers_env` — for this ensemble:
+  `FSEC_AUTHORIZATION` (Foundation-Sec), `KIMI_MODAL_KEY` + `KIMI_MODAL_SECRET` (Kimi)
 - Outbound internet access from the server (for OSINT skills)
 
 ### Building a new ensemble
@@ -234,7 +244,7 @@ my-ensemble/
         └── impl.py
 ```
 
-Set `ENSEMBLE_PATH` to your ensemble directory and restart the server. See
+Set `ATHENA_ENS_PATH` to your ensemble directory and restart the server. See
 `doc/ENSEMBLES.md` for the full authoring reference.
 
 ---
