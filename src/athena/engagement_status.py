@@ -14,7 +14,10 @@ Centralises string constants that describe:
 # Engagement run status
 # ---------------------------------------------------------------------------
 
-# Pipeline is actively running; no further engagements can start until it ends.
+# Created and waiting for a concurrency slot; not yet executing.
+QUEUED = "queued"
+
+# The engagement holds a concurrency slot and is actively executing.
 RUNNING = "running"
 
 # All committees completed successfully and the pipeline exited cleanly.

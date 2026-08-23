@@ -19,7 +19,7 @@ FastAPI Server  (src/athena/server/)
     │  PyPubSub ALL_TOPICS subscription  (bus.py)
     │  asyncio.Queue per engagement      (bus.py)
     ▼
-Harness Thread  (blocking, ThreadPoolExecutor, max_workers=1)
+Harness Threads  (blocking; one daemon thread per engagement, bounded by a semaphore)
     │  harness/orchestrator.py → harness/workflow.py → harness/committee_runner.py
     │  pub.sendMessage() calls throughout
     ▼
@@ -30,8 +30,9 @@ Filesystem artifacts  (artifacts/{run_id}/)
 
 ## Harness Execution Model
 
-The harness runs on a **blocking background thread** managed by `runner.py` via a
-`ThreadPoolExecutor(max_workers=1)` — one engagement at a time.
+The harness runs on a **blocking background thread per engagement**, managed by
+`runner.py`. A concurrency semaphore (`ATHENA_SRV_MAX_CONCURRENT_RUNS`, default 2) bounds
+how many execute at once; extra engagements wait in `QUEUED` status until a slot frees.
 
 ```
 Harness thread:
@@ -126,8 +127,8 @@ Body: { "action": "accept" | "redo" | "approve" | "deny", ...kind-specific field
 
 ## EngagementContext
 
-All mutable state for one active engagement. Lives in `runner.py`. One instance exists
-at a time (`_ctx` module-level).
+All mutable state for one active engagement. Owned by an `Engagement` and tracked in the
+in-memory `Registry` (`runner.py` / `registry.py`), keyed by `run_id`.
 
 ```python
 @dataclass
@@ -182,10 +183,15 @@ class EngagementContext:
 |--------|----------------|
 | `app.py` | FastAPI app factory; wires all routers |
 | `bus.py` | PyPubSub → asyncio.Queue SSE bridge |
-| `runner.py` | `EngagementContext`, `ThreadPoolExecutor`, gate helpers |
+| `runner.py` | `Engagement`/`EngagementContext`, per-run threads + concurrency semaphore, gate helpers |
+| `registry.py` | In-memory `Registry` — live engagements by `run_id`, tagged by project |
+| `progress.py` | Derives a per-run progress snapshot from pipeline events (for late-join / rows) |
+| `projects_store.py` | Disk-backed project scaffolding (create/rename/delete/scan) under `ATHENA_SRV_PROJECTS_DIR` |
 | `manifest.py` | `serialise_ensemble()` — JSON-safe ensemble for the UI |
 | `routes/engagements.py` | `POST /engagements`, `GET /engagements/{id}` |
 | `routes/events.py` | `GET /engagements/{id}/events` (SSE) |
+| `routes/progress.py` | `GET /engagements/{id}/progress` — coarse snapshot for late-join / rows |
+| `routes/projects.py` | Project CRUD + project-scoped engagements (`/projects/{name}/engagements` create/list/delete) |
 | `routes/chat.py` | `POST /engagements/{id}/chat/{agent_id}` |
 | `routes/plan_review.py` | Plan approval: multi-turn Q&A + plan decision release |
 | `routes/gate_decision.py` | Committee gate: accept / redo + collaborator co-approval |

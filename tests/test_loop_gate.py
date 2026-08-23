@@ -15,6 +15,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from athena import engagement_status
 from athena.ensemble.types import LoadedSkill, LoadedSpecialist
 from athena.harness.committee_runner import (
     LoopGateHooks,
@@ -237,26 +238,26 @@ def test_lock_guarded_decide_serializes_concurrent_tool_gates() -> None:
 # Runner channel functions + await-phase property
 # ---------------------------------------------------------------------------
 
-def _make_ctx(run_id: str, phase: str = runner.AWAIT_NONE, status: str = "running") -> runner.EngagementContext:
-    return runner.EngagementContext(
+def _make_engagement(run_id: str) -> runner.Engagement:
+    # The gate-channel and route-guard tests never touch the ensemble, so a sentinel
+    # object satisfies the constructor's non-None check without loading a real one.
+    return runner.Engagement(
         run_id=run_id,
-        status=status,
-        reply_event=threading.Event(),
-        plan_decision_event=threading.Event(),
-        gate_decision_event=threading.Event(),
-        loop_gate_event=threading.Event(),
-        await_phase=phase,
-        leader_queues={},
-        armed_gates={},
+        ensemble=object(),
+        instructions="test",
+        orch_model="m",
+        orch_provider="fake",
+        orch_config={},
+        project_name="default",
     )
 
 
 @pytest.fixture
 def ctx():
-    c = _make_ctx("run-test")
-    runner._active["run-test"] = c
-    yield c
-    runner._active.pop("run-test", None)
+    eng = _make_engagement("run-test")
+    runner._registry.add_engagement(eng)
+    yield eng.context
+    runner._registry.remove_engagement("run-test")
 
 
 def test_awaiting_approval_property_tracks_phase(ctx) -> None:
@@ -406,10 +407,11 @@ def client():
 
 @pytest.fixture
 def route_ctx():
-    c = _make_ctx("run-route")
-    runner._active["run-route"] = c
-    yield c
-    runner._active.pop("run-route", None)
+    eng = _make_engagement("run-route")
+    eng.context.status = engagement_status.RUNNING
+    runner._registry.add_engagement(eng)
+    yield eng.context
+    runner._registry.remove_engagement("run-route")
 
 
 def test_loop_gate_decision_404_for_unknown_engagement(client) -> None:
