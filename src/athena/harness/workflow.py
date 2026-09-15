@@ -127,7 +127,11 @@ def run_workflow(
                 run_id=run_id,
                 reason=f"Committee {current!r} refused: {exc.reason}",
             )
-            return
+            # Re-raise (rather than returning) so the caller can tell a refusal apart
+            # from normal completion — returning silently here made a refused committee
+            # look identical to a finished workflow to anything watching ctx.status
+            # (audit finding H1: "a refused committee becomes a completed engagement").
+            raise
 
         # Persist artifact to disk
         artifact_path = artifacts_dir / f"{current}.json"

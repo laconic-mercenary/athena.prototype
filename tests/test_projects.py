@@ -1,12 +1,13 @@
 """Tests for the disk-backed project store and the project CRUD routes."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from athena import env_vars
-from athena.server import projects_store
+from athena import engagement_status, env_vars
+from athena.server import projects_store, runner
 from athena.server.app import create_app
 
 
@@ -15,7 +16,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setenv(env_vars.SRV_PROJECTS_DIR, str(tmp_path))
     projects_store.load()
     yield tmp_path
-    projects_store._projects.clear()
+    projects_store._store._projects.clear()
 
 
 @pytest.fixture
@@ -66,13 +67,61 @@ def test_delete_removes_directory(store) -> None:
     assert projects_store.get_project("alpha") is None
 
 
+def _register_engagement(run_id: str, project: str, status: str) -> runner.Engagement:
+    eng = runner.Engagement(
+        run_id=run_id,
+        ensemble=SimpleNamespace(committees={}),
+        instructions="x",
+        orch_model="m",
+        orch_provider="fake",
+        orch_config={},
+        project_name=project,
+    )
+    eng.context.status = status
+    runner._registry.add_engagement(eng)
+    return eng
+
+
+def test_delete_refuses_while_engagement_is_live(store) -> None:
+    projects_store.create_project("alpha")
+    _register_engagement("r1", "alpha", engagement_status.RUNNING)
+    try:
+        with pytest.raises(ValueError):
+            projects_store.delete_project("alpha")
+        assert (store / "alpha").exists()
+        assert projects_store.get_project("alpha") is not None
+    finally:
+        runner._registry.remove_engagement("r1")
+
+
+def test_delete_succeeds_once_engagement_is_terminal(store) -> None:
+    projects_store.create_project("alpha")
+    _register_engagement("r1", "alpha", engagement_status.COMPLETED)
+    try:
+        projects_store.delete_project("alpha")
+        assert not (store / "alpha").exists()
+        assert projects_store.get_project("alpha") is None
+    finally:
+        runner._registry.remove_engagement("r1")
+
+
+def test_delete_route_refuses_while_engagement_is_live(client) -> None:
+    client.post("/projects", json={"name": "alpha"})
+    _register_engagement("r1", "alpha", engagement_status.QUEUED)
+    try:
+        r = client.delete("/projects/alpha")
+        assert r.status_code == 400
+    finally:
+        runner._registry.remove_engagement("r1")
+
+
 def test_load_rebuilds_index_from_disk_and_ignores_non_projects(store) -> None:
     projects_store.create_project("alpha")
     projects_store.create_project("beta")
     # A stray file and a dir without project.json must be ignored by the scan.
     (store / "README.md").write_text("not a project")
     (store / "stray").mkdir()
-    projects_store._projects.clear()
+    projects_store._store._projects.clear()
     projects_store.load()
     assert {p.name for p in projects_store.list_projects()} == {"alpha", "beta"}
 

@@ -94,18 +94,21 @@ async def delete_project(name: str) -> None:
         await loop.run_in_executor(None, projects_store.delete_project, name)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    except ValueError as exc:
+        # Refused: the project still has live (queued/running) engagements.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post("/{name}/engagements", response_model=EngagementResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_engagement(name: str, body: StartEngagementRequest) -> EngagementResponse:
-    if projects_store.get_project(name) is None:
+    project = projects_store.get_project(name)
+    if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
     try:
-        run_id = runner.start_engagement(body.instructions, name, body.ensemble)
+        engagement = project.start_engagement(body.instructions, body.ensemble)
     except runner.EnsembleNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    ctx = runner.get_context(run_id)
-    return EngagementResponse(run_id=run_id, status=ctx.status if ctx else "unknown")
+    return EngagementResponse(run_id=engagement.run_id, status=engagement.context.status)
 
 
 @router.get("/{name}/engagements", response_model=EngagementListResponse)

@@ -20,7 +20,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv(env_vars.SRV_PROJECTS_DIR, str(tmp_path))
     projects_store.load()
     yield tmp_path
-    projects_store._projects.clear()
+    projects_store._store._projects.clear()
 
 
 @pytest.fixture

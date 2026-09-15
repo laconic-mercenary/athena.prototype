@@ -166,3 +166,76 @@ def test_runner_get_context_and_is_busy_delegate(monkeypatch) -> None:
     eng.context.status = engagement_status.RUNNING
     assert runner.get_context("run-1") is eng.context
     assert runner.is_busy() is True
+
+
+def test_runner_get_engagement_delegates(monkeypatch) -> None:
+    reg = Registry()
+    monkeypatch.setattr(runner, "_registry", reg)
+    eng = _make_engagement("run-1")
+    reg.add_engagement(eng)
+    assert runner.get_engagement("run-1") is eng
+    assert runner.get_engagement("nope") is None
+
+
+# ---------------------------------------------------------------------------
+# Engagement action methods (moved off runner.py's free functions)
+# ---------------------------------------------------------------------------
+
+def test_engagement_resolve_gate_decision_sets_fields_and_event() -> None:
+    eng = _make_engagement("run-1")
+    eng.resolve_gate_decision(action="redo", suggestion="dig deeper")
+    ctx = eng.context
+    assert ctx.gate_decision_action == "redo"
+    assert ctx.gate_decision_suggestion == "dig deeper"
+    assert ctx.gate_decision_event.is_set()
+
+
+def test_engagement_abort_marks_abandoned_and_wakes_all_events() -> None:
+    eng = _make_engagement("run-1")
+    eng.abort()
+    ctx = eng.context
+    assert ctx.cancelled is True
+    assert ctx.status == engagement_status.ABANDONED
+    assert ctx.reply_event.is_set()
+    assert ctx.plan_decision_event.is_set()
+    assert ctx.gate_decision_event.is_set()
+    assert ctx.loop_gate_event.is_set()
+
+
+def test_engagement_set_specialist_enabled_toggles_key() -> None:
+    eng = _make_engagement("run-1")
+    key = "recon/web_osint/analyst"
+    eng.set_specialist_enabled(key, enabled=False)
+    assert key in eng.context.disabled_specialists
+    eng.set_specialist_enabled(key, enabled=True)
+    assert key not in eng.context.disabled_specialists
+
+
+def test_engagement_arm_gate_adds_and_removes_kind() -> None:
+    eng = _make_engagement("run-1")
+    eng.arm_gate("recon", "tool", armed=True)
+    assert eng.context.armed_gates == {"recon": {"tool"}}
+    eng.arm_gate("recon", "tool", armed=False)
+    assert eng.context.armed_gates == {"recon": set()}
+
+
+def test_runner_resolve_gate_decision_wrapper_delegates(monkeypatch) -> None:
+    reg = Registry()
+    monkeypatch.setattr(runner, "_registry", reg)
+    eng = _make_engagement("run-1")
+    reg.add_engagement(eng)
+    runner.resolve_gate_decision("run-1", action="accept", suggestion=None)
+    assert eng.context.gate_decision_action == "accept"
+
+
+def test_runner_resolve_gate_decision_wrapper_raises_for_unknown_run(monkeypatch) -> None:
+    reg = Registry()
+    monkeypatch.setattr(runner, "_registry", reg)
+    with pytest.raises(KeyError):
+        runner.resolve_gate_decision("ghost", action="accept", suggestion=None)
+
+
+def test_runner_abort_engagement_wrapper_is_noop_for_unknown_run(monkeypatch) -> None:
+    reg = Registry()
+    monkeypatch.setattr(runner, "_registry", reg)
+    runner.abort_engagement("ghost")  # must not raise

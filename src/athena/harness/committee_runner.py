@@ -220,6 +220,612 @@ class RefuseStartError(Exception):
         self.reason = reason
 
 
+class CommitteeRun:
+    """One committee's execution: the leader's JIT planning loop, its tool dispatch
+    table, and the working state (step count, compare-mode outputs, finish/refuse
+    flags) that used to live as mutable closure cells. Constructed fresh per
+    committee run; run() drives it to completion and returns (artifact, incomplete).
+    """
+
+    def __init__(
+        self,
+        ensemble: LoadedEnsemble,
+        committee_name: str,
+        brief: CommitteeBrief,
+        prior_artifacts: dict[str, BaseModel],
+        artifacts_dir: Path,
+        run_id: str,
+        make_backend: BackendFactory,
+        ask_operator_handler: Callable[[str], str],
+        operator_queue: queue.Queue | None = None,
+        loop_gate_hooks: LoopGateHooks | None = None,
+        disabled_specialists: frozenset[str] = frozenset(),
+        *,
+        is_retry: bool,
+        is_iterate: bool,
+        prior_artifact: BaseModel | None = None,
+    ) -> None:
+        self.committee = ensemble.committees[committee_name]
+        self.skills_map = ensemble.skills
+        self.run_id = run_id
+        self.make_backend = make_backend
+        self.ask_operator_handler = ask_operator_handler
+        self.operator_queue = operator_queue
+        self.loop_gate_hooks = loop_gate_hooks
+        self.disabled_specialists = disabled_specialists
+        self.prior_artifacts = prior_artifacts
+
+        self._initial_msg = _build_leader_brief(
+            self.committee,
+            brief,
+            prior_artifacts,
+            is_retry=is_retry,
+            is_iterate=is_iterate,
+            prior_artifact=prior_artifact,
+        )
+
+        self._schema_name = self.committee.output_schema.__name__
+        self._element_ids = {e.id for e in self.committee.elements}
+        # Field list for the artifact schema — used by finish() and the end_turn validator.
+        self._field_list = ", ".join(
+            f'"{k}" ({getattr(field.annotation, "__name__", str(field.annotation))})'
+            for k, field in self.committee.output_schema.model_fields.items()
+        )
+
+        self.step_count = 0
+        self._finished = False
+        self._incomplete = False
+        self._refuse_reason: str | None = None
+        # element_id -> {variant_label -> {output, title}}
+        self._element_compare_outputs: dict[str, dict[str, dict]] = {}
+
+        self.leader_id = f"{run_id}.{committee_name}.leader"
+        self._leader_tools = self._build_leader_tools()
+
+    def run(self) -> tuple[BaseModel, bool]:
+        pub.sendMessage(
+            topics.AGENT_SPAWNED,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            agent_id=self.leader_id,
+            title=f"{self.committee.name.replace('-', ' ').replace('_', ' ').title()} Leader",
+            role="leader",
+        )
+
+        backend = self.make_backend(self.committee.provider)
+        artifact_text = run_agent(
+            agent_id=self.leader_id,
+            system=self.committee.leader_system,
+            initial_message=self._initial_msg,
+            tools=self._leader_tools,
+            tool_dispatch=self._tool_dispatch,
+            backend=backend,
+            model=self.committee.model,
+            max_iterations=LEADER_MAX_ITERATIONS,
+            max_tokens=SYNTHESIS_MAX_TOKENS,
+            operator_queue=self.operator_queue,
+            on_model_response=self._on_leader_response,
+            on_end_turn=self._validate_end_turn,
+        )
+
+        pub.sendMessage(
+            topics.AGENT_SPUN_DOWN,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            agent_id=self.leader_id,
+        )
+
+        if self._refuse_reason:
+            raise RefuseStartError(self._refuse_reason)
+
+        if not self._finished:
+            _log.warning("%s leader produced end_turn without calling finish()", self.committee.name)
+
+        # The on_end_turn validator normally guarantees a parseable artifact by the time we
+        # get here. This guards the residual case where the correction budget was exhausted,
+        # turning a raw ValueError into a clear committee-level failure.
+        try:
+            raw = extract_json(artifact_text)
+            artifact = self.committee.output_schema.model_validate(raw)
+        except (ValueError, ValidationError) as exc:
+            raise RuntimeError(
+                f"Committee {self.committee.name!r} did not produce a valid {self._schema_name} artifact: {exc}"
+            ) from exc
+
+        return artifact, self._incomplete
+
+    def _build_leader_tools(self) -> list[ToolDefinition]:
+        leader_tools = [
+            _SUBMIT_STEP_TOOL, _FINISH_TOOL, _REFUSE_START_TOOL,
+            _ASK_OPERATOR_TOOL, _REPLY_OPERATOR_TOOL,
+        ]
+        if self.committee.consumes_optional:
+            leader_tools.append(_READ_ARTIFACT_TOOL)
+        if any(len(e.specialists) > 1 for e in self.committee.elements):
+            leader_tools.append(_SELECT_RESULT_TOOL)
+        return leader_tools
+
+    def _tool_dispatch(self, name: str, params: dict) -> str:
+        call_id = new_id()
+        pub.sendMessage(
+            topics.AGENT_TOOL_CALLED,
+            run_id=self.run_id, committee=self.committee.name,
+            agent_id=self.leader_id, tool=name, call_id=call_id,
+            input_summary=json.dumps(params, default=str)[:TOOL_INPUT_SUMMARY_MAX_LEN],
+        )
+        result = self._dispatch(name, params)
+        pub.sendMessage(
+            topics.AGENT_TOOL_RESULT,
+            run_id=self.run_id, committee=self.committee.name,
+            agent_id=self.leader_id, tool=name, call_id=call_id,
+            result=result[:TOOL_RESULT_MAX_LEN],
+        )
+        return result
+
+    def _dispatch(self, name: str, params: dict) -> str:
+        if name == "submit_step":
+            return self._do_submit_step(params)
+        if name == "select_result":
+            return self._do_select_result(params)
+        if name == "finish":
+            return self._do_finish(params)
+        if name == "refuse_start":
+            return self._do_refuse_start(params)
+        if name == "ask_operator":
+            return self._do_ask_operator(params)
+        if name == "reply_operator":
+            return self._do_reply_operator(params)
+        if name == "read_artifact":
+            return self._do_read_artifact(params)
+        return f"Error: unknown tool '{name}'"
+
+    def _do_submit_step(self, params: dict) -> str:
+        if self.step_count >= self.committee.max_steps:
+            self._incomplete = True
+            return (
+                f"Step cap ({self.committee.max_steps}) reached. "
+                "You must call finish() now — do not submit more Steps."
+            )
+
+        task_defs_raw = params.get("tasks", [])
+        for t in task_defs_raw:
+            if t.get("element") not in self._element_ids:
+                return (
+                    f"Error: unknown element '{t.get('element')}'. "
+                    f"Valid elements: {sorted(self._element_ids)}"
+                )
+
+        step_id = new_id()
+        self.step_count += 1
+        description = params.get("description", "")
+        supersedes_ids: list[str] = params.get("supersedes", [])
+
+        tasks = [
+            CommitteeTask(element=t["element"], brief=t["brief"])
+            for t in task_defs_raw
+        ]
+
+        for sid in supersedes_ids:
+            pub.sendMessage(
+                topics.STEP_SUPERSEDED,
+                run_id=self.run_id,
+                committee=self.committee.name,
+                step_id=sid,
+            )
+
+        task_events = [
+            {"task_id": new_id(), "element": t.element, "brief": t.brief}
+            for t in tasks
+        ]
+        pub.sendMessage(
+            topics.STEP_STARTED,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            step_id=step_id,
+            description=description,
+            tasks=task_events,
+        )
+
+        task_outputs: list[str] = []
+        for task, tevt in zip(tasks, task_events):
+            task_id = tevt["task_id"]
+            pub.sendMessage(
+                topics.TASK_STARTED,
+                run_id=self.run_id,
+                committee=self.committee.name,
+                step_id=step_id,
+                task_id=task_id,
+                element=task.element,
+                brief=task.brief,
+            )
+
+            element = next(e for e in self.committee.elements if e.id == task.element)
+            # Filter out operator-disabled specialists (forward-only, set in briefing pane).
+            if self.disabled_specialists:
+                from dataclasses import replace as _dc_replace
+                active = [
+                    s for s in element.specialists
+                    if f"{self.committee.name}/{element.id}/{s.id}" not in self.disabled_specialists
+                ]
+                if active:
+                    element = _dc_replace(element, specialists=active)
+                # If all disabled, element produces empty output; leader handles it.
+                else:
+                    task_outputs.append(f"[{task.element}]\n(all specialists disabled by operator)")
+                    continue
+            compare_sink: dict[str, dict] | None = {} if len(element.specialists) > 1 else None
+            output = _run_element(
+                element=element,
+                task_brief=task.brief,
+                skills_map=self.skills_map,
+                committee_name=self.committee.name,
+                run_id=self.run_id,
+                task_id=task_id,
+                make_backend=self.make_backend,
+                compare_sink=compare_sink,
+                loop_gate_hooks=self.loop_gate_hooks,
+            )
+            if compare_sink is not None:
+                self._element_compare_outputs[task.element] = compare_sink
+
+            pub.sendMessage(
+                topics.TASK_COMPLETED,
+                run_id=self.run_id,
+                committee=self.committee.name,
+                step_id=step_id,
+                task_id=task_id,
+                summary=output[:TASK_OUTPUT_SUMMARY_MAX_LEN],
+            )
+            task_outputs.append(f"[{task.element}]\n{output}")
+
+        combined = "\n\n".join(task_outputs)
+        pub.sendMessage(
+            topics.STEP_COMPLETED,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            step_id=step_id,
+        )
+
+        # Post-step quality gate (in-loop): operator may accept / redo / skip the
+        # completed step. No-op unless the "step" gate is armed for this committee.
+        outcome, note = _apply_step_gate(
+            self.loop_gate_hooks,
+            self.committee.name,
+            step_id=step_id,
+            description=description,
+            digest=combined[:TOOL_RESULT_MAX_LEN],
+        )
+        if outcome == "redo":
+            msg = (
+                f"Operator requested a revision of this step: {note}"
+                if note else "Operator requested a revision of this step."
+            )
+            return (
+                f"{msg} The step's output was not accepted — revise your approach "
+                f"and call submit_step again.\n\n{combined}"
+            )
+        suffix = "\n\n[Operator skipped review of this step.]" if outcome == "skip" else ""
+        return f"Step {step_id} completed.{suffix}\n\n{combined}"
+
+    def _do_select_result(self, params: dict) -> str:
+        raw_winner_id = params.get("winner_id", "")
+        rationale = params.get("rationale", "")
+        winner_output = ""
+        winner_title = ""
+        matched_element = ""
+        variants: list[dict] = []
+        matched_sink: dict[str, dict] | None = None
+        # Resolve the (often imperfect) label the leader echoed to a canonical sink
+        # key, so the winner is reliably matched and the UI flags the right card.
+        resolved = _resolve_winner(raw_winner_id, self._element_compare_outputs)
+        if resolved is None:
+            # Nothing matched — tell the leader the exact valid labels and let it
+            # call select_result again rather than silently recording no winner.
+            valid = [lbl for sink in self._element_compare_outputs.values() for lbl in sink]
+            return (
+                f"No variant matches winner_id={raw_winner_id!r}. "
+                f"Call select_result again with one of these EXACT labels: {valid}."
+            )
+        matched_element, winner_id = resolved
+        sink = self._element_compare_outputs[matched_element]
+        winner_output = sink[winner_id]["output"]
+        winner_title = sink[winner_id]["title"]
+        matched_sink = sink
+        variants = [
+            {"label": lbl, "title": info["title"], "output": info["output"][:TOOL_RESULT_MAX_LEN]}
+            for lbl, info in sink.items()
+        ]
+
+        # Operator element gate (in-loop): confirm the winner, override it, or ask
+        # the leader to re-select. No-op unless the "element" gate is armed.
+        winner_id, reprompt, gate_note = _apply_element_gate(
+            self.loop_gate_hooks,
+            self.committee.name,
+            element_id=matched_element,
+            winner_id=winner_id,
+            rationale=rationale,
+            variants=[
+                {
+                    "label": v["label"],
+                    "title": v["title"],
+                    "output": v["output"][:ELEMENT_GATE_OUTPUT_PREVIEW_MAX_LEN],
+                }
+                for v in variants
+            ],
+            valid_ids=set(matched_sink) if matched_sink else set(),
+        )
+        if reprompt is not None:
+            return reprompt
+        # An override may have changed the winner — recompute its output/title.
+        if matched_sink is not None and winner_id in matched_sink:
+            winner_output = matched_sink[winner_id]["output"]
+            winner_title = matched_sink[winner_id]["title"]
+
+        pub.sendMessage(
+            topics.COMMITTEE_RESULT_SELECTED,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            element_id=matched_element,
+            winner_id=winner_id,
+            winner_title=winner_title,
+            rationale=rationale,
+            result=winner_output[:TOOL_RESULT_MAX_LEN],
+            variants=variants,
+        )
+        return "Selection recorded." + (f" {gate_note}" if gate_note else "")
+
+    def _do_finish(self, params: dict) -> str:
+        self._finished = True
+        # Surface the synthesis step in the UI — otherwise the operator only sees the bare
+        # "finish" tool call and then a JSON blob, with no signal the leader is authoring the
+        # committee's final artifact.
+        pub.sendMessage(
+            topics.AGENT_MODEL_TEXT,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            agent_id=self.leader_id,
+            text=f"Objective met — synthesising the final {self.committee.name.replace('_', ' ')} artifact…",
+            stop_reason="tool_use",
+        )
+        return (
+            f"Objective met. Synthesise your final committee artifact now.\n\n"
+            f"Your ENTIRE response must be a single raw JSON object — "
+            f"no prose, no markdown fences, no surrounding text of any kind.\n"
+            f"Required fields: {self._field_list}.\n"
+            f"String values that contain newlines must be JSON-escaped (\\n)."
+        )
+
+    def _do_refuse_start(self, params: dict) -> str:
+        self._refuse_reason = params.get("reason", "No reason provided")
+        self._finished = True
+        return "Acknowledged. Engagement halted."
+
+    def _do_ask_operator(self, params: dict) -> str:
+        question = params.get("question", "")
+        pub.sendMessage(
+            topics.COMMITTEE_ASK_OPERATOR,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            question=question,
+        )
+        if self.operator_queue is not None:
+            try:
+                answer = self.operator_queue.get(timeout=300)
+            except queue.Empty:
+                answer = "No operator response within timeout; proceed with best judgement."
+            pub.sendMessage(
+                topics.COMMITTEE_OPERATOR_REPLIED,
+                run_id=self.run_id,
+                committee=self.committee.name,
+            )
+            return answer
+        return self.ask_operator_handler(question)
+
+    def _do_reply_operator(self, params: dict) -> str:
+        pub.sendMessage(
+            topics.AGENT_OPERATOR_REPLY,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            agent_id=self.leader_id,
+            text=params.get("message", ""),
+        )
+        return ""
+
+    def _do_read_artifact(self, params: dict) -> str:
+        if not self.committee.consumes_optional:
+            return "Error: read_artifact not available — no optional dependencies."
+        target = params.get("committee", "")
+        if target not in self.committee.consumes_optional:
+            return (
+                f"Error: '{target}' is not an optional dependency. "
+                f"Allowed: {self.committee.consumes_optional}"
+            )
+        artifact = self.prior_artifacts.get(target)
+        if artifact is None:
+            return f"Error: no artifact available for '{target}'"
+        return artifact.render_full() if hasattr(artifact, "render_full") else artifact.model_dump_json()
+
+    def _on_leader_response(self, text: str, stop_reason: str) -> None:
+        pub.sendMessage(
+            topics.AGENT_MODEL_TEXT,
+            run_id=self.run_id,
+            committee=self.committee.name,
+            agent_id=self.leader_id,
+            text=text[:AGENT_TEXT_EVENT_MAX_LEN],
+            stop_reason=stop_reason,
+        )
+
+    def _validate_end_turn(self, text: str) -> str | None:
+        # The leader must end its turn ONLY to emit the final artifact, which happens
+        # after finish(). If it ends conversationally (e.g. after reply_operator), or
+        # after finish() but with unparseable JSON, re-prompt instead of crashing on
+        # extract_json downstream.
+        if self._refuse_reason is not None:
+            return None  # refused — accept the end_turn; the caller raises RefuseStartError
+        if not self._finished:
+            return (
+                "You ended your turn without calling a tool. Do not reply in plain text. "
+                "If the objective is met, call finish() to synthesise the final artifact. "
+                "If you are waiting on the operator, call ask_operator(). Otherwise call "
+                "submit_step() to continue."
+            )
+        try:
+            self.committee.output_schema.model_validate(extract_json(text))
+        except (ValueError, ValidationError) as exc:
+            return (
+                f"That was not a valid {self._schema_name} artifact ({str(exc)[:200]}). Resend your "
+                f"ENTIRE response as a single raw JSON object with fields: {self._field_list}. "
+                f"No prose, no markdown fences."
+            )
+        return None
+
+
+class SpecialistRun:
+    """One specialist's execution: its granted skills, its tool-call budget, and the
+    agent loop that drives it. Constructed fresh per specialist per task."""
+
+    def __init__(
+        self,
+        specialist: "LoadedSpecialist",
+        task_brief: str,
+        skills_map: dict[str, LoadedSkill],
+        committee_name: str,
+        run_id: str,
+        make_backend: BackendFactory,
+        agent_id: str,
+        element_id: str = "",
+        element_label: str = "",
+        variant_label: str = "",
+        max_tool_calls: int = SPECIALIST_MAX_TOOL_CALLS,
+        loop_gate_hooks: "LoopGateHooks | None" = None,
+    ) -> None:
+        self.specialist = specialist
+        self.task_brief = task_brief
+        self.committee_name = committee_name
+        self.run_id = run_id
+        self.make_backend = make_backend
+        self.agent_id = agent_id
+        self.element_id = element_id
+        self.element_label = element_label
+        self.variant_label = variant_label
+        self.max_tool_calls = max_tool_calls
+        self.loop_gate_hooks = loop_gate_hooks
+
+        granted_skills = [skills_map[sid] for sid in specialist.skill_ids if sid in skills_map]
+        self.spec_tools = [skill_to_tool_def(s) for s in granted_skills]
+        self.skills_by_name = {s.name: s for s in granted_skills}
+
+        self._tool_calls_made = 0   # executed (approved) calls — capped by max_tool_calls
+        self._tool_attempts = 0     # executed + denied — capped by _attempts_cap
+        # Denials don't consume the executed budget, so allow a little headroom above the
+        # executed cap for the operator to redirect — but never fewer attempts than default.
+        self._attempts_cap = max(SPECIALIST_MAX_TOOL_ATTEMPTS, max_tool_calls + 2)
+
+    def run(self) -> str:
+        """Run the specialist agent and return its text output."""
+        pub.sendMessage(
+            topics.AGENT_SPAWNED,
+            run_id=self.run_id,
+            committee=self.committee_name,
+            agent_id=self.agent_id,
+            title=self.specialist.title,
+            role="specialist",
+            element_id=self.element_id,
+            element_label=self.element_label or self.element_id,
+            variant_label=self.variant_label,
+        )
+
+        spec_config = _ollama_transport(self.specialist)
+        backend = self.make_backend(self.specialist.provider, spec_config)
+        result = run_agent(
+            agent_id=self.agent_id,
+            system=self.specialist.system,
+            initial_message=self.task_brief,
+            tools=self.spec_tools,
+            tool_dispatch=self._dispatch,
+            backend=backend,
+            model=self.specialist.model,
+            max_iterations=SPECIALIST_MAX_ITERATIONS,
+            max_tokens=self.specialist.max_tokens or SPECIALIST_MAX_TOKENS,
+            temperature=self.specialist.temperature,
+            on_model_response=self._on_model_response,
+        )
+
+        pub.sendMessage(
+            topics.AGENT_SPUN_DOWN,
+            run_id=self.run_id,
+            committee=self.committee_name,
+            agent_id=self.agent_id,
+        )
+        return result
+
+    def _dispatch(self, name: str, params: dict) -> str:
+        skill = self.skills_by_name.get(name)
+        if skill is None:
+            return json.dumps({"error": f"Unknown skill: {name}"})
+        if self._tool_calls_made >= self.max_tool_calls:
+            return json.dumps({
+                "error": "Tool call limit reached. Use the results you already received and output your final answer now."
+            })
+        if self._tool_attempts >= self._attempts_cap:
+            return json.dumps({
+                "error": "Too many denied attempts. Proceed to your final answer with what you already know."
+            })
+        self._tool_attempts += 1
+        call_id = new_id()
+        pub.sendMessage(
+            topics.AGENT_TOOL_CALLED,
+            run_id=self.run_id,
+            committee=self.committee_name,
+            agent_id=self.agent_id,
+            tool=name,
+            call_id=call_id,
+            input_summary=json.dumps(params, default=str)[:TOOL_INPUT_SUMMARY_MAX_LEN],
+        )
+        # Tool-call authorization gate (in-loop): the operator may approve or deny this
+        # action before it runs. No-op unless the "tool" gate is armed for this committee.
+        approved, deny_reason = _apply_tool_gate(
+            self.loop_gate_hooks, self.committee_name,
+            tool=name, args=params,
+            side_effect=getattr(skill, "side_effect", "reads_local"),
+        )
+        if not approved:
+            # A denial does NOT consume the executed-call budget — the specialist may
+            # propose a different action (bounded by SPECIALIST_MAX_TOOL_ATTEMPTS).
+            result = json.dumps({
+                "denied": True,
+                "reason": deny_reason,
+                "note": "Operator denied this action. You may propose a different action, "
+                        "or proceed to your final answer with what you already know.",
+            })
+        else:
+            self._tool_calls_made += 1
+            try:
+                result = execute_skill(skill, params)
+            except Exception as exc:
+                result = json.dumps({"error": str(exc)})
+        pub.sendMessage(
+            topics.AGENT_TOOL_RESULT,
+            run_id=self.run_id,
+            committee=self.committee_name,
+            agent_id=self.agent_id,
+            tool=name,
+            call_id=call_id,
+            result=result[:TOOL_RESULT_MAX_LEN],
+        )
+        return result
+
+    def _on_model_response(self, text: str, stop_reason: str) -> None:
+        pub.sendMessage(
+            topics.AGENT_MODEL_TEXT,
+            run_id=self.run_id,
+            committee=self.committee_name,
+            agent_id=self.agent_id,
+            text=text[:AGENT_TEXT_EVENT_MAX_LEN],
+            stop_reason=stop_reason,
+        )
+
+
 ###############
 # FUNCTIONS #
 ###############
@@ -242,413 +848,22 @@ def run_committee_with_ensemble(
     prior_artifact: BaseModel | None = None,
 ) -> tuple[BaseModel, bool]:
     """Run a committee and return (artifact, incomplete)."""
-    committee = ensemble.committees[committee_name]
-    skills_map = ensemble.skills
-
-    initial_msg = _build_leader_brief(
-        committee,
+    return CommitteeRun(
+        ensemble,
+        committee_name,
         brief,
         prior_artifacts,
+        artifacts_dir,
+        run_id,
+        make_backend,
+        ask_operator_handler,
+        operator_queue,
+        loop_gate_hooks,
+        disabled_specialists,
         is_retry=is_retry,
         is_iterate=is_iterate,
         prior_artifact=prior_artifact,
-    )
-
-    schema_name = committee.output_schema.__name__
-    element_ids = {e.id for e in committee.elements}
-
-    # Field list for the artifact schema — used by finish() and the end_turn validator.
-    _field_list = ", ".join(
-        f'"{k}" ({getattr(field.annotation, "__name__", str(field.annotation))})'
-        for k, field in committee.output_schema.model_fields.items()
-    )
-
-    step_count = [0]
-    _finished = [False]
-    _incomplete = [False]
-    _refuse_reason: list[str | None] = [None]
-    _element_compare_outputs: dict[str, dict[str, dict]] = {}  # element_id → {variant_label → {output, title}}
-
-    def _dispatch(name: str, params: dict) -> str:
-        if name == "submit_step":
-            if step_count[0] >= committee.max_steps:
-                _incomplete[0] = True
-                return (
-                    f"Step cap ({committee.max_steps}) reached. "
-                    "You must call finish() now — do not submit more Steps."
-                )
-
-            task_defs_raw = params.get("tasks", [])
-            for t in task_defs_raw:
-                if t.get("element") not in element_ids:
-                    return (
-                        f"Error: unknown element '{t.get('element')}'. "
-                        f"Valid elements: {sorted(element_ids)}"
-                    )
-
-            step_id = new_id()
-            step_count[0] += 1
-            description = params.get("description", "")
-            supersedes_ids: list[str] = params.get("supersedes", [])
-
-            tasks = [
-                CommitteeTask(element=t["element"], brief=t["brief"])
-                for t in task_defs_raw
-            ]
-
-            for sid in supersedes_ids:
-                pub.sendMessage(
-                    topics.STEP_SUPERSEDED,
-                    run_id=run_id,
-                    committee=committee.name,
-                    step_id=sid,
-                )
-
-            task_events = [
-                {"task_id": new_id(), "element": t.element, "brief": t.brief}
-                for t in tasks
-            ]
-            pub.sendMessage(
-                topics.STEP_STARTED,
-                run_id=run_id,
-                committee=committee.name,
-                step_id=step_id,
-                description=description,
-                tasks=task_events,
-            )
-
-            task_outputs: list[str] = []
-            for task, tevt in zip(tasks, task_events):
-                task_id = tevt["task_id"]
-                pub.sendMessage(
-                    topics.TASK_STARTED,
-                    run_id=run_id,
-                    committee=committee.name,
-                    step_id=step_id,
-                    task_id=task_id,
-                    element=task.element,
-                    brief=task.brief,
-                )
-
-                element = next(e for e in committee.elements if e.id == task.element)
-                # Filter out operator-disabled specialists (forward-only, set in briefing pane).
-                if disabled_specialists:
-                    from dataclasses import replace as _dc_replace
-                    active = [
-                        s for s in element.specialists
-                        if f"{committee.name}/{element.id}/{s.id}" not in disabled_specialists
-                    ]
-                    if active:
-                        element = _dc_replace(element, specialists=active)
-                    # If all disabled, element produces empty output; leader handles it.
-                    else:
-                        task_outputs.append(f"[{task.element}]\n(all specialists disabled by operator)")
-                        continue
-                compare_sink: dict[str, dict] | None = {} if len(element.specialists) > 1 else None
-                output = _run_element(
-                    element=element,
-                    task_brief=task.brief,
-                    skills_map=skills_map,
-                    committee_name=committee.name,
-                    run_id=run_id,
-                    task_id=task_id,
-                    make_backend=make_backend,
-                    compare_sink=compare_sink,
-                    loop_gate_hooks=loop_gate_hooks,
-                )
-                if compare_sink is not None:
-                    _element_compare_outputs[task.element] = compare_sink
-
-                pub.sendMessage(
-                    topics.TASK_COMPLETED,
-                    run_id=run_id,
-                    committee=committee.name,
-                    step_id=step_id,
-                    task_id=task_id,
-                    summary=output[:TASK_OUTPUT_SUMMARY_MAX_LEN],
-                )
-                task_outputs.append(f"[{task.element}]\n{output}")
-
-            combined = "\n\n".join(task_outputs)
-            pub.sendMessage(
-                topics.STEP_COMPLETED,
-                run_id=run_id,
-                committee=committee.name,
-                step_id=step_id,
-            )
-
-            # Post-step quality gate (in-loop): operator may accept / redo / skip the
-            # completed step. No-op unless the "step" gate is armed for this committee.
-            outcome, note = _apply_step_gate(
-                loop_gate_hooks,
-                committee.name,
-                step_id=step_id,
-                description=description,
-                digest=combined[:TOOL_RESULT_MAX_LEN],
-            )
-            if outcome == "redo":
-                msg = (
-                    f"Operator requested a revision of this step: {note}"
-                    if note else "Operator requested a revision of this step."
-                )
-                return (
-                    f"{msg} The step's output was not accepted — revise your approach "
-                    f"and call submit_step again.\n\n{combined}"
-                )
-            suffix = "\n\n[Operator skipped review of this step.]" if outcome == "skip" else ""
-            return f"Step {step_id} completed.{suffix}\n\n{combined}"
-
-        if name == "select_result":
-            raw_winner_id = params.get("winner_id", "")
-            rationale = params.get("rationale", "")
-            winner_output = ""
-            winner_title = ""
-            matched_element = ""
-            variants: list[dict] = []
-            matched_sink: dict[str, dict] | None = None
-            # Resolve the (often imperfect) label the leader echoed to a canonical sink
-            # key, so the winner is reliably matched and the UI flags the right card.
-            resolved = _resolve_winner(raw_winner_id, _element_compare_outputs)
-            if resolved is None:
-                # Nothing matched — tell the leader the exact valid labels and let it
-                # call select_result again rather than silently recording no winner.
-                valid = [lbl for sink in _element_compare_outputs.values() for lbl in sink]
-                return (
-                    f"No variant matches winner_id={raw_winner_id!r}. "
-                    f"Call select_result again with one of these EXACT labels: {valid}."
-                )
-            matched_element, winner_id = resolved
-            sink = _element_compare_outputs[matched_element]
-            winner_output = sink[winner_id]["output"]
-            winner_title = sink[winner_id]["title"]
-            matched_sink = sink
-            variants = [
-                {"label": lbl, "title": info["title"], "output": info["output"][:TOOL_RESULT_MAX_LEN]}
-                for lbl, info in sink.items()
-            ]
-
-            # Operator element gate (in-loop): confirm the winner, override it, or ask
-            # the leader to re-select. No-op unless the "element" gate is armed.
-            winner_id, reprompt, gate_note = _apply_element_gate(
-                loop_gate_hooks,
-                committee.name,
-                element_id=matched_element,
-                winner_id=winner_id,
-                rationale=rationale,
-                variants=[
-                    {
-                        "label": v["label"],
-                        "title": v["title"],
-                        "output": v["output"][:ELEMENT_GATE_OUTPUT_PREVIEW_MAX_LEN],
-                    }
-                    for v in variants
-                ],
-                valid_ids=set(matched_sink) if matched_sink else set(),
-            )
-            if reprompt is not None:
-                return reprompt
-            # An override may have changed the winner — recompute its output/title.
-            if matched_sink is not None and winner_id in matched_sink:
-                winner_output = matched_sink[winner_id]["output"]
-                winner_title = matched_sink[winner_id]["title"]
-
-            pub.sendMessage(
-                topics.COMMITTEE_RESULT_SELECTED,
-                run_id=run_id,
-                committee=committee.name,
-                element_id=matched_element,
-                winner_id=winner_id,
-                winner_title=winner_title,
-                rationale=rationale,
-                result=winner_output[:TOOL_RESULT_MAX_LEN],
-                variants=variants,
-            )
-            return "Selection recorded." + (f" {gate_note}" if gate_note else "")
-
-        if name == "finish":
-            _finished[0] = True
-            # Surface the synthesis step in the UI — otherwise the operator only sees the bare
-            # "finish" tool call and then a JSON blob, with no signal the leader is authoring the
-            # committee's final artifact.
-            pub.sendMessage(
-                topics.AGENT_MODEL_TEXT,
-                run_id=run_id,
-                committee=committee.name,
-                agent_id=f"{run_id}.{committee.name}.leader",
-                text=f"Objective met — synthesising the final {committee.name.replace('_', ' ')} artifact…",
-                stop_reason="tool_use",
-            )
-            return (
-                f"Objective met. Synthesise your final committee artifact now.\n\n"
-                f"Your ENTIRE response must be a single raw JSON object — "
-                f"no prose, no markdown fences, no surrounding text of any kind.\n"
-                f"Required fields: {_field_list}.\n"
-                f"String values that contain newlines must be JSON-escaped (\\n)."
-            )
-
-        if name == "refuse_start":
-            _refuse_reason[0] = params.get("reason", "No reason provided")
-            _finished[0] = True
-            return "Acknowledged. Engagement halted."
-
-        if name == "ask_operator":
-            question = params.get("question", "")
-            pub.sendMessage(
-                topics.COMMITTEE_ASK_OPERATOR,
-                run_id=run_id,
-                committee=committee.name,
-                question=question,
-            )
-            if operator_queue is not None:
-                try:
-                    answer = operator_queue.get(timeout=300)
-                except queue.Empty:
-                    answer = "No operator response within timeout; proceed with best judgement."
-                pub.sendMessage(
-                    topics.COMMITTEE_OPERATOR_REPLIED,
-                    run_id=run_id,
-                    committee=committee.name,
-                )
-                return answer
-            return ask_operator_handler(question)
-
-        if name == "reply_operator":
-            pub.sendMessage(
-                topics.AGENT_OPERATOR_REPLY,
-                run_id=run_id,
-                committee=committee.name,
-                agent_id=f"{run_id}.{committee.name}.leader",
-                text=params.get("message", ""),
-            )
-            return ""
-
-        if name == "read_artifact":
-            if not committee.consumes_optional:
-                return "Error: read_artifact not available — no optional dependencies."
-            target = params.get("committee", "")
-            if target not in committee.consumes_optional:
-                return (
-                    f"Error: '{target}' is not an optional dependency. "
-                    f"Allowed: {committee.consumes_optional}"
-                )
-            artifact = prior_artifacts.get(target)
-            if artifact is None:
-                return f"Error: no artifact available for '{target}'"
-            return artifact.render_full() if hasattr(artifact, "render_full") else artifact.model_dump_json()
-
-        return f"Error: unknown tool '{name}'"
-
-    def tool_dispatch(name: str, params: dict) -> str:
-        call_id = new_id()
-        pub.sendMessage(
-            topics.AGENT_TOOL_CALLED,
-            run_id=run_id, committee=committee.name,
-            agent_id=leader_id, tool=name, call_id=call_id,
-            input_summary=json.dumps(params, default=str)[:TOOL_INPUT_SUMMARY_MAX_LEN],
-        )
-        result = _dispatch(name, params)
-        pub.sendMessage(
-            topics.AGENT_TOOL_RESULT,
-            run_id=run_id, committee=committee.name,
-            agent_id=leader_id, tool=name, call_id=call_id,
-            result=result[:TOOL_RESULT_MAX_LEN],
-        )
-        return result
-
-    leader_tools = [
-        _SUBMIT_STEP_TOOL, _FINISH_TOOL, _REFUSE_START_TOOL,
-        _ASK_OPERATOR_TOOL, _REPLY_OPERATOR_TOOL,
-    ]
-    if committee.consumes_optional:
-        leader_tools.append(_READ_ARTIFACT_TOOL)
-    if any(len(e.specialists) > 1 for e in committee.elements):
-        leader_tools.append(_SELECT_RESULT_TOOL)
-
-    leader_id = f"{run_id}.{committee.name}.leader"
-    pub.sendMessage(
-        topics.AGENT_SPAWNED,
-        run_id=run_id,
-        committee=committee.name,
-        agent_id=leader_id,
-        title=f"{committee.name.replace('-', ' ').replace('_', ' ').title()} Leader",
-        role="leader",
-    )
-
-    def _on_leader_response(text: str, stop_reason: str) -> None:
-        pub.sendMessage(
-            topics.AGENT_MODEL_TEXT,
-            run_id=run_id,
-            committee=committee.name,
-            agent_id=leader_id,
-            text=text[:AGENT_TEXT_EVENT_MAX_LEN],
-            stop_reason=stop_reason,
-        )
-
-    def _validate_end_turn(text: str) -> str | None:
-        # The leader must end its turn ONLY to emit the final artifact, which happens
-        # after finish(). If it ends conversationally (e.g. after reply_operator), or
-        # after finish() but with unparseable JSON, re-prompt instead of crashing on
-        # extract_json downstream.
-        if _refuse_reason[0] is not None:
-            return None  # refused — accept the end_turn; the caller raises RefuseStartError
-        if not _finished[0]:
-            return (
-                "You ended your turn without calling a tool. Do not reply in plain text. "
-                "If the objective is met, call finish() to synthesise the final artifact. "
-                "If you are waiting on the operator, call ask_operator(). Otherwise call "
-                "submit_step() to continue."
-            )
-        try:
-            committee.output_schema.model_validate(extract_json(text))
-        except (ValueError, ValidationError) as exc:
-            return (
-                f"That was not a valid {schema_name} artifact ({str(exc)[:200]}). Resend your "
-                f"ENTIRE response as a single raw JSON object with fields: {_field_list}. "
-                f"No prose, no markdown fences."
-            )
-        return None
-
-    backend = make_backend(committee.provider)
-    artifact_text = run_agent(
-        agent_id=leader_id,
-        system=committee.leader_system,
-        initial_message=initial_msg,
-        tools=leader_tools,
-        tool_dispatch=tool_dispatch,
-        backend=backend,
-        model=committee.model,
-        max_iterations=LEADER_MAX_ITERATIONS,
-        max_tokens=SYNTHESIS_MAX_TOKENS,
-        operator_queue=operator_queue,
-        on_model_response=_on_leader_response,
-        on_end_turn=_validate_end_turn,
-    )
-
-    pub.sendMessage(
-        topics.AGENT_SPUN_DOWN,
-        run_id=run_id,
-        committee=committee.name,
-        agent_id=leader_id,
-    )
-
-    if _refuse_reason[0]:
-        raise RefuseStartError(_refuse_reason[0])
-
-    if not _finished[0]:
-        _log.warning("%s leader produced end_turn without calling finish()", committee.name)
-
-    # The on_end_turn validator normally guarantees a parseable artifact by the time we
-    # get here. This guards the residual case where the correction budget was exhausted,
-    # turning a raw ValueError into a clear committee-level failure.
-    try:
-        raw = extract_json(artifact_text)
-        artifact = committee.output_schema.model_validate(raw)
-    except (ValueError, ValidationError) as exc:
-        raise RuntimeError(
-            f"Committee {committee.name!r} did not produce a valid {schema_name} artifact: {exc}"
-        ) from exc
-
-    return artifact, _incomplete[0]
+    ).run()
 
 
 ###############
@@ -861,7 +1076,7 @@ def _build_leader_brief(
 
 
 def _run_one_specialist(
-    specialist: LoadedSpecialist,
+    specialist: "LoadedSpecialist",
     task_brief: str,
     skills_map: dict[str, LoadedSkill],
     committee_name: str,
@@ -875,120 +1090,23 @@ def _run_one_specialist(
     loop_gate_hooks: "LoopGateHooks | None" = None,
 ) -> str:
     """Run a single specialist agent and return its text output."""
-    granted_skills = [skills_map[sid] for sid in specialist.skill_ids if sid in skills_map]
-    spec_tools = [skill_to_tool_def(s) for s in granted_skills]
-    skills_by_name = {s.name: s for s in granted_skills}
-
-    pub.sendMessage(
-        topics.AGENT_SPAWNED,
-        run_id=run_id,
-        committee=committee_name,
-        agent_id=agent_id,
-        title=specialist.title,
-        role="specialist",
+    return SpecialistRun(
+        specialist,
+        task_brief,
+        skills_map,
+        committee_name,
+        run_id,
+        make_backend,
+        agent_id,
         element_id=element_id,
-        element_label=element_label or element_id,
+        element_label=element_label,
         variant_label=variant_label,
-    )
-
-    _tool_calls_made = [0]   # executed (approved) calls — capped by max_tool_calls
-    _tool_attempts = [0]     # executed + denied — capped by _attempts_cap
-    # Denials don't consume the executed budget, so allow a little headroom above the executed
-    # cap for the operator to redirect — but never fewer attempts than the default.
-    _attempts_cap = max(SPECIALIST_MAX_TOOL_ATTEMPTS, max_tool_calls + 2)
-
-    def spec_dispatch(name: str, params: dict) -> str:
-        skill = skills_by_name.get(name)
-        if skill is None:
-            return json.dumps({"error": f"Unknown skill: {name}"})
-        if _tool_calls_made[0] >= max_tool_calls:
-            return json.dumps({
-                "error": "Tool call limit reached. Use the results you already received and output your final answer now."
-            })
-        if _tool_attempts[0] >= _attempts_cap:
-            return json.dumps({
-                "error": "Too many denied attempts. Proceed to your final answer with what you already know."
-            })
-        _tool_attempts[0] += 1
-        call_id = new_id()
-        pub.sendMessage(
-            topics.AGENT_TOOL_CALLED,
-            run_id=run_id,
-            committee=committee_name,
-            agent_id=agent_id,
-            tool=name,
-            call_id=call_id,
-            input_summary=json.dumps(params, default=str)[:TOOL_INPUT_SUMMARY_MAX_LEN],
-        )
-        # Tool-call authorization gate (in-loop): the operator may approve or deny this
-        # action before it runs. No-op unless the "tool" gate is armed for this committee.
-        approved, deny_reason = _apply_tool_gate(
-            loop_gate_hooks, committee_name,
-            tool=name, args=params,
-            side_effect=getattr(skill, "side_effect", "reads_local"),
-        )
-        if not approved:
-            # A denial does NOT consume the executed-call budget — the specialist may
-            # propose a different action (bounded by SPECIALIST_MAX_TOOL_ATTEMPTS).
-            result = json.dumps({
-                "denied": True,
-                "reason": deny_reason,
-                "note": "Operator denied this action. You may propose a different action, "
-                        "or proceed to your final answer with what you already know.",
-            })
-        else:
-            _tool_calls_made[0] += 1
-            try:
-                result = execute_skill(skill, params)
-            except Exception as exc:
-                result = json.dumps({"error": str(exc)})
-        pub.sendMessage(
-            topics.AGENT_TOOL_RESULT,
-            run_id=run_id,
-            committee=committee_name,
-            agent_id=agent_id,
-            tool=name,
-            call_id=call_id,
-            result=result[:TOOL_RESULT_MAX_LEN],
-        )
-        return result
-
-    def _on_model_response(text: str, stop_reason: str) -> None:
-        pub.sendMessage(
-            topics.AGENT_MODEL_TEXT,
-            run_id=run_id,
-            committee=committee_name,
-            agent_id=agent_id,
-            text=text[:AGENT_TEXT_EVENT_MAX_LEN],
-            stop_reason=stop_reason,
-        )
-
-    _spec_config = _ollama_transport(specialist)
-    backend = make_backend(specialist.provider, _spec_config)
-    result = run_agent(
-        agent_id=agent_id,
-        system=specialist.system,
-        initial_message=task_brief,
-        tools=spec_tools,
-        tool_dispatch=spec_dispatch,
-        backend=backend,
-        model=specialist.model,
-        max_iterations=SPECIALIST_MAX_ITERATIONS,
-        max_tokens=specialist.max_tokens or SPECIALIST_MAX_TOKENS,
-        temperature=specialist.temperature,
-        on_model_response=_on_model_response,
-    )
-
-    pub.sendMessage(
-        topics.AGENT_SPUN_DOWN,
-        run_id=run_id,
-        committee=committee_name,
-        agent_id=agent_id,
-    )
-    return result
+        max_tool_calls=max_tool_calls,
+        loop_gate_hooks=loop_gate_hooks,
+    ).run()
 
 
-def _variant_label(specialist: LoadedSpecialist, idx: int, all_models: list[str]) -> str:
+def _variant_label(specialist: "LoadedSpecialist", idx: int, all_models: list[str]) -> str:
     """Build a human-readable label for one compare-mode variant."""
     meta = []
     if specialist.temperature is not None:
@@ -1067,7 +1185,7 @@ def _run_compare(
     # Precompute labels so the same string is used for display, sink keys, and agent.spawned.
     variant_labels = [_variant_label(s, i, all_models) for i, s in enumerate(element.specialists)]
 
-    def run_variant(args: tuple[int, LoadedSpecialist]) -> tuple[str | None, str | None]:
+    def run_variant(args: tuple[int, "LoadedSpecialist"]) -> tuple[str | None, str | None]:
         idx, specialist = args
         agent_id = f"{run_id}.{committee_name}.{element.id}.v{idx + 1}"
         try:
