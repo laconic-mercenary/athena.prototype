@@ -18,8 +18,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from athena.server import bus
-from athena.server.routes import artifacts, chat, engagements, events, gate_decision, loop_gate, plan_review, report_chat, specialist_config
+from athena.server import bus, projects_store
+from athena.server.routes import artifacts, chat, engagements, events, gate_decision, loop_gate, plan_review, progress, projects, report_chat, specialist_config
 from athena import collaboration
 
 
@@ -46,11 +46,13 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(projects.router)
     app.include_router(engagements.router)
     app.include_router(events.router)
     app.include_router(chat.router)
     app.include_router(artifacts.router)
     app.include_router(plan_review.router)
+    app.include_router(progress.router)
     app.include_router(gate_decision.router)
     app.include_router(loop_gate.router)
     app.include_router(report_chat.router)
@@ -75,4 +77,8 @@ def create_app() -> FastAPI:
 async def _lifespan(app: FastAPI):
     # Register the running event loop with the bus before any pipeline starts.
     bus.register_loop(asyncio.get_running_loop())
+    # Rebuild the project index from disk so previously-created projects are visible, and
+    # guarantee the default project (where project-less engagements land) exists.
+    projects_store.load()
+    projects_store.ensure_project(projects_store.DEFAULT_PROJECT_NAME)
     yield

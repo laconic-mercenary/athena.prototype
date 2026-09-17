@@ -15,6 +15,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from athena import engagement_status
 from athena.ensemble.types import LoadedSkill, LoadedSpecialist
 from athena.harness.committee_runner import (
     LoopGateHooks,
@@ -237,26 +238,26 @@ def test_lock_guarded_decide_serializes_concurrent_tool_gates() -> None:
 # Runner channel functions + await-phase property
 # ---------------------------------------------------------------------------
 
-def _make_ctx(run_id: str, phase: str = runner.AWAIT_NONE, status: str = "running") -> runner.EngagementContext:
-    return runner.EngagementContext(
+def _make_engagement(run_id: str) -> runner.Engagement:
+    # The gate-channel and route-guard tests never touch the ensemble, so a sentinel
+    # object satisfies the constructor's non-None check without loading a real one.
+    return runner.Engagement(
         run_id=run_id,
-        status=status,
-        reply_event=threading.Event(),
-        plan_decision_event=threading.Event(),
-        gate_decision_event=threading.Event(),
-        loop_gate_event=threading.Event(),
-        await_phase=phase,
-        leader_queues={},
-        armed_gates={},
+        ensemble=object(),
+        instructions="test",
+        orch_model="m",
+        orch_provider="fake",
+        orch_config={},
+        project_name="default",
     )
 
 
 @pytest.fixture
 def ctx():
-    c = _make_ctx("run-test")
-    runner._active["run-test"] = c
-    yield c
-    runner._active.pop("run-test", None)
+    eng = _make_engagement("run-test")
+    runner._registry.add_engagement(eng)
+    yield eng.context
+    runner._registry.remove_engagement("run-test")
 
 
 def test_awaiting_approval_property_tracks_phase(ctx) -> None:
@@ -406,10 +407,11 @@ def client():
 
 @pytest.fixture
 def route_ctx():
-    c = _make_ctx("run-route")
-    runner._active["run-route"] = c
-    yield c
-    runner._active.pop("run-route", None)
+    eng = _make_engagement("run-route")
+    eng.context.status = engagement_status.RUNNING
+    runner._registry.add_engagement(eng)
+    yield eng.context
+    runner._registry.remove_engagement("run-route")
 
 
 def test_loop_gate_decision_404_for_unknown_engagement(client) -> None:
@@ -425,6 +427,7 @@ def test_loop_gate_decision_409_when_not_in_loop_phase(client, route_ctx) -> Non
 
 def test_loop_gate_decision_releases_when_in_phase(client, route_ctx) -> None:
     route_ctx.await_phase = runner.AWAIT_LOOP_GATE
+    route_ctx.loop_gate_kind = engagement_status.GATE_KIND_ELEMENT
     r = client.post(
         "/engagements/run-route/loop-gate-decision",
         json={"action": "override", "winner_id": "v2"},
@@ -432,6 +435,34 @@ def test_loop_gate_decision_releases_when_in_phase(client, route_ctx) -> None:
     assert r.status_code == 200
     assert route_ctx.loop_gate_decision == {"action": "override", "winner_id": "v2"}
     assert route_ctx.loop_gate_event.is_set()
+
+
+def test_loop_gate_decision_400_for_wrong_kind_action(client, route_ctx) -> None:
+    """Regression test: an action valid for a DIFFERENT gate kind (or a gate kind
+    that isn't pending at all) must be rejected, not silently approved. This is the
+    fail-closed chokepoint for committee_runner._apply_tool_gate's deny-only check —
+    without it, "redo" (valid for element/step) sent while a TOOL gate is pending
+    would fall through that check and approve an unauthorised tool call."""
+    route_ctx.await_phase = runner.AWAIT_LOOP_GATE
+    route_ctx.loop_gate_kind = engagement_status.GATE_KIND_TOOL
+    r = client.post(
+        "/engagements/run-route/loop-gate-decision",
+        json={"action": "redo"},
+    )
+    assert r.status_code == 400
+    assert route_ctx.loop_gate_decision is None
+    assert not route_ctx.loop_gate_event.is_set()
+
+
+def test_loop_gate_decision_400_when_kind_unknown(client, route_ctx) -> None:
+    """No action is valid when loop_gate_kind itself is unset — fail closed, not open."""
+    route_ctx.await_phase = runner.AWAIT_LOOP_GATE
+    route_ctx.loop_gate_kind = None
+    r = client.post(
+        "/engagements/run-route/loop-gate-decision",
+        json={"action": "approve"},
+    )
+    assert r.status_code == 400
 
 
 def test_loop_gate_arm_rejects_unknown_kind(client, route_ctx) -> None:

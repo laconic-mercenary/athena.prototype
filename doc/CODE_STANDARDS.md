@@ -62,8 +62,8 @@ the codebase. They supplement (and sometimes override) general coding instincts.
 - Never reference the task, the PR, or the caller in a comment.
 
 **Threading**
-- The harness runs on a background thread (one `ThreadPoolExecutor` worker) managed
-  by `runner.py`.
+- The harness runs on a background thread per engagement, managed by `runner.py`; a
+  concurrency semaphore (`ATHENA_SRV_MAX_CONCURRENT_RUNS`) bounds how many run at once.
 - `threading.Event` is the correct primitive for all gate types — they block the
   harness thread deliberately. Do not use `asyncio` primitives on the harness thread.
 - `call_soon_threadsafe` is the only safe way to push events from the harness thread

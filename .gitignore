@@ -224,3 +224,6 @@ src/ui/dist/
 
 # Athena Artifacts
 artifacts/*
+
+# Runtime project store (ATHENA_SRV_PROJECTS_DIR)
+workspace/

@@ -1,5 +1,6 @@
 import { useReducer, useCallback, useEffect } from 'react'
 import { useEvents } from './useEvents'
+import { ProjectHome } from './pages/ProjectHome'
 import { EngagementRequest } from './pages/EngagementRequest'
 import { OrchestratorDialog } from './pages/OrchestratorDialog'
 import { Dashboard } from './pages/Dashboard'
@@ -28,7 +29,8 @@ const ORCHESTRATOR_AGENT_ID = 'athena.orchestrator'
 
 function createInitialState() {
   return {
-  page: 'request',
+  page: 'projects',
+  project: null,
   engagement: {
     run_id: null,
     status: 'idle',
@@ -92,14 +94,20 @@ function reducer(state, action) {
 
   if (type === 'NAVIGATE') return { ...state, page: payload }
 
+  if (type === 'SELECT_PROJECT') return { ...state, project: payload.name, page: 'request' }
+
   // Demo Restart: throw away all engagement state and return to the start screen.
-  if (type === 'RESET') return createInitialState()
+  // Preserve the selected project — a redo shouldn't force re-navigating through
+  // the project list.
+  if (type === 'RESET') {
+    return { ...createInitialState(), project: state.project, page: state.project ? 'request' : 'projects' }
+  }
 
   if (type === 'RUN_STARTED') {
     return {
       ...state,
       page: 'dialog',
-      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false, objective: payload.objective || '', startedAt: Date.now() },
+      engagement: { run_id: payload.run_id, status: 'running', awaitingApproval: false, awaitingCommittee: null, awaitingRedoAvailable: false, objective: payload.objective || '', startedAt: Date.now(), project: payload.project || null, seed: payload.seed || null },
       planReady: false,
       plan: null,
       committees: {},
@@ -649,6 +657,7 @@ function reducer(state, action) {
 }
 
 const PAGE_TITLES = {
+  projects: 'athena | projects',
   request: 'athena | start',
   dialog:  'athena | briefing',
   dashboard: 'athena | engagement',
@@ -724,12 +733,25 @@ export default function App() {
     }
   }
 
+  if (state.page === 'projects') {
+    return (
+      <>
+        <AcceptanceBanner />
+        <ProjectHome
+          onSelectProject={name => dispatch({ type: 'SELECT_PROJECT', payload: { name } })}
+        />
+      </>
+    )
+  }
+
   if (state.page === 'request') {
     return (
       <>
         <AcceptanceBanner />
         <EngagementRequest
-          onSubmit={(run_id, objective) => dispatch({ type: 'RUN_STARTED', payload: { run_id, objective } })}
+          project={state.project}
+          onBack={() => dispatch({ type: 'NAVIGATE', payload: 'projects' })}
+          onSubmit={(run_id, objective, seed) => dispatch({ type: 'RUN_STARTED', payload: { run_id, objective, project: state.project, seed } })}
         />
       </>
     )

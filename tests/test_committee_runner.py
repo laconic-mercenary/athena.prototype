@@ -3,14 +3,43 @@
 import threading
 
 import pytest
+from pydantic import BaseModel
 
-from athena.ensemble.types import LoadedElement, LoadedSpecialist
-from athena.harness.committee_runner import _resolve_winner, _run_element, _variant_label
+from athena.engagement_plan import CommitteeBrief
+from athena.ensemble.types import LoadedCommittee, LoadedElement, LoadedSpecialist
+from athena.harness.committee_runner import (
+    _build_leader_brief,
+    _resolve_winner,
+    _run_element,
+    _variant_label,
+)
 from athena.model_backend import FakeBackend, ModelResponse
 
 
 def _end(text: str) -> ModelResponse:
     return ModelResponse(stop_reason="end_turn", text=text)
+
+
+class _Schema(BaseModel):
+    pass
+
+
+def _make_committee(**overrides) -> LoadedCommittee:
+    defaults = dict(
+        name="test",
+        leader_system="",
+        model="claude-sonnet-5",
+        provider="anthropic",
+        max_steps=4,
+        playbook="",
+        elements=[],
+        task_cards={},
+        output_schema=_Schema,
+        consumes_required=[],
+        consumes_optional=[],
+    )
+    defaults.update(overrides)
+    return LoadedCommittee(**defaults)
 
 
 def _specialist(id_: str, model: str = "test-model", temperature: float | None = None) -> LoadedSpecialist:
@@ -227,3 +256,31 @@ def test_variant_label_omits_model_when_uniform() -> None:
 def test_variant_label_leads_with_title() -> None:
     s = _specialist("recon_expert")
     assert _variant_label(s, 0, ["m"]).startswith("recon_expert")
+
+
+# ---------------------------------------------------------------------------
+# _build_leader_brief — seed_text
+# ---------------------------------------------------------------------------
+
+def test_build_leader_brief_includes_seed_text_when_given() -> None:
+    committee = _make_committee()
+    brief = CommitteeBrief(objective=["Research the subject."])
+    msg = _build_leader_brief(
+        committee, brief, {}, is_retry=False, is_iterate=False, seed_text="Prior findings about X."
+    )
+    assert "== Seed material (from a prior engagement) ==" in msg
+    assert "Prior findings about X." in msg
+
+
+def test_build_leader_brief_omits_seed_section_when_none() -> None:
+    committee = _make_committee()
+    brief = CommitteeBrief(objective=["Research the subject."])
+    msg = _build_leader_brief(committee, brief, {}, is_retry=False, is_iterate=False, seed_text=None)
+    assert "Seed material" not in msg
+
+
+def test_build_leader_brief_omits_seed_section_when_empty_string() -> None:
+    committee = _make_committee()
+    brief = CommitteeBrief(objective=["Research the subject."])
+    msg = _build_leader_brief(committee, brief, {}, is_retry=False, is_iterate=False, seed_text="")
+    assert "Seed material" not in msg

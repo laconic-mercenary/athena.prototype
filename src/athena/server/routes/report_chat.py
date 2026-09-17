@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -22,8 +21,6 @@ from athena.server import limits, runner
 ###############
 
 router = APIRouter(prefix="/engagements")
-
-_ARTIFACTS_ROOT = Path("artifacts")
 
 _SYSTEM = """\
 You are an AI assistant helping an operator debrief a completed engagement.
@@ -59,9 +56,9 @@ async def report_chat(run_id: str, body: ReportChatRequest) -> ReportChatRespons
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Engagement not found")
 
-    run_dir = _ARTIFACTS_ROOT / run_id
+    run_dir = ctx.artifacts_dir
     docs: dict[str, str] = {}
-    if run_dir.is_dir():
+    if run_dir is not None and run_dir.is_dir():
         for path in sorted(run_dir.glob("*.json")):
             try:
                 raw = json.loads(path.read_text())

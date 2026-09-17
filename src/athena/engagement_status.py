@@ -14,7 +14,10 @@ Centralises string constants that describe:
 # Engagement run status
 # ---------------------------------------------------------------------------
 
-# Pipeline is actively running; no further engagements can start until it ends.
+# Created and waiting for a concurrency slot; not yet executing.
+QUEUED = "queued"
+
+# The engagement holds a concurrency slot and is actively executing.
 RUNNING = "running"
 
 # All committees completed successfully and the pipeline exited cleanly.
@@ -72,3 +75,30 @@ GATE_KIND_TOOL = "tool"
 
 # Complete set of valid gate kinds — used for membership validation in route handlers.
 GATE_KINDS = frozenset({GATE_KIND_ELEMENT, GATE_KIND_STEP, GATE_KIND_TOOL})
+
+
+# ---------------------------------------------------------------------------
+# Gate actions (in-loop gates)
+# Valid actions differ PER KIND — an action string valid for one kind (e.g.
+# "redo" for element/step) must not be accepted for another (e.g. tool, where
+# it would silently fall through committee_runner._apply_tool_gate's
+# deny-only check and approve a tool call nobody actually authorised). Route
+# handlers must validate action against GATE_ACTIONS[kind] for whichever kind
+# is actually pending (EngagementContext.loop_gate_kind), the same way they
+# already validate kind itself against GATE_KINDS.
+# ---------------------------------------------------------------------------
+
+GATE_ACTION_ACCEPT = "accept"
+GATE_ACTION_OVERRIDE = "override"
+GATE_ACTION_REDO = "redo"
+GATE_ACTION_SKIP = "skip"
+GATE_ACTION_APPROVE = "approve"
+GATE_ACTION_DENY = "deny"
+
+# Complete set of valid actions per gate kind — used for membership validation
+# in route handlers, keyed by whichever kind is actually pending.
+GATE_ACTIONS: dict[str, frozenset[str]] = {
+    GATE_KIND_ELEMENT: frozenset({GATE_ACTION_ACCEPT, GATE_ACTION_OVERRIDE, GATE_ACTION_REDO}),
+    GATE_KIND_STEP: frozenset({GATE_ACTION_ACCEPT, GATE_ACTION_REDO, GATE_ACTION_SKIP}),
+    GATE_KIND_TOOL: frozenset({GATE_ACTION_APPROVE, GATE_ACTION_DENY}),
+}

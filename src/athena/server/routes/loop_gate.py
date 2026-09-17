@@ -69,6 +69,21 @@ async def loop_gate_decision(
         )
 
     action = body.action.strip().lower()
+    # Validate against the actions valid for whichever kind is ACTUALLY pending right
+    # now — not just "is this a recognised action for some kind." A wrong-kind action
+    # (e.g. "redo", valid for element/step) must not reach a kind's own handler, since
+    # e.g. committee_runner._apply_tool_gate only explicitly checks for "deny" and
+    # approves everything else — this is the fail-closed chokepoint for that.
+    allowed = engagement_status.GATE_ACTIONS.get(ctx.loop_gate_kind, frozenset())
+    if action not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"action {action!r} is not valid for the pending {ctx.loop_gate_kind!r} "
+                f"gate; must be one of {sorted(allowed)}"
+            ),
+        )
+
     payload: dict = {}
     if body.winner_id is not None:
         payload["winner_id"] = body.winner_id

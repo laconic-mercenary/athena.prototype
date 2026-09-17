@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from athena.server import limits, runner
+from athena.server import limits, projects_store, runner
 
 ###############
 # CONSTS / GLOBALS #
@@ -40,10 +40,10 @@ class EngagementStatusResponse(BaseModel):
 @router.post("", response_model=StartEngagementResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_engagement(body: StartEngagementRequest, request: Request) -> StartEngagementResponse:
     try:
-        run_id = runner.start_engagement(body.instructions)
+        engagement = runner.start_engagement(body.instructions, projects_store.DEFAULT_PROJECT_NAME)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
-    return StartEngagementResponse(run_id=run_id)
+    return StartEngagementResponse(run_id=engagement.run_id)
 
 
 @router.get("/{run_id}", response_model=EngagementStatusResponse)
