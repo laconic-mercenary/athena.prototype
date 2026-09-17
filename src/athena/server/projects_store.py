@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from athena import engagement_status, env_vars
 
 if TYPE_CHECKING:
-    from athena.server.runner import Engagement
+    from athena.server.runner import Engagement, SeedSpec
 
 
 ###############
@@ -82,10 +82,15 @@ class Project:
         from athena.server import runner
         return runner.engagements_for_project(self.name)
 
-    def start_engagement(self, instructions: str, ensemble_name: str | None = None) -> "Engagement":
+    def start_engagement(
+        self,
+        instructions: str,
+        ensemble_name: str | None = None,
+        seed: "SeedSpec | None" = None,
+    ) -> "Engagement":
         """Start a new engagement in this project. See runner.start_engagement()."""
         from athena.server import runner
-        return runner.start_engagement(instructions, self.name, ensemble_name)
+        return runner.start_engagement(instructions, self.name, ensemble_name, seed)
 
     def rename(self, new_name: str) -> None:
         self._store.rename(self.name, new_name)
@@ -134,7 +139,14 @@ class ProjectStore:
         path = projects_root() / name
         if path.exists():
             raise ValueError(f"Project directory already exists: {path}")
-        (path / _ENSEMBLES_SUBDIR).mkdir(parents=True)
+        try:
+            (path / _ENSEMBLES_SUBDIR).mkdir(parents=True)
+        except FileExistsError:
+            # Lost a create/create race against another thread in FastAPI's executor
+            # pool — both passed the exists() check above before either's mkdir ran.
+            # Same outcome as losing the pre-check, so report it the same way instead
+            # of letting the raw FileExistsError reach the route as an unhandled 500.
+            raise ValueError(f"Project directory already exists: {path}")
         created_at = time.time()
         _write_meta(path, name, created_at)
         project = Project(name=name, created_at=created_at, path=path, store=self)

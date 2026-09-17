@@ -5,6 +5,7 @@ validation, listing, and delete behavior — engagements are registered directly
 run — plus the 404 paths that stop before any pipeline starts.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -84,5 +85,34 @@ def test_create_engagement_404_for_unknown_ensemble(client, monkeypatch) -> None
     r = client.post(
         "/projects/proj/engagements",
         json={"instructions": "do it", "ensemble": "missing"},
+    )
+    assert r.status_code == 404
+
+
+def test_create_engagement_400_for_blank_instructions(client, monkeypatch) -> None:
+    # Whitespace-only passes Pydantic's min_length=1 but fails _require_nonblank's
+    # .strip() check inside Engagement.__init__ — that ValueError must surface as a
+    # clean 400, not an unhandled 500.
+    monkeypatch.setenv(env_vars.SRV_ORCHESTRATOR_MODEL, "m")
+    monkeypatch.setenv(env_vars.SRV_ORCHESTRATOR_PROVIDER, "fake")
+    monkeypatch.setenv(env_vars.SRV_ORCHESTRATOR_CONFIG, "{}")
+    monkeypatch.setenv(env_vars.ENS_PATH, str(Path(__file__).parent / "ensembles" / "fsscanv1"))
+    projects_store.create_project("proj")
+    r = client.post("/projects/proj/engagements", json={"instructions": "   "})
+    assert r.status_code == 400
+
+
+def test_create_engagement_404_for_unknown_seed(client, monkeypatch) -> None:
+    monkeypatch.setenv(env_vars.SRV_ORCHESTRATOR_MODEL, "m")
+    monkeypatch.setenv(env_vars.SRV_ORCHESTRATOR_PROVIDER, "fake")
+    monkeypatch.setenv(env_vars.SRV_ORCHESTRATOR_CONFIG, "{}")
+    monkeypatch.setenv(env_vars.ENS_PATH, str(Path(__file__).parent / "ensembles" / "fsscanv1"))
+    projects_store.create_project("proj")
+    r = client.post(
+        "/projects/proj/engagements",
+        json={
+            "instructions": "do it",
+            "seed": {"project": "proj", "run_id": "does-not-exist"},
+        },
     )
     assert r.status_code == 404

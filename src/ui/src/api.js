@@ -16,6 +16,49 @@ export async function startEngagement(instructions) {
   }))
 }
 
+export async function listProjects() {
+  return _json(await fetch(`${BASE}/projects`))
+}
+
+export async function createProject(name) {
+  return _json(await fetch(`${BASE}/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  }))
+}
+
+export async function renameProject(oldName, newName) {
+  return _json(await fetch(`${BASE}/projects/${oldName}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName }),
+  }))
+}
+
+export async function deleteProject(name) {
+  const resp = await fetch(`${BASE}/projects/${name}`, { method: 'DELETE' })
+  if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
+}
+
+// seed (optional): { project, run_id, committee } — see SeedRef server-side.
+export async function startProjectEngagement(projectName, instructions, ensemble, seed) {
+  return _json(await fetch(`${BASE}/projects/${projectName}/engagements`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instructions, ensemble: ensemble || null, seed: seed || null }),
+  }))
+}
+
+export async function listProjectEngagements(projectName) {
+  return _json(await fetch(`${BASE}/projects/${projectName}/engagements`))
+}
+
+export async function deleteProjectEngagement(projectName, runId) {
+  const resp = await fetch(`${BASE}/projects/${projectName}/engagements/${runId}`, { method: 'DELETE' })
+  if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`)
+}
+
 export async function getEngagement(runId) {
   return _json(await fetch(`${BASE}/engagements/${runId}`))
 }

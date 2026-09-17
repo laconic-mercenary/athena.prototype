@@ -110,3 +110,40 @@ def test_unexpected_exception_sets_failed_not_rejected(monkeypatch) -> None:
     t.join(timeout=2)
 
     assert eng.context.status == engagement_status.FAILED
+
+
+def test_seed_text_reaches_run_workflow(monkeypatch) -> None:
+    """Engagement.run() must pass its own _seed_text through to run_workflow() —
+    run_workflow()'s own entry-only gating is covered separately in test_workflow.py."""
+    captured: dict = {}
+
+    def fake_run_workflow(**kwargs):
+        captured["seed_text"] = kwargs.get("seed_text")
+
+    eng = runner.Engagement(
+        run_id="run-seeded",
+        ensemble=SimpleNamespace(committees={}, name="e", version="1", capability="cap"),
+        instructions="do the thing",
+        orch_model="m",
+        orch_provider="fake",
+        orch_config={},
+        project_name="default",
+        seed_text="background from a prior engagement",
+    )
+    t = _run_to_plan_gate_then(monkeypatch, fake_run_workflow, eng)
+    t.join(timeout=2)
+
+    assert captured["seed_text"] == "background from a prior engagement"
+
+
+def test_no_seed_text_by_default(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_run_workflow(**kwargs):
+        captured["seed_text"] = kwargs.get("seed_text")
+
+    eng = _make_engagement()
+    t = _run_to_plan_gate_then(monkeypatch, fake_run_workflow, eng)
+    t.join(timeout=2)
+
+    assert captured["seed_text"] is None

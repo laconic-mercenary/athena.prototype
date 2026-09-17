@@ -244,6 +244,7 @@ class CommitteeRun:
         is_retry: bool,
         is_iterate: bool,
         prior_artifact: BaseModel | None = None,
+        seed_text: str | None = None,
     ) -> None:
         self.committee = ensemble.committees[committee_name]
         self.skills_map = ensemble.skills
@@ -262,6 +263,7 @@ class CommitteeRun:
             is_retry=is_retry,
             is_iterate=is_iterate,
             prior_artifact=prior_artifact,
+            seed_text=seed_text,
         )
 
         self._schema_name = self.committee.output_schema.__name__
@@ -846,6 +848,7 @@ def run_committee_with_ensemble(
     is_retry: bool,
     is_iterate: bool,
     prior_artifact: BaseModel | None = None,
+    seed_text: str | None = None,
 ) -> tuple[BaseModel, bool]:
     """Run a committee and return (artifact, incomplete)."""
     return CommitteeRun(
@@ -863,6 +866,7 @@ def run_committee_with_ensemble(
         is_retry=is_retry,
         is_iterate=is_iterate,
         prior_artifact=prior_artifact,
+        seed_text=seed_text,
     ).run()
 
 
@@ -1019,6 +1023,7 @@ def _build_leader_brief(
     is_retry: bool,
     is_iterate: bool,
     prior_artifact: BaseModel | None = None,
+    seed_text: str | None = None,
 ) -> str:
     sections: list[str] = []
 
@@ -1029,6 +1034,15 @@ def _build_leader_brief(
     if brief.emphasis:
         brief_block += "\nEmphasis: " + "; ".join(brief.emphasis)
     sections.append(brief_block)
+
+    if seed_text:
+        sections.append(
+            "== Seed material (from a prior engagement) ==\n"
+            "The operator supplied output from a previously completed engagement as "
+            "background for this one. It may use a different schema/structure than "
+            "this engagement's own artifacts — read it for content and context, not "
+            "as a typed dependency.\n\n" + seed_text
+        )
 
     upstream_parts: list[str] = []
     for dep in committee.consumes_required:

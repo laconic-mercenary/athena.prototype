@@ -36,7 +36,7 @@ from athena.server.pending_decision import (
 )
 from athena.server.registry import Registry
 from athena.harness.orchestrator import GateDecision, OrchestratorHarness
-from athena.harness.workflow import GLOBAL_STEP_BUDGET, run_workflow
+from athena.harness.workflow import GLOBAL_STEP_BUDGET, find_terminal_committee, run_workflow
 from athena.model_backend import make_backend
 from athena.utils import new_id
 
@@ -162,6 +162,23 @@ class EnsembleNotFound(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class SeedSpec:
+    """Reference to a prior completed engagement's artifact to seed a new engagement
+    with. committee=None means "use the source ensemble's terminal committee" — see
+    _resolve_seed_text."""
+    project: str
+    run_id: str
+    committee: str | None = None
+
+
+class SeedNotFound(Exception):
+    """Raised when a SeedSpec can't be resolved to renderable text — unknown run_id,
+    wrong project, not completed, unknown/unrenderable committee, or missing artifact.
+    The engagement route maps it to a 404."""
+    pass
+
+
 class Engagement:
     """One engagement: owns its EngagementContext and every operator-facing action on it.
 
@@ -185,6 +202,7 @@ class Engagement:
         orch_provider: str,
         orch_config: dict,
         project_name: str,
+        seed_text: str | None = None,
     ) -> None:
         if ensemble is None:
             raise ValueError("Engagement ensemble must not be None")
@@ -193,6 +211,7 @@ class Engagement:
         self.run_id = _require_nonblank(run_id, "run_id")
         self.project_name = _require_nonblank(project_name, "project_name")
         self._instructions = _require_nonblank(instructions, "instructions")
+        self._seed_text = seed_text
         self._orch_model = _require_nonblank(orch_model, "orch_model")
         self._orch_provider = _require_nonblank(orch_provider, "orch_provider")
         self._orch_config = orch_config
@@ -262,8 +281,13 @@ class Engagement:
         before hitting the next cancellation check — acceptable for a single-operator demo.
         """
         ctx = self.context
-        ctx.cancelled = True
-        ctx.status = engagement_status.ABANDONED
+        with self._decision_cv:
+            # Guarded by the same lock run() uses for its opening cancelled-check +
+            # RUNNING-set — otherwise an abort landing in that exact window (e.g. a
+            # QUEUED engagement whose slot frees just as Restart is pressed) can be
+            # silently clobbered back to RUNNING (see run()'s matching comment).
+            ctx.cancelled = True
+            ctx.status = engagement_status.ABANDONED
         # Wake anything the worker might be blocked on so it can observe `cancelled`.
         # This covers the "paused, waiting for the operator" states — briefing approval,
         # committee/in-loop gates, orchestrator questions — which is when Restart is
@@ -275,6 +299,12 @@ class Engagement:
         ctx.plan_decision_event.set()
         ctx.gate_decision_event.set()
         ctx.loop_gate_event.set()
+        # Also wake wait_for_decision() waiters (the code-first PendingDecision path) —
+        # the four legacy Events above don't touch _decision_cv, so without this a
+        # caller blocked in wait_for_decision() would never observe the now-terminal
+        # status until its own timeout. Clearing to None is correct even if a decision
+        # was outstanding: the engagement is over, so there is nothing left to decide.
+        self._set_pending_decision(None)
 
     def resolve_loop_gate_decision(self, *, action: str, payload: dict | None = None) -> None:
         """Release an in-loop gate (element / step / tool). action is the operator's
@@ -510,8 +540,18 @@ class Engagement:
         ctx = self.context
         run_id = self.run_id
         ensemble = ctx.ensemble
-        ctx.status = engagement_status.RUNNING
+        with self._decision_cv:
+            # Guarded by the same lock abort() uses: if an abort already landed
+            # (cancelled=True, status=ABANDONED) in the window between
+            # _run_engagement's pre-slot check and here, don't clobber it back to
+            # RUNNING — raise EngagementAborted below instead, before any real work
+            # (LLM calls) happens. See abort()'s matching comment.
+            aborted_before_start = ctx.cancelled
+            if not aborted_before_start:
+                ctx.status = engagement_status.RUNNING
         try:
+            if aborted_before_start:
+                raise EngagementAborted()
             pub.sendMessage(
                 topics.ENGAGEMENT_STARTED,
                 run_id=run_id,
@@ -595,6 +635,7 @@ class Engagement:
                     global_step_budget=GLOBAL_STEP_BUDGET,
                     loop_gate_hooks=LoopGateHooks(is_armed=self._is_gate_armed, decide=self._loop_gate_handler),
                     get_disabled_specialists=lambda: frozenset(ctx.disabled_specialists),
+                    seed_text=self._seed_text,
                 )
             finally:
                 orchestrator.stop()
@@ -638,14 +679,26 @@ def is_busy() -> bool:
     return _registry.is_busy()
 
 
-def start_engagement(instructions: str, project_name: str, ensemble_name: str | None = None) -> Engagement:
+def start_engagement(
+    instructions: str,
+    project_name: str,
+    ensemble_name: str | None = None,
+    seed: SeedSpec | None = None,
+) -> Engagement:
     """Start a new engagement in a project. Returns the Engagement itself (run_id is
     Engagement.run_id — the caller no longer needs to look it back up to get the object).
 
     ensemble_name selects the project's private ensemble; None uses the public ATHENA_ENS_PATH
-    ensemble. Raises EnsembleNotFound if a named ensemble isn't in the project's catalog. The
-    engagement runs on its own daemon thread and acquires a concurrency slot before executing;
-    while all slots are busy it waits in QUEUED status until one frees.
+    ensemble. Raises EnsembleNotFound if a named ensemble isn't in the project's catalog.
+
+    seed, if given, references a previously completed engagement (possibly a different
+    project/ensemble — no compatibility is enforced) whose chosen artifact is rendered
+    to text and injected into this engagement's entry committee brief. Resolved BEFORE
+    the Engagement is constructed, so a bad seed reference fails fast (SeedNotFound) —
+    it never creates a run_id or registry entry.
+
+    The engagement runs on its own daemon thread and acquires a concurrency slot before
+    executing; while all slots are busy it waits in QUEUED status until one frees.
     """
     orch_model = env_vars.get_required(env_vars.SRV_ORCHESTRATOR_MODEL)
     orch_provider = env_vars.get_required(env_vars.SRV_ORCHESTRATOR_PROVIDER)
@@ -653,6 +706,8 @@ def start_engagement(instructions: str, project_name: str, ensemble_name: str | 
 
     ensemble_path = _resolve_ensemble_path(project_name, ensemble_name)
     ensemble = load_ensemble(ensemble_path)
+
+    seed_text = _resolve_seed_text(seed) if seed is not None else None
 
     engagement = Engagement(
         run_id=new_id(),
@@ -662,6 +717,7 @@ def start_engagement(instructions: str, project_name: str, ensemble_name: str | 
         orch_provider=orch_provider,
         orch_config=orch_config,
         project_name=project_name,
+        seed_text=seed_text,
     )
     _registry.add_engagement(engagement)
     threading.Thread(
@@ -836,6 +892,53 @@ def _orchestrator_backend_config() -> dict:
             f"{env_vars.SRV_ORCHESTRATOR_CONFIG} must be a JSON object, got {type(cfg).__name__}"
         )
     return cfg
+
+
+def _resolve_seed_text(seed: SeedSpec) -> str:
+    """Render a SeedSpec's chosen artifact to plain text for injection into a new
+    engagement's entry-committee brief.
+
+    Deliberately does NOT enforce any schema compatibility between the source and this
+    new engagement's own ensemble — the source ensemble is reloaded fresh purely to
+    resolve the committee's output_schema for rendering, decoupled from whatever
+    ensemble the new engagement is about to run.
+    """
+    source_ctx = _registry.get_context(seed.run_id)
+    if source_ctx is None:
+        raise SeedNotFound(f"Seed engagement {seed.run_id!r} not found in this server session")
+
+    source_engagement = _registry.get_engagement(seed.run_id)
+    if source_engagement is not None and source_engagement.project_name != seed.project:
+        raise SeedNotFound(
+            f"Seed engagement {seed.run_id!r} does not belong to project {seed.project!r}"
+        )
+    if source_ctx.status != engagement_status.COMPLETED:
+        raise SeedNotFound(
+            f"Seed engagement {seed.run_id!r} is not completed (status={source_ctx.status!r})"
+        )
+    if source_ctx.ensemble is None or source_ctx.artifacts_dir is None:
+        raise SeedNotFound(f"Seed engagement {seed.run_id!r} has no loaded ensemble")
+
+    committee_name = seed.committee or find_terminal_committee(source_ctx.ensemble)
+    if committee_name is None:
+        raise SeedNotFound(f"Could not determine a terminal committee for {seed.run_id!r}")
+
+    artifact_path = source_ctx.artifacts_dir / f"{committee_name}.json"
+    if not artifact_path.is_file():
+        raise SeedNotFound(f"No artifact {committee_name!r} for seed engagement {seed.run_id!r}")
+
+    # Reload the SOURCE ensemble fresh from its own root — LoadedEnsemble.root is the
+    # exact directory load_ensemble() loaded from, so this is immune to the private
+    # ensemble at that name having since been renamed/replaced, and doesn't require
+    # seed.project to be load-bearing for lookup (it's a defense-in-depth cross-check
+    # above, not used for path resolution).
+    source_ensemble = load_ensemble(source_ctx.ensemble.root)
+    committee = source_ensemble.committees.get(committee_name)
+    if committee is None or not hasattr(committee.output_schema, "render_full"):
+        raise SeedNotFound(f"Committee {committee_name!r} artifact is not renderable")
+
+    model = committee.output_schema.model_validate_json(artifact_path.read_text())
+    return model.render_full()
 
 
 def _resolve_ensemble_path(project_name: str, ensemble_name: str | None) -> Path:

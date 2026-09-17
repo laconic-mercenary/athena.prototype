@@ -233,11 +233,23 @@ def test_wait_for_decision_wakes_on_abort_without_a_decision() -> None:
 
     def abort_soon() -> None:
         time.sleep(0.05)
-        eng.context.status = engagement_status.ABANDONED
-        eng._set_pending_decision(None)
+        eng.abort()
 
     threading.Thread(target=abort_soon, daemon=True).start()
     assert eng.wait_for_decision(timeout=2) is None
+
+
+def test_abort_clears_outstanding_decision_for_later_callers() -> None:
+    eng = _make_engagement()
+    eng.context.status = engagement_status.RUNNING
+    decision = CommitteeGateDecision(eng, committee="recon", digest="d", redo_available=False)
+    eng._set_pending_decision(decision)
+
+    eng.abort()
+
+    # A caller that asks after the abort must see "nothing left to decide", not the
+    # now-moot decision that was outstanding when the engagement was aborted.
+    assert eng.wait_for_decision(timeout=0.05) is None
 
 
 def test_multiple_waiters_see_the_same_decision() -> None:

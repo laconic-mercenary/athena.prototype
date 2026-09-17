@@ -40,9 +40,19 @@ class ProjectListResponse(BaseModel):
     projects: list[ProjectResponse]
 
 
+class SeedRef(BaseModel):
+    """Reference to a prior completed engagement's artifact to seed a new engagement
+    with — see runner.SeedSpec. committee=None means "use the source's terminal
+    committee"."""
+    project: str = Field(..., min_length=1, max_length=100)
+    run_id: str = Field(..., min_length=1, max_length=100)
+    committee: str | None = Field(None, max_length=100)
+
+
 class StartEngagementRequest(BaseModel):
     instructions: str = Field(..., min_length=1, max_length=limits.MAX_INSTRUCTIONS_LEN)
     ensemble: str | None = Field(None, max_length=100)
+    seed: SeedRef | None = None
 
 
 class EngagementResponse(BaseModel):
@@ -104,10 +114,24 @@ async def create_engagement(name: str, body: StartEngagementRequest) -> Engageme
     project = projects_store.get_project(name)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    seed = (
+        runner.SeedSpec(project=body.seed.project, run_id=body.seed.run_id, committee=body.seed.committee)
+        if body.seed is not None
+        else None
+    )
+    loop = asyncio.get_running_loop()
     try:
-        engagement = project.start_engagement(body.instructions, body.ensemble)
+        engagement = await loop.run_in_executor(
+            None, project.start_engagement, body.instructions, body.ensemble, seed
+        )
     except runner.EnsembleNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except runner.SeedNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ValueError as exc:
+        # Whitespace-only instructions (passes Pydantic's min_length but not
+        # _require_nonblank), or a broken manifest at the resolved ensemble path.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return EngagementResponse(run_id=engagement.run_id, status=engagement.context.status)
 
 

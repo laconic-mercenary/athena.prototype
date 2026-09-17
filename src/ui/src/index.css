@@ -96,6 +96,93 @@ html, body, #root {
 .request-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 .request-error { color: var(--red); margin-top: 10px; font-size: 12px; }
 
+/* ─── Projects ─── */
+.project-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 4px 4px 10px;
+}
+.project-row:hover { border-color: #475569; }
+.project-row-name {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.project-row-actions { display: flex; gap: 2px; }
+.icon-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.icon-btn:hover { color: var(--text); background: var(--bg-base); }
+.icon-btn--danger:hover { color: var(--red); }
+.modal-input {
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.modal-input:focus { border-color: #475569; }
+.back-link {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 12px;
+}
+.back-link:hover { color: var(--text); }
+.seed-picker-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 16px;
+  cursor: pointer;
+}
+.seed-picker-panel {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--bg-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.seed-picker-select {
+  width: 100%;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
 /* ─── Dashboard ─── */
 .dashboard {
   display: flex;

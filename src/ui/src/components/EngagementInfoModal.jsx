@@ -45,6 +45,13 @@ export function EngagementInfoModal({ engagement, phase, committeeCount, onClose
           <Row label="Phase">{phase || '—'}</Row>
           <Row label="Committees">{committeeCount ?? '—'}</Row>
           <Row label="Started">{fmtStarted(engagement.startedAt)}</Row>
+          {engagement.project && <Row label="Project">{engagement.project}</Row>}
+          {engagement.seed && (
+            <Row label="Seeded from">
+              {engagement.seed.project}/{engagement.seed.run_id}
+              {' '}({engagement.seed.committee || 'terminal'})
+            </Row>
+          )}
           {engagement.objective && (
             <div className="eng-info-objective">
               <span className="eng-info-label">Objective</span>

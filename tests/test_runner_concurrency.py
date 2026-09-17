@@ -5,7 +5,7 @@ and start when a slot frees. The real pipeline is stubbed — only the slot mech
 import threading
 import time
 
-from athena import engagement_status
+from athena import engagement_status, topics
 from athena.server import runner
 
 
@@ -103,3 +103,34 @@ def test_aborted_queued_engagement_never_runs(monkeypatch) -> None:
     t2.join(timeout=2)
     assert ran == []
     assert waiting.context.status == engagement_status.ABANDONED
+
+
+def test_run_does_not_clobber_an_abort_that_races_the_running_transition() -> None:
+    """abort() can land in the exact window between _run_engagement's pre-slot check
+    and Engagement.run()'s own opening status set (e.g. a QUEUED engagement whose slot
+    frees just as Restart is pressed). run() must observe that and end ABANDONED
+    without ever publishing ENGAGEMENT_STARTED — not silently overwrite it back to
+    RUNNING and proceed into real work."""
+    from pubsub import pub
+
+    eng = _make_engagement("racer")
+    eng.context.cancelled = True  # simulates abort() having already landed
+
+    published: list[str] = []
+    # Named params (not **kwargs) so pubsub infers a matching arg spec for the topic.
+    def _on_started(run_id=None, ensemble=None, version=None):
+        published.append(topics.ENGAGEMENT_STARTED)
+
+    def _on_aborted(run_id=None):
+        published.append(topics.ENGAGEMENT_ABORTED)
+
+    pub.subscribe(_on_started, topics.ENGAGEMENT_STARTED)
+    pub.subscribe(_on_aborted, topics.ENGAGEMENT_ABORTED)
+    try:
+        eng.run()
+    finally:
+        pub.unsubscribe(_on_started, topics.ENGAGEMENT_STARTED)
+        pub.unsubscribe(_on_aborted, topics.ENGAGEMENT_ABORTED)
+
+    assert eng.context.status == engagement_status.ABANDONED
+    assert published == [topics.ENGAGEMENT_ABORTED]

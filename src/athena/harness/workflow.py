@@ -74,8 +74,15 @@ def run_workflow(
     global_step_budget: int,
     loop_gate_hooks: LoopGateHooks | None = None,
     get_disabled_specialists: "Callable[[], frozenset[str]] | None" = None,
+    seed_text: str | None = None,
 ) -> None:
-    """Traverse the workflow graph until a terminal committee advances."""
+    """Traverse the workflow graph until a terminal committee advances.
+
+    seed_text, if given, is background rendered from a prior completed engagement's
+    artifact (see runner._resolve_seed_text). It is only ever injected into the ENTRY
+    committee's brief — including on a redo/iterate of the entry committee, since it's
+    treated as stable background for the whole engagement, not a one-shot artifact.
+    """
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -119,6 +126,7 @@ def run_workflow(
                 is_retry=is_retry,
                 is_iterate=is_iterate,
                 prior_artifact=prior_artifact if is_iterate else None,
+                seed_text=seed_text if current == ensemble.entry else None,
             )
         except RefuseStartError as exc:
             _log.error("Committee %r refused to start: %s", current, exc.reason)
@@ -273,6 +281,22 @@ def run_workflow(
             # Should not happen (ask_operator is resolved inside orchestrator.run_gate)
             _log.error("Unexpected gate decision %r", decision.decision)
             current = _forward_target(node) or current
+
+
+def find_terminal_committee(ensemble: LoadedEnsemble) -> str | None:
+    """Walk forward-advance edges from the entry committee to the terminal one — the
+    same path run_workflow() itself follows on a clean advance-only run, ignoring
+    retry/iterate back-edges. Returns None if the graph never reaches a terminal node
+    (a malformed/cyclic manifest) rather than looping forever."""
+    current: str | None = ensemble.entry
+    visited: set[str] = set()
+    while current and current not in visited:
+        visited.add(current)
+        node = ensemble.workflow.get(current)
+        if node is None or _is_terminal(node):
+            return current
+        current = _forward_target(node)
+    return None
 
 
 ###############

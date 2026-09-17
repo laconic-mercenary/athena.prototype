@@ -44,6 +44,18 @@ def test_create_rejects_duplicate(store) -> None:
         projects_store.create_project("alpha")
 
 
+def test_create_converts_mkdir_race_to_valueerror(store, monkeypatch) -> None:
+    # Simulates two threads racing create("alpha") in FastAPI's executor pool: both
+    # observe path.exists() as False before either's mkdir runs. Reproduced here by
+    # pre-creating the directory on disk (as the "other thread" would have) while
+    # forcing this call's own exists() pre-check to still report False.
+    path = store / "alpha"
+    (path / "ensembles").mkdir(parents=True)
+    monkeypatch.setattr(projects_store.Path, "exists", lambda self: False)
+    with pytest.raises(ValueError):
+        projects_store.create_project("alpha")
+
+
 @pytest.mark.parametrize("bad", ["", "has space", "a/b", "..", ".", "no$dollar"])
 def test_create_rejects_invalid_names(store, bad) -> None:
     with pytest.raises(ValueError):
